@@ -105,11 +105,10 @@ export default function PurchaseDetailScreen() {
           {(purchase.items ?? []).map((item, index) => (
             <View
               key={item.id}
-              className={`p-4 flex-row items-center ${
-                index < (purchase.items ?? []).length - 1
+              className={`p-4 flex-row items-center ${index < (purchase.items ?? []).length - 1
                   ? "border-b border-slate-100 dark:border-zinc-800"
                   : ""
-              }`}
+                }`}
             >
               <View className="flex-1">
                 <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
