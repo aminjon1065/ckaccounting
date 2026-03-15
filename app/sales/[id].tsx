@@ -42,14 +42,17 @@ const PAYMENT_LABELS: Record<string, string> = {
 // ─── Sale item row ─────────────────────────────────────────────────────────────
 
 function SaleItemRow({ item }: { item: SaleItem }) {
+  const displayName = item.service_name ?? item.product_name ?? "—";
+  const unitLabel = item.unit ? ` · ${item.unit}` : "";
+
   return (
     <View className="flex-row items-center py-3 border-b border-slate-100 dark:border-zinc-800">
       <View className="flex-1 mr-3">
         <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
-          {item.product_name}
+          {displayName}
         </Text>
         <Text variant="small">
-          {fmt(item.price)} × {item.quantity}
+          {fmt(item.price)}{unitLabel} × {item.quantity}
         </Text>
       </View>
       <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
@@ -173,7 +176,10 @@ export default function SaleDetailScreen() {
           </Text>
           <Text variant="muted" className="mt-0.5">{fmtDate(sale.created_at)}</Text>
         </View>
-        {hasDebt && <Badge variant="destructive">Долг</Badge>}
+        <View className="flex-row items-center gap-2">
+          {sale.type === "service" && <Badge variant="secondary">Услуга</Badge>}
+          {hasDebt && <Badge variant="destructive">Долг</Badge>}
+        </View>
       </View>
 
       <ScrollView
@@ -222,6 +228,14 @@ export default function SaleDetailScreen() {
                 color="#ef4444"
               />
             )}
+            {!!sale.notes && (
+              <>
+                <View className="border-t border-slate-100 dark:border-zinc-800 mt-1 pt-2">
+                  <Text variant="muted" className="text-xs mb-0.5">Заметки</Text>
+                  <Text className="text-sm text-slate-700 dark:text-slate-300">{sale.notes}</Text>
+                </View>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -230,7 +244,7 @@ export default function SaleDetailScreen() {
           <CardContent className="pt-3 pb-0">
             <View className="flex-row items-center justify-between mb-1">
               <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Товары
+                {sale.type === "service" ? "Услуги" : "Товары"}
               </Text>
               <Badge variant="secondary">{sale.items.length} поз.</Badge>
             </View>

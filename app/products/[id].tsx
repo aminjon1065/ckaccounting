@@ -6,6 +6,7 @@ import { ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
+import { DEFAULT_CURRENCY } from "@/constants/config";
 import { api, type Product } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
@@ -197,6 +198,41 @@ export default function ProductDetailScreen() {
               <InfoRow label="Дата обновления" value={fmtDate(product.updated_at)} />
             </CardContent>
           </Card>
+
+          {/* Action buttons */}
+          <View className="gap-3 mt-1">
+            {/* View movement */}
+            <TouchableOpacity
+              onPress={() =>
+                router.push({
+                  pathname: "/products/movement",
+                  params: { id: product.id, name: product.name },
+                })
+              }
+              className="flex-row items-center justify-center gap-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3.5"
+            >
+              <MaterialIcons name="swap-vert" size={20} color="#0a7ea4" />
+              <Text className="text-sm font-semibold text-primary-600 dark:text-primary-400">
+                История движения
+              </Text>
+            </TouchableOpacity>
+
+            {/* Stock value info row */}
+            <View className="flex-row gap-3">
+              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
+                <Text variant="muted" className="text-xs mb-0.5">Себестоимость склада</Text>
+                <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
+                  {fmt(product.stock_quantity * product.cost_price)} {DEFAULT_CURRENCY}
+                </Text>
+              </View>
+              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
+                <Text variant="muted" className="text-xs mb-0.5">По цене продажи</Text>
+                <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
+                  {fmt(product.stock_quantity * product.sale_price)} {DEFAULT_CURRENCY}
+                </Text>
+              </View>
+            </View>
+          </View>
         </ScrollView>
       ) : null}
     </SafeAreaView>

@@ -148,10 +148,15 @@ export interface CreatePurchasePayload {
 
 // ─── Sales ────────────────────────────────────────────────────────────────────
 
+export type SaleType = "product" | "service";
+
 export interface SaleItem {
   id: number;
-  product_id: number;
-  product_name: string;
+  product_id: number | null;
+  product_name: string | null;
+  /** Populated for service-type sales */
+  service_name?: string | null;
+  unit?: string | null;
   quantity: number;
   price: number;
   total: number;
@@ -159,23 +164,41 @@ export interface SaleItem {
 
 export interface Sale {
   id: number;
+  type?: SaleType;
   customer_name: string | null;
   total: number;
   discount: number;
   paid: number;
   debt: number;
   payment_type: "cash" | "card" | "transfer";
+  notes?: string | null;
   items: SaleItem[];
   created_at: string;
   updated_at: string;
 }
 
+// Item shapes for the two sale types
+export interface ProductSaleItemPayload {
+  product_id: number;
+  quantity: number;
+  price?: number;
+}
+
+export interface ServiceSaleItemPayload {
+  name: string;
+  unit?: string;
+  quantity: number;
+  price: number;
+}
+
 export interface CreateSalePayload {
+  type?: SaleType;
   customer_name?: string;
   discount?: number;
   paid?: number;
+  notes?: string;
   payment_type: "cash" | "card" | "transfer";
-  items: Array<{ product_id: number; quantity: number; price?: number }>;
+  items: Array<ProductSaleItemPayload | ServiceSaleItemPayload>;
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -245,6 +268,27 @@ export interface StockReport {
     sale_price: number;
     value: number;
   }>;
+}
+
+// ─── Product Movement ─────────────────────────────────────────────────────────
+
+export type ProductMovementType = "purchase" | "sale" | "write_off";
+
+export interface ProductMovement {
+  id: number;
+  type: ProductMovementType;
+  quantity: number;
+  price: number;
+  total: number;
+  created_at: string;
+  reference_id: number | null;
+  reference_type: string | null;
+  actor_name: string | null;
+}
+
+export interface ProductMovementsResponse {
+  current_stock: number;
+  movements: ProductMovement[];
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
@@ -467,6 +511,9 @@ export const api = {
 
     delete: (id: number, token: string) =>
       request<void>(`/products/${id}`, { method: "DELETE", token }),
+
+    movements: (id: number, token: string) =>
+      request<ProductMovementsResponse>(`/products/${id}/movements`, { token }),
   },
 
   // ── Expenses ──────────────────────────────────────────────────────────────

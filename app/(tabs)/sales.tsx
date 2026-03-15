@@ -22,6 +22,7 @@ import {
   type CreateSalePayload,
   type Product,
   type Sale,
+  type SaleType,
 } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
@@ -51,12 +52,20 @@ const PAYMENT_LABELS: Record<string, string> = {
   transfer: "Перевод",
 };
 
-// ─── Cart types ───────────────────────────────────────────────────────────────
+// ─── Cart / service types ─────────────────────────────────────────────────────
 
 interface CartItem {
   product: Product;
   quantity: number;
   price: number;
+}
+
+interface ServiceLineItem {
+  id: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  price: string; // kept as string for the TextInput
 }
 
 // ─── Sale card ────────────────────────────────────────────────────────────────
@@ -97,9 +106,11 @@ function SaleCard({ item, onPress }: { item: Sale; onPress: () => void }) {
             {PAYMENT_LABELS[item.payment_type] ?? item.payment_type}
           </Text>
         </View>
-        <Text variant="small">
-          {item.items.length} поз.
-        </Text>
+        {item.type === "service" ? (
+          <Badge variant="secondary">Услуга</Badge>
+        ) : (
+          <Text variant="small">{item.items.length} поз.</Text>
+        )}
         {item.discount > 0 && (
           <Text variant="small">Скидка: {fmt(item.discount)}</Text>
         )}
@@ -208,26 +219,42 @@ function CreateSaleModal({
   onCreated: (s: Sale) => void;
   token: string;
 }) {
+  const [saleType, setSaleType] = React.useState<SaleType>("product");
+
+  // Product sale state
   const [products, setProducts] = React.useState<Product[]>([]);
   const [cart, setCart] = React.useState<CartItem[]>([]);
   const [pickerVisible, setPickerVisible] = React.useState(false);
+
+  // Service sale state
+  const [serviceItems, setServiceItems] = React.useState<ServiceLineItem[]>([]);
+  const serviceIdRef = React.useRef(0);
+
+  // Shared state
   const [customerName, setCustomerName] = React.useState("");
   const [discount, setDiscount] = React.useState("");
   const [paid, setPaid] = React.useState("");
+  const [notes, setNotes] = React.useState("");
   const [paymentType, setPaymentType] = React.useState<"cash" | "card" | "transfer">("cash");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  // Load products when modal opens
+  // Reset everything when modal opens
   React.useEffect(() => {
     if (!visible) return;
-    setCart([]); setCustomerName(""); setDiscount("");
-    setPaid(""); setPaymentType("cash"); setError("");
+    setSaleType("product");
+    setCart([]); setServiceItems([]);
+    setCustomerName(""); setDiscount("");
+    setPaid(""); setNotes("");
+    setPaymentType("cash"); setError("");
+    serviceIdRef.current = 0;
     api.products
       .list(token, { limit: 100 })
       .then((res) => setProducts(res.data))
       .catch(() => {});
   }, [visible]);
+
+  // ── Product cart helpers ────────────────────────────────────────────────────
 
   function addToCart(p: Product) {
     setCart((prev) => {
@@ -261,41 +288,86 @@ function CreateSaleModal({
     );
   }
 
-  const subtotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
+  // ── Service item helpers ────────────────────────────────────────────────────
+
+  function addServiceItem() {
+    const id = String(serviceIdRef.current++);
+    setServiceItems((prev) => [
+      ...prev,
+      { id, name: "", unit: "шт", quantity: 1, price: "" },
+    ]);
+  }
+
+  function updateServiceItem(id: string, patch: Partial<ServiceLineItem>) {
+    setServiceItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
+  }
+
+  function removeServiceItem(id: string) {
+    setServiceItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  // ── Calculations ────────────────────────────────────────────────────────────
+
+  const subtotal =
+    saleType === "product"
+      ? cart.reduce((s, c) => s + c.price * c.quantity, 0)
+      : serviceItems.reduce((s, i) => s + (parseFloat(i.price) || 0) * i.quantity, 0);
   const discountVal = parseFloat(discount) || 0;
   const total = Math.max(0, subtotal - discountVal);
   const paidVal = parseFloat(paid) || 0;
   const debt = Math.max(0, total - paidVal);
 
+  // ── Submit ──────────────────────────────────────────────────────────────────
+
   async function handleSubmit() {
     setError("");
-    if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
+
+    if (saleType === "product") {
+      if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
+    } else {
+      if (serviceItems.length === 0) { setError("Добавьте хотя бы одну услугу."); return; }
+      if (serviceItems.some((i) => !i.name.trim())) {
+        setError("Укажите название каждой услуги."); return;
+      }
+    }
 
     setSubmitting(true);
     try {
       const payload: CreateSalePayload = {
+        type: saleType,
         payment_type: paymentType,
-        items: cart.map((c) => ({
-          product_id: c.product.id,
-          quantity: c.quantity,
-          price: c.price,
-        })),
+        items:
+          saleType === "product"
+            ? cart.map((c) => ({
+                product_id: c.product.id,
+                quantity: c.quantity,
+                price: c.price,
+              }))
+            : serviceItems.map((s) => ({
+                name: s.name.trim(),
+                unit: s.unit.trim() || undefined,
+                quantity: s.quantity,
+                price: parseFloat(s.price) || 0,
+              })),
       };
       if (customerName.trim()) payload.customer_name = customerName.trim();
       if (discountVal > 0) payload.discount = discountVal;
       if (paidVal > 0) payload.paid = paidVal;
+      if (notes.trim()) payload.notes = notes.trim();
 
       const created = await api.sales.create(payload, token);
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(
-        e instanceof ApiError ? e.message : "Что-то пошло не так."
-      );
+      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
     } finally {
       setSubmitting(false);
     }
   }
+
+  // ── UI ──────────────────────────────────────────────────────────────────────
 
   return (
     <Modal
@@ -326,12 +398,43 @@ function CreateSaleModal({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            {/* Error */}
             {!!error && (
               <View className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 mb-4 flex-row items-center gap-2">
                 <MaterialIcons name="error-outline" size={16} color="#ef4444" />
                 <Text className="text-sm text-red-600 flex-1">{error}</Text>
               </View>
             )}
+
+            {/* ── Sale type toggle ─────────────────────────────────────────── */}
+            <View className="flex-row bg-slate-100 dark:bg-zinc-800 rounded-xl p-1 mb-5">
+              {(["product", "service"] as const).map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => setSaleType(t)}
+                  className={`flex-1 flex-row items-center justify-center gap-2 py-2.5 rounded-lg ${
+                    saleType === t
+                      ? "bg-white dark:bg-zinc-900"
+                      : ""
+                  }`}
+                >
+                  <MaterialIcons
+                    name={t === "product" ? "inventory-2" : "handyman"}
+                    size={16}
+                    color={saleType === t ? "#0a7ea4" : "#94a3b8"}
+                  />
+                  <Text
+                    className={`text-sm font-semibold ${
+                      saleType === t
+                        ? "text-primary-500"
+                        : "text-slate-400 dark:text-slate-500"
+                    }`}
+                  >
+                    {t === "product" ? "Товары" : "Услуги"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
 
             {/* Customer */}
             <Input
@@ -342,90 +445,197 @@ function CreateSaleModal({
               className="mb-4"
             />
 
-            {/* Cart items */}
-            <View className="mb-2 flex-row items-center justify-between">
-              <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Товары ({cart.length})
-              </Text>
-              <TouchableOpacity
-                onPress={() => setPickerVisible(true)}
-                className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
-              >
-                <MaterialIcons name="add" size={16} color="#0a7ea4" />
-                <Text className="text-xs font-semibold text-primary-500">
-                  Добавить товар
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {cart.length === 0 ? (
-              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
-                <MaterialIcons name="shopping-cart" size={32} color="#94a3b8" />
-                <Text variant="muted" className="mt-2 text-center text-sm">
-                  Нет товаров
-                </Text>
-              </View>
-            ) : (
-              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
-                {cart.map((c) => (
-                  <View
-                    key={c.product.id}
-                    className="p-3 border-b border-slate-200 dark:border-zinc-700 last:border-0"
+            {/* ── Product cart ─────────────────────────────────────────────── */}
+            {saleType === "product" && (
+              <>
+                <View className="mb-2 flex-row items-center justify-between">
+                  <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                    Товары ({cart.length})
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setPickerVisible(true)}
+                    className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
                   >
-                    <View className="flex-row items-center justify-between mb-1.5">
-                      <Text className="text-sm font-medium text-slate-900 dark:text-slate-50 flex-1 mr-2">
-                        {c.product.name}
-                      </Text>
-                      <TouchableOpacity
-                        onPress={() =>
-                          setCart((prev) =>
-                            prev.filter((x) => x.product.id !== c.product.id)
-                          )
-                        }
-                        hitSlop={8}
-                      >
-                        <MaterialIcons name="close" size={16} color="#94a3b8" />
-                      </TouchableOpacity>
-                    </View>
-                    <View className="flex-row items-center gap-3">
-                      {/* Qty */}
-                      <View className="flex-row items-center gap-2">
-                        <TouchableOpacity
-                          onPress={() => updateQty(c.product.id, -1)}
-                          className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                        >
-                          <MaterialIcons name="remove" size={14} color="#64748b" />
-                        </TouchableOpacity>
-                        <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
-                          {c.quantity}
-                        </Text>
-                        <TouchableOpacity
-                          onPress={() => updateQty(c.product.id, 1)}
-                          className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                        >
-                          <MaterialIcons name="add" size={14} color="#64748b" />
-                        </TouchableOpacity>
-                      </View>
-                      {/* Price input */}
-                      <View className="flex-1">
-                        <Input
-                          value={String(c.price)}
-                          onChangeText={(v) => updatePrice(c.product.id, v)}
-                          keyboardType="numeric"
-                          placeholder="Цена"
-                          className="py-1 text-xs"
-                        />
-                      </View>
-                      <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
-                        {fmt(c.price * c.quantity)}
-                      </Text>
-                    </View>
+                    <MaterialIcons name="add" size={16} color="#0a7ea4" />
+                    <Text className="text-xs font-semibold text-primary-500">
+                      Добавить товар
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {cart.length === 0 ? (
+                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
+                    <MaterialIcons name="shopping-cart" size={32} color="#94a3b8" />
+                    <Text variant="muted" className="mt-2 text-center text-sm">
+                      Нет товаров
+                    </Text>
                   </View>
-                ))}
-              </View>
+                ) : (
+                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
+                    {cart.map((c) => (
+                      <View
+                        key={c.product.id}
+                        className="p-3 border-b border-slate-200 dark:border-zinc-700 last:border-0"
+                      >
+                        <View className="flex-row items-center justify-between mb-1.5">
+                          <Text className="text-sm font-medium text-slate-900 dark:text-slate-50 flex-1 mr-2">
+                            {c.product.name}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() =>
+                              setCart((prev) =>
+                                prev.filter((x) => x.product.id !== c.product.id)
+                              )
+                            }
+                            hitSlop={8}
+                          >
+                            <MaterialIcons name="close" size={16} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+                        <View className="flex-row items-center gap-3">
+                          <View className="flex-row items-center gap-2">
+                            <TouchableOpacity
+                              onPress={() => updateQty(c.product.id, -1)}
+                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
+                            >
+                              <MaterialIcons name="remove" size={14} color="#64748b" />
+                            </TouchableOpacity>
+                            <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
+                              {c.quantity}
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() => updateQty(c.product.id, 1)}
+                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
+                            >
+                              <MaterialIcons name="add" size={14} color="#64748b" />
+                            </TouchableOpacity>
+                          </View>
+                          <View className="flex-1">
+                            <Input
+                              value={String(c.price)}
+                              onChangeText={(v) => updatePrice(c.product.id, v)}
+                              keyboardType="numeric"
+                              placeholder="Цена"
+                              className="py-1 text-xs"
+                            />
+                          </View>
+                          <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
+                            {fmt(c.price * c.quantity)}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </>
             )}
 
-            {/* Discount */}
+            {/* ── Service items ────────────────────────────────────────────── */}
+            {saleType === "service" && (
+              <>
+                <View className="mb-2 flex-row items-center justify-between">
+                  <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                    Услуги ({serviceItems.length})
+                  </Text>
+                  <TouchableOpacity
+                    onPress={addServiceItem}
+                    className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
+                  >
+                    <MaterialIcons name="add" size={16} color="#0a7ea4" />
+                    <Text className="text-xs font-semibold text-primary-500">
+                      Добавить
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {serviceItems.length === 0 ? (
+                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
+                    <MaterialIcons name="handyman" size={32} color="#94a3b8" />
+                    <Text variant="muted" className="mt-2 text-center text-sm">
+                      Нет услуг
+                    </Text>
+                  </View>
+                ) : (
+                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
+                    {serviceItems.map((item) => (
+                      <View
+                        key={item.id}
+                        className="p-3 border-b border-slate-200 dark:border-zinc-700 last:border-0"
+                      >
+                        {/* Row 1: name + delete */}
+                        <View className="flex-row items-center gap-2 mb-2">
+                          <RNTextInput
+                            value={item.name}
+                            onChangeText={(v) => updateServiceItem(item.id, { name: v })}
+                            placeholder="Название услуги"
+                            placeholderTextColor="#94a3b8"
+                            className="flex-1 text-sm text-slate-900 dark:text-slate-50 bg-white dark:bg-zinc-900 rounded-lg px-3 py-2"
+                          />
+                          <TouchableOpacity
+                            onPress={() => removeServiceItem(item.id)}
+                            hitSlop={8}
+                          >
+                            <MaterialIcons name="close" size={16} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Row 2: unit + qty stepper + price + total */}
+                        <View className="flex-row items-center gap-2">
+                          {/* Unit */}
+                          <RNTextInput
+                            value={item.unit}
+                            onChangeText={(v) => updateServiceItem(item.id, { unit: v })}
+                            placeholder="Ед."
+                            placeholderTextColor="#94a3b8"
+                            className="w-14 text-xs text-slate-900 dark:text-slate-50 bg-white dark:bg-zinc-900 rounded-lg px-2 py-1.5 text-center"
+                          />
+                          {/* Qty stepper */}
+                          <View className="flex-row items-center gap-1.5">
+                            <TouchableOpacity
+                              onPress={() =>
+                                updateServiceItem(item.id, {
+                                  quantity: Math.max(1, item.quantity - 1),
+                                })
+                              }
+                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
+                            >
+                              <MaterialIcons name="remove" size={14} color="#64748b" />
+                            </TouchableOpacity>
+                            <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
+                              {item.quantity}
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() =>
+                                updateServiceItem(item.id, { quantity: item.quantity + 1 })
+                              }
+                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
+                            >
+                              <MaterialIcons name="add" size={14} color="#64748b" />
+                            </TouchableOpacity>
+                          </View>
+                          {/* Price */}
+                          <View className="flex-1">
+                            <Input
+                              value={item.price}
+                              onChangeText={(v) => updateServiceItem(item.id, { price: v })}
+                              keyboardType="numeric"
+                              placeholder="Цена"
+                              className="py-1 text-xs"
+                            />
+                          </View>
+                          {/* Line total */}
+                          <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
+                            {fmt((parseFloat(item.price) || 0) * item.quantity)}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* ── Discount ─────────────────────────────────────────────────── */}
             <Input
               label="Скидка"
               placeholder="0"
@@ -435,7 +645,7 @@ function CreateSaleModal({
               className="mb-3"
             />
 
-            {/* Payment type */}
+            {/* ── Payment type ─────────────────────────────────────────────── */}
             <Text className="text-xs font-medium text-slate-500 mb-2">
               Способ оплаты
             </Text>
@@ -468,7 +678,7 @@ function CreateSaleModal({
               ))}
             </View>
 
-            {/* Paid */}
+            {/* ── Paid ─────────────────────────────────────────────────────── */}
             <Input
               label="Оплачено"
               placeholder={fmt(total)}
@@ -476,10 +686,19 @@ function CreateSaleModal({
               onChangeText={setPaid}
               keyboardType="numeric"
               hint="Оставьте пустым для полной оплаты"
+              className="mb-3"
+            />
+
+            {/* ── Notes ────────────────────────────────────────────────────── */}
+            <Input
+              label="Заметки"
+              placeholder="Необязательно"
+              value={notes}
+              onChangeText={setNotes}
               className="mb-4"
             />
 
-            {/* Summary */}
+            {/* ── Summary ──────────────────────────────────────────────────── */}
             <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-4 gap-2 mb-6">
               <View className="flex-row justify-between">
                 <Text variant="muted">Подытог</Text>
@@ -525,13 +744,15 @@ function CreateSaleModal({
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* Product picker nested modal */}
-      <ProductPicker
-        visible={pickerVisible}
-        products={products}
-        onSelect={addToCart}
-        onClose={() => setPickerVisible(false)}
-      />
+      {/* Product picker — only rendered for product type */}
+      {saleType === "product" && (
+        <ProductPicker
+          visible={pickerVisible}
+          products={products}
+          onSelect={addToCart}
+          onClose={() => setPickerVisible(false)}
+        />
+      )}
     </Modal>
   );
 }
