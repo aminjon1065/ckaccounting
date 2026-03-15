@@ -1,4 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -23,6 +24,7 @@ import {
   type Sale,
 } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,11 +61,14 @@ interface CartItem {
 
 // ─── Sale card ────────────────────────────────────────────────────────────────
 
-function SaleCard({ item }: { item: Sale }) {
+function SaleCard({ item, onPress }: { item: Sale; onPress: () => void }) {
   const hasDebt = item.debt > 0;
 
   return (
-    <View className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800">
+    <TouchableOpacity
+      onPress={onPress}
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
+    >
       <View className="flex-row items-start justify-between mb-2">
         <View className="flex-1">
           <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
@@ -99,7 +104,7 @@ function SaleCard({ item }: { item: Sale }) {
           <Text variant="small">Скидка: {fmt(item.discount)}</Text>
         )}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -535,6 +540,8 @@ function CreateSaleModal({
 
 export default function SalesScreen() {
   const { token } = useAuth();
+  const { showToast } = useToast();
+  const router = useRouter();
 
   const [sales, setSales] = React.useState<Sale[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -543,10 +550,12 @@ export default function SalesScreen() {
   const [hasMore, setHasMore] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   async function fetchSales(reset = false) {
     if (!token) return;
     const pg = reset ? 1 : page;
+    setError("");
     try {
       const res = await api.sales.list(token, { page: pg });
       if (reset) {
@@ -559,6 +568,7 @@ export default function SalesScreen() {
       setHasMore(res.meta.current_page < res.meta.last_page);
     } catch (e) {
       console.error("Sales fetch error:", e);
+      if (reset) setError("Не удалось загрузить продажи.");
     }
   }
 
@@ -584,6 +594,19 @@ export default function SalesScreen() {
               <Skeleton className="h-20 rounded-2xl" />
             </View>
           ))}
+        </View>
+      ) : error ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
+          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <TouchableOpacity
+            onPress={() => { setLoading(true); fetchSales(true).finally(() => setLoading(false)); }}
+            className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
+          >
+            <MaterialIcons name="refresh" size={18} color="#fff" />
+            <Text className="text-sm font-semibold text-white">Повторить</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -614,7 +637,12 @@ export default function SalesScreen() {
               <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
             ) : null
           }
-          renderItem={({ item }) => <SaleCard item={item} />}
+          renderItem={({ item }) => (
+            <SaleCard
+              item={item}
+              onPress={() => router.push(`/sales/${item.id}`)}
+            />
+          )}
         />
       )}
 
@@ -631,7 +659,10 @@ export default function SalesScreen() {
       <CreateSaleModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(s) => setSales((prev) => [s, ...prev])}
+        onCreated={(s) => {
+          setSales((prev) => [s, ...prev]);
+          showToast({ message: "Продажа записана", variant: "success" });
+        }}
         token={token!}
       />
     </SafeAreaView>

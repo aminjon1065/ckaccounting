@@ -22,7 +22,9 @@ import {
   type Product,
   type Purchase,
 } from "@/lib/api";
+import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -394,7 +396,8 @@ function CreatePurchaseModal({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function PurchasesScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const { showToast } = useToast();
   const router = useRouter();
 
   const [purchases, setPurchases] = React.useState<Purchase[]>([]);
@@ -404,10 +407,12 @@ export default function PurchasesScreen() {
   const [hasMore, setHasMore] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   async function fetchPurchases(reset = false) {
     if (!token) return;
     const pg = reset ? 1 : page;
+    setError("");
     try {
       const res = await api.purchases.list(token, { page: pg });
       if (reset) {
@@ -420,12 +425,25 @@ export default function PurchasesScreen() {
       setHasMore(res.meta.current_page < res.meta.last_page);
     } catch (e) {
       console.error("Purchases fetch error:", e);
+      if (reset) setError("Не удалось загрузить закупки.");
     }
   }
 
   React.useEffect(() => {
     fetchPurchases(true).finally(() => setLoading(false));
   }, [token]);
+
+  if (!can(user?.role, "purchases:view")) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons name="lock" size={48} color="#94a3b8" />
+        <Text variant="h5" className="mt-4 text-center">Нет доступа</Text>
+        <Text variant="muted" className="mt-2 text-center">
+          У вас нет прав для просмотра закупок.
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -448,6 +466,19 @@ export default function PurchasesScreen() {
               <Skeleton className="h-20 rounded-2xl" />
             </View>
           ))}
+        </View>
+      ) : error ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
+          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <TouchableOpacity
+            onPress={() => { setLoading(true); fetchPurchases(true).finally(() => setLoading(false)); }}
+            className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
+          >
+            <MaterialIcons name="refresh" size={18} color="#fff" />
+            <Text className="text-sm font-semibold text-white">Повторить</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -500,7 +531,10 @@ export default function PurchasesScreen() {
       <CreatePurchaseModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(p) => setPurchases((prev) => [p, ...prev])}
+        onCreated={(p) => {
+          setPurchases((prev) => [p, ...prev]);
+          showToast({ message: "Закупка создана", variant: "success" });
+        }}
         token={token!}
       />
     </SafeAreaView>

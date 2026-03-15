@@ -1,0 +1,257 @@
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import * as React from "react";
+import { ScrollView, TouchableOpacity, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
+import { api, type Sale, type SaleItem } from "@/lib/api";
+import { useAuth } from "@/store/auth";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt(n: number) {
+  return Math.round(n)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const PAYMENT_ICONS: Record<string, React.ComponentProps<typeof MaterialIcons>["name"]> = {
+  cash: "payments",
+  card: "credit-card",
+  transfer: "swap-horiz",
+};
+
+const PAYMENT_LABELS: Record<string, string> = {
+  cash: "Наличные",
+  card: "Карта",
+  transfer: "Перевод",
+};
+
+// ─── Sale item row ─────────────────────────────────────────────────────────────
+
+function SaleItemRow({ item }: { item: SaleItem }) {
+  return (
+    <View className="flex-row items-center py-3 border-b border-slate-100 dark:border-zinc-800">
+      <View className="flex-1 mr-3">
+        <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
+          {item.product_name}
+        </Text>
+        <Text variant="small">
+          {fmt(item.price)} × {item.quantity}
+        </Text>
+      </View>
+      <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+        {fmt(item.total)}
+      </Text>
+    </View>
+  );
+}
+
+// ─── Summary row ──────────────────────────────────────────────────────────────
+
+function SummaryRow({
+  label,
+  value,
+  bold,
+  color,
+}: {
+  label: string;
+  value: string;
+  bold?: boolean;
+  color?: string;
+}) {
+  return (
+    <View className="flex-row items-center justify-between py-2">
+      <Text variant={bold ? undefined : "muted"} className={bold ? "text-sm font-semibold text-slate-900 dark:text-slate-50" : undefined}>
+        {label}
+      </Text>
+      <Text
+        className={`text-sm ${bold ? "font-bold text-slate-900 dark:text-slate-50" : "font-medium text-slate-700 dark:text-slate-300"}`}
+        style={color ? { color } : undefined}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+// ─── Sale detail screen ───────────────────────────────────────────────────────
+
+export default function SaleDetailScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { token } = useAuth();
+  const router = useRouter();
+
+  const [sale, setSale] = React.useState<Sale | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!token || !id) return;
+    setError("");
+    api.sales
+      .get(Number(id), token)
+      .then(setSale)
+      .catch((e) => {
+        console.error("Sale fetch error:", e);
+        setError("Не удалось загрузить продажу.");
+      })
+      .finally(() => setLoading(false));
+  }, [token, id]);
+
+  if (loading) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
+        {/* Header skeleton */}
+        <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
+            <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
+          </TouchableOpacity>
+          <Skeleton className="h-5 w-40 rounded-lg" />
+        </View>
+        <View className="flex-1 px-4 pt-4 gap-4">
+          <Skeleton className="h-28 rounded-2xl" />
+          <Skeleton className="h-48 rounded-2xl" />
+          <Skeleton className="h-24 rounded-2xl" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (error || !sale) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons name="receipt-long" size={48} color="#94a3b8" />
+        <Text variant="h5" className="mt-4 text-center">
+          {error || "Продажа не найдена"}
+        </Text>
+        <View className="flex-row gap-3 mt-4">
+          <Button variant="outline" onPress={() => router.back()}>Назад</Button>
+          {!!error && (
+            <Button onPress={() => {
+              setLoading(true);
+              setError("");
+              api.sales.get(Number(id), token!)
+                .then(setSale)
+                .catch(() => setError("Не удалось загрузить продажу."))
+                .finally(() => setLoading(false));
+            }}>
+              Повторить
+            </Button>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const hasDebt = sale.debt > 0;
+  const hasDiscount = sale.discount > 0;
+  const subtotal = sale.total + sale.discount;
+
+  return (
+    <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
+      {/* Header */}
+      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
+          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
+        </TouchableOpacity>
+        <View className="flex-1">
+          <Text variant="h4">
+            {sale.customer_name || "Покупатель"}
+          </Text>
+          <Text variant="muted" className="mt-0.5">{fmtDate(sale.created_at)}</Text>
+        </View>
+        {hasDebt && <Badge variant="destructive">Долг</Badge>}
+      </View>
+
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Payment & status */}
+        <Card className="mb-4">
+          <CardContent className="pt-4">
+            <View className="flex-row items-center gap-2 mb-3">
+              <View className="w-9 h-9 rounded-xl bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
+                <MaterialIcons
+                  name={PAYMENT_ICONS[sale.payment_type] ?? "payments"}
+                  size={20}
+                  color="#0a7ea4"
+                />
+              </View>
+              <View>
+                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                  {PAYMENT_LABELS[sale.payment_type] ?? sale.payment_type}
+                </Text>
+                <Text variant="small">Способ оплаты</Text>
+              </View>
+            </View>
+
+            <Separator className="mb-3" />
+
+            {/* Financial summary */}
+            {hasDiscount && (
+              <SummaryRow label="Подытог" value={fmt(subtotal)} />
+            )}
+            {hasDiscount && (
+              <SummaryRow label="Скидка" value={`− ${fmt(sale.discount)}`} color="#f59e0b" />
+            )}
+            <SummaryRow label="Итого" value={fmt(sale.total)} bold />
+            <SummaryRow
+              label="Оплачено"
+              value={fmt(sale.paid)}
+              color="#22c55e"
+            />
+            {hasDebt && (
+              <SummaryRow
+                label="Остаток долга"
+                value={fmt(sale.debt)}
+                color="#ef4444"
+              />
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Items */}
+        <Card>
+          <CardContent className="pt-3 pb-0">
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                Товары
+              </Text>
+              <Badge variant="secondary">{sale.items.length} поз.</Badge>
+            </View>
+            {sale.items.map((item, idx) => (
+              <SaleItemRow
+                key={item.id ?? idx}
+                item={item}
+              />
+            ))}
+            {/* Total row */}
+            <View className="flex-row items-center justify-between py-3">
+              <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                Сумма
+              </Text>
+              <Text className="text-base font-bold text-primary-500">
+                {fmt(sale.total)}
+              </Text>
+            </View>
+          </CardContent>
+        </Card>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}

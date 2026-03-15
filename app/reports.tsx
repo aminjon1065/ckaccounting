@@ -18,6 +18,7 @@ import {
   type SalesReport,
   type StockReport,
 } from "@/lib/api";
+import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -212,7 +213,7 @@ function StockReportView({ data }: { data: StockReport }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ReportsScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const router = useRouter();
 
   const [activeTab, setActiveTab] = React.useState<ReportTab>("sales");
@@ -270,6 +271,18 @@ export default function ReportsScreen() {
     activeTab === "expenses" ? expensesReport :
     activeTab === "profit" ? profitReport :
     stockReport;
+
+  if (!can(user?.role, "reports:view")) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons name="lock" size={48} color="#94a3b8" />
+        <Text variant="h5" className="mt-4 text-center">Нет доступа</Text>
+        <Text variant="muted" className="mt-2 text-center">
+          У вас нет прав для просмотра отчётов.
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">

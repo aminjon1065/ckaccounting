@@ -1,4 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -22,7 +25,9 @@ import {
   type CreateProductPayload,
   type Product,
 } from "@/lib/api";
+import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -43,12 +48,16 @@ function stockColor(p: Product) {
 
 function ProductCard({
   item,
+  onViewDetail,
   onEdit,
   onDelete,
+  canEdit,
 }: {
   item: Product;
+  onViewDetail: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  canEdit: boolean;
 }) {
   const isLow =
     item.low_stock_alert != null && item.stock_quantity <= item.low_stock_alert;
@@ -56,35 +65,49 @@ function ProductCard({
 
   return (
     <TouchableOpacity
-      onLongPress={() =>
-        Alert.alert(item.name, "Выберите действие", [
-          { text: "Изменить", onPress: onEdit },
-          {
-            text: "Удалить",
-            style: "destructive",
-            onPress: onDelete,
-          },
-          { text: "Отмена", style: "cancel" },
-        ])
+      onPress={onViewDetail}
+      onLongPress={
+        canEdit
+          ? () =>
+              Alert.alert(item.name, "Выберите действие", [
+                { text: "Изменить", onPress: onEdit },
+                { text: "Удалить", style: "destructive", onPress: onDelete },
+                { text: "Отмена", style: "cancel" },
+              ])
+          : undefined
       }
-      onPress={onEdit}
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 shadow-sm border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       {/* Top row */}
-      <View className="flex-row items-start justify-between mb-2">
-        <View className="flex-1 mr-3">
-          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {item.name}
-          </Text>
+      <View className="flex-row items-center gap-3 mb-2">
+        {/* Thumbnail */}
+        {item.photo_url ? (
+          <Image
+            source={{ uri: item.photo_url }}
+            style={{ width: 52, height: 52, borderRadius: 10 }}
+            contentFit="cover"
+          />
+        ) : (
+          <View className="w-13 h-13 rounded-xl bg-slate-100 dark:bg-zinc-800 items-center justify-center">
+            <MaterialIcons name="inventory-2" size={22} color="#94a3b8" />
+          </View>
+        )}
+        {/* Name + meta */}
+        <View className="flex-1">
+          <View className="flex-row items-start justify-between">
+            <Text className="text-base font-semibold text-slate-900 dark:text-slate-50 flex-1 mr-2">
+              {item.name}
+            </Text>
+            {isOut ? (
+              <Badge variant="destructive">Нет в наличии</Badge>
+            ) : isLow ? (
+              <Badge variant="warning">Мало</Badge>
+            ) : null}
+          </View>
           <Text variant="small">
             {[item.code, item.unit].filter(Boolean).join(" · ") || "—"}
           </Text>
         </View>
-        {isOut ? (
-          <Badge variant="destructive">Нет в наличии</Badge>
-        ) : isLow ? (
-          <Badge variant="warning">Мало</Badge>
-        ) : null}
       </View>
 
       {/* Prices row */}
@@ -118,7 +141,7 @@ interface FormModalProps {
   visible: boolean;
   editing: Product | null;
   onClose: () => void;
-  onSaved: (p: Product) => void;
+  onSaved: (p: Product, wasEditing: boolean) => void;
   token: string;
 }
 
@@ -136,6 +159,7 @@ function ProductFormModal({
   const [salePrice, setSalePrice] = React.useState("");
   const [stock, setStock] = React.useState("");
   const [lowAlert, setLowAlert] = React.useState("");
+  const [photoUri, setPhotoUri] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -156,13 +180,50 @@ function ProductFormModal({
       setSalePrice(String(editing.sale_price));
       setStock(String(editing.stock_quantity));
       setLowAlert(editing.low_stock_alert != null ? String(editing.low_stock_alert) : "");
+      setPhotoUri(editing.photo_url ?? null);
     } else if (visible && !editing) {
       setName(""); setCode(""); setUnit("");
       setCostPrice(""); setSalePrice("");
       setStock(""); setLowAlert("");
+      setPhotoUri(null);
     }
     setError("");
   }, [visible, editing]);
+
+  async function pickPhoto() {
+    const options = [
+      {
+        text: "Выбрать из галереи",
+        onPress: async () => {
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: "images" as ImagePicker.MediaType,
+            allowsEditing: true,
+            aspect: [1, 1] as [number, number],
+            quality: 0.7,
+          });
+          if (!result.canceled) setPhotoUri(result.assets[0].uri);
+        },
+      },
+      {
+        text: "Сделать фото",
+        onPress: async () => {
+          const perm = await ImagePicker.requestCameraPermissionsAsync();
+          if (perm.status !== "granted") return;
+          const result = await ImagePicker.launchCameraAsync({
+            allowsEditing: true,
+            aspect: [1, 1] as [number, number],
+            quality: 0.7,
+          });
+          if (!result.canceled) setPhotoUri(result.assets[0].uri);
+        },
+      },
+      ...(photoUri
+        ? [{ text: "Удалить фото", style: "destructive" as const, onPress: () => setPhotoUri(null) }]
+        : []),
+      { text: "Отмена", style: "cancel" as const },
+    ];
+    Alert.alert("Фото товара", "Выберите действие", options);
+  }
 
   async function handleSubmit() {
     setError("");
@@ -184,10 +245,13 @@ function ProductFormModal({
       if (lowAlert.trim() && !isNaN(Number(lowAlert)))
         payload.low_stock_alert = parseFloat(lowAlert);
 
+      // Only send photoUri if it's a new local file (not an existing remote URL)
+      const isNewPhoto = photoUri && !photoUri.startsWith("http");
+
       const saved = editing
-        ? await api.products.update(editing.id, payload, token)
-        : await api.products.create(payload, token);
-      onSaved(saved);
+        ? await api.products.update(editing.id, payload, token, isNewPhoto ? photoUri : undefined)
+        : await api.products.create(payload, token, photoUri ?? undefined);
+      onSaved(saved, !!editing);
       onClose();
     } catch (e) {
       setError(
@@ -237,6 +301,34 @@ function ProductFormModal({
             )}
 
             <View className="gap-4">
+              {/* Photo picker */}
+              <TouchableOpacity
+                onPress={pickPhoto}
+                className="self-center w-28 h-28 rounded-2xl bg-slate-100 dark:bg-zinc-800 items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 dark:border-zinc-600"
+              >
+                {photoUri ? (
+                  <>
+                    <Image
+                      source={{ uri: photoUri }}
+                      style={{ width: "100%", height: "100%" }}
+                      contentFit="cover"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setPhotoUri(null)}
+                      className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 items-center justify-center"
+                      hitSlop={8}
+                    >
+                      <MaterialIcons name="close" size={14} color="#fff" />
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <View className="items-center gap-1">
+                    <MaterialIcons name="add-a-photo" size={28} color="#94a3b8" />
+                    <Text className="text-xs text-slate-400">Фото</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
               <Input
                 label="Название товара"
                 required
@@ -346,7 +438,10 @@ function ProductFormModal({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ProductsScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const { showToast } = useToast();
+  const router = useRouter();
+  const canEdit = can(user?.role, "products:edit");
 
   const [products, setProducts] = React.useState<Product[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -359,6 +454,7 @@ export default function ProductsScreen() {
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
+  const [error, setError] = React.useState("");
 
   async function fetchProducts(
     reset = false,
@@ -366,6 +462,7 @@ export default function ProductsScreen() {
   ) {
     if (!token) return;
     const pg = reset ? 1 : page;
+    setError("");
     try {
       const res = await api.products.list(token, {
         page: pg,
@@ -381,6 +478,7 @@ export default function ProductsScreen() {
       setHasMore(res.meta.current_page < res.meta.last_page);
     } catch (e) {
       console.error("Products fetch error:", e);
+      if (reset) setError("Не удалось загрузить товары.");
     }
   }
 
@@ -418,15 +516,16 @@ export default function ProductsScreen() {
           try {
             await api.products.delete(id, token!);
             setProducts((prev) => prev.filter((p) => p.id !== id));
+            showToast({ message: "Товар удалён", variant: "success" });
           } catch (e) {
-            Alert.alert("Ошибка", "Не удалось удалить товар.");
+            showToast({ message: "Не удалось удалить товар.", variant: "error" });
           }
         },
       },
     ]);
   }
 
-  function handleSaved(saved: Product) {
+  function handleSaved(saved: Product, wasEditing: boolean) {
     setProducts((prev) => {
       const idx = prev.findIndex((p) => p.id === saved.id);
       if (idx >= 0) {
@@ -435,6 +534,10 @@ export default function ProductsScreen() {
         return next;
       }
       return [saved, ...prev];
+    });
+    showToast({
+      message: wasEditing ? "Товар обновлён" : "Товар добавлен",
+      variant: "success",
     });
   }
 
@@ -475,6 +578,19 @@ export default function ProductsScreen() {
             </View>
           ))}
         </View>
+      ) : error ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
+          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <TouchableOpacity
+            onPress={() => { setLoading(true); fetchProducts(true).finally(() => setLoading(false)); }}
+            className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
+          >
+            <MaterialIcons name="refresh" size={18} color="#fff" />
+            <Text className="text-sm font-semibold text-white">Повторить</Text>
+          </TouchableOpacity>
+        </View>
       ) : (
         <FlatList
           data={products}
@@ -504,34 +620,38 @@ export default function ProductsScreen() {
           renderItem={({ item }) => (
             <ProductCard
               item={item}
+              onViewDetail={() => router.push(`/products/${item.id}`)}
               onEdit={() => {
                 setEditing(item);
                 setFormVisible(true);
               }}
               onDelete={() => handleDelete(item.id)}
+              canEdit={canEdit}
             />
           )}
         />
       )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => {
-          setEditing(null);
-          setFormVisible(true);
-        }}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      {canEdit && (
+        <TouchableOpacity
+          onPress={() => {
+            setEditing(null);
+            setFormVisible(true);
+          }}
+          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
+          style={{ elevation: 6 }}
+        >
+          <MaterialIcons name="add" size={28} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       {/* Form modal */}
       <ProductFormModal
         visible={formVisible}
         editing={editing}
         onClose={() => setFormVisible(false)}
-        onSaved={handleSaved}
+        onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
         token={token!}
       />
     </SafeAreaView>

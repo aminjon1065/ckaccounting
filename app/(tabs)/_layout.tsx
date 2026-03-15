@@ -2,6 +2,9 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Tabs } from "expo-router";
 import { Platform } from "react-native";
 
+import { can } from "@/lib/permissions";
+import { useAuth } from "@/store/auth";
+
 const PRIMARY = "#0a7ea4";
 const MUTED = "#94a3b8";
 
@@ -12,6 +15,8 @@ function TabIcon({ name, color }: { name: IconName; color: string }) {
 }
 
 export default function TabLayout() {
+  const { user } = useAuth();
+
   return (
     <Tabs
       screenOptions={{
@@ -63,6 +68,9 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => (
             <TabIcon name="account-balance-wallet" color={color} />
           ),
+          tabBarItemStyle: can(user?.role, "expenses:view")
+            ? undefined
+            : { display: "none" },
         }}
       />
       <Tabs.Screen

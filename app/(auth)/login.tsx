@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Button, Input, Text } from "@/components/ui";
+import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
 export default function LoginScreen() {
@@ -40,9 +41,15 @@ export default function LoginScreen() {
       await signIn({ email: trimmedEmail, password, device_name: Platform.OS });
       // AuthGuard in _layout.tsx handles the redirect automatically
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Ошибка входа. Попробуйте снова.",
-      );
+      if (err instanceof ApiError && err.status === 429) {
+        setError("Слишком много попыток входа. Повторите через несколько минут.");
+      } else if (err instanceof ApiError && err.status === 0) {
+        setError(err.message); // timeout or no connection — already friendly
+      } else {
+        setError(
+          err instanceof Error ? err.message : "Ошибка входа. Попробуйте снова.",
+        );
+      }
     } finally {
       setLoading(false);
     }

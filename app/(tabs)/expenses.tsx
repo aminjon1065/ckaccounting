@@ -21,7 +21,9 @@ import {
   type CreateExpensePayload,
   type Expense,
 } from "@/lib/api";
+import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,7 +98,7 @@ function ExpenseFormModal({
   visible: boolean;
   editing: Expense | null;
   onClose: () => void;
-  onSaved: (e: Expense) => void;
+  onSaved: (e: Expense, wasEditing: boolean) => void;
   token: string;
 }) {
   const [name, setName] = React.useState("");
@@ -149,7 +151,7 @@ function ExpenseFormModal({
       const saved = editing
         ? await api.expenses.update(editing.id, payload, token)
         : await api.expenses.create(payload, token);
-      onSaved(saved);
+      onSaved(saved, !!editing);
       onClose();
     } catch (e) {
       setError(
@@ -278,7 +280,8 @@ function ExpenseFormModal({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ExpensesScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const { showToast } = useToast();
 
   const [expenses, setExpenses] = React.useState<Expense[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -288,10 +291,12 @@ export default function ExpensesScreen() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);
+  const [error, setError] = React.useState("");
 
   async function fetchExpenses(reset = false) {
     if (!token) return;
     const pg = reset ? 1 : page;
+    setError("");
     try {
       const res = await api.expenses.list(token, { page: pg });
       if (reset) {
@@ -304,6 +309,7 @@ export default function ExpensesScreen() {
       setHasMore(res.meta.current_page < res.meta.last_page);
     } catch (e) {
       console.error("Expenses fetch error:", e);
+      if (reset) setError("Не удалось загрузить расходы.");
     }
   }
 
@@ -321,15 +327,16 @@ export default function ExpensesScreen() {
           try {
             await api.expenses.delete(id, token!);
             setExpenses((prev) => prev.filter((e) => e.id !== id));
+            showToast({ message: "Расход удалён", variant: "success" });
           } catch {
-            Alert.alert("Ошибка", "Не удалось удалить расход.");
+            showToast({ message: "Не удалось удалить расход.", variant: "error" });
           }
         },
       },
     ]);
   }
 
-  function handleSaved(saved: Expense) {
+  function handleSaved(saved: Expense, wasEditing: boolean) {
     setExpenses((prev) => {
       const idx = prev.findIndex((e) => e.id === saved.id);
       if (idx >= 0) {
@@ -339,6 +346,22 @@ export default function ExpensesScreen() {
       }
       return [saved, ...prev];
     });
+    showToast({
+      message: wasEditing ? "Расход обновлён" : "Расход добавлен",
+      variant: "success",
+    });
+  }
+
+  if (!can(user?.role, "expenses:view")) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons name="lock" size={48} color="#94a3b8" />
+        <Text variant="h5" className="mt-4 text-center">Нет доступа</Text>
+        <Text variant="muted" className="mt-2 text-center">
+          У вас нет прав для просмотра расходов.
+        </Text>
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -359,6 +382,19 @@ export default function ExpensesScreen() {
               <Skeleton className="h-20 rounded-2xl" />
             </View>
           ))}
+        </View>
+      ) : error ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
+          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <TouchableOpacity
+            onPress={() => { setLoading(true); fetchExpenses(true).finally(() => setLoading(false)); }}
+            className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
+          >
+            <MaterialIcons name="refresh" size={18} color="#fff" />
+            <Text className="text-sm font-semibold text-white">Повторить</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -419,7 +455,7 @@ export default function ExpensesScreen() {
         visible={formVisible}
         editing={editing}
         onClose={() => setFormVisible(false)}
-        onSaved={handleSaved}
+        onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
         token={token!}
       />
     </SafeAreaView>

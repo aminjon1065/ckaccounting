@@ -1,4 +1,5 @@
 import { API_URL, AUTH_ENDPOINTS, TIMEOUTS } from "@/constants/config";
+import { triggerSuspension } from "@/store/suspension";
 
 const BASE_URL = API_URL;
 
@@ -53,6 +54,7 @@ export interface Product {
   sale_price: number;
   stock_quantity: number;
   low_stock_alert: number | null;
+  photo_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -307,10 +309,15 @@ async function request<T>(
   const { token, headers: extraHeaders, ...rest } = options;
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     Accept: "application/json",
     ...(extraHeaders as Record<string, string>),
   };
+
+  // Don't set Content-Type for FormData — React Native sets it automatically
+  // with the correct multipart boundary. For all other bodies use JSON.
+  if (!(rest.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -324,12 +331,21 @@ async function request<T>(
       headers,
       signal: controller.signal,
     });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError("Превышено время ожидания. Проверьте соединение.", 0);
+    }
+    throw new ApiError("Нет соединения с сервером. Проверьте интернет.", 0);
   } finally {
     clearTimeout(timer);
   }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    // Signal the React tree if the shop has been suspended
+    if (res.status === 403) {
+      triggerSuspension();
+    }
     throw new ApiError(
       body.message ?? `Request failed with status ${res.status}`,
       res.status,
@@ -339,7 +355,12 @@ async function request<T>(
 
   if (res.status === 204) return undefined as T;
 
-  const json = await res.json();
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new ApiError("Некорректный ответ сервера.", res.status);
+  }
 
   // Auto-unwrap Laravel envelope: { success, message, data, [meta, links] }
   if (json !== null && typeof json === "object" && "success" in json) {
@@ -369,6 +390,24 @@ function qs(params: Record<string, string | number | undefined>): string {
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
   return parts.length ? `?${parts.join("&")}` : "";
+}
+
+// ─── Product photo FormData builder ───────────────────────────────────────────
+
+function buildProductFormData(
+  payload: Partial<CreateProductPayload>,
+  photoUri: string
+): FormData {
+  const fd = new FormData();
+  Object.entries(payload).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) fd.append(k, String(v));
+  });
+  fd.append("photo", {
+    uri: photoUri,
+    name: "product.jpg",
+    type: "image/jpeg",
+  } as unknown as Blob);
+  return fd;
 }
 
 // ─── API namespace ────────────────────────────────────────────────────────────
@@ -408,17 +447,21 @@ export const api = {
     get: (id: number, token: string) =>
       request<Product>(`/products/${id}`, { token }),
 
-    create: (payload: CreateProductPayload, token: string) =>
+    create: (payload: CreateProductPayload, token: string, photoUri?: string) =>
       request<Product>("/products", {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: photoUri
+          ? buildProductFormData(payload, photoUri)
+          : JSON.stringify(payload),
         token,
       }),
 
-    update: (id: number, payload: Partial<CreateProductPayload>, token: string) =>
+    update: (id: number, payload: Partial<CreateProductPayload>, token: string, photoUri?: string) =>
       request<Product>(`/products/${id}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: photoUri
+          ? buildProductFormData(payload, photoUri)
+          : JSON.stringify(payload),
         token,
       }),
 
@@ -581,6 +624,19 @@ export const api = {
 
     delete: (id: number, token: string) =>
       request<void>(`/users/${id}`, { method: "DELETE", token }),
+  },
+
+  // ── Profile (current user) ─────────────────────────────────────────────────
+  profile: {
+    update: (
+      payload: { name?: string; email?: string; password?: string; current_password?: string },
+      token: string
+    ) =>
+      request<User>("/profile", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+        token,
+      }),
   },
 };
 

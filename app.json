@@ -39,7 +39,14 @@
           }
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Разрешите доступ к фото для загрузки изображения товара.",
+          "cameraPermission": "Разрешите доступ к камере для съёмки фото товара."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

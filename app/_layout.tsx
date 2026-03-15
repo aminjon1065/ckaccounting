@@ -9,21 +9,33 @@ import "react-native-reanimated";
 
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/store/auth";
+import { ToastProvider } from "@/store/toast";
 
 SplashScreen.preventAutoHideAsync();
 
 function AuthGuard() {
-  const { isLoaded, token } = useAuth();
+  const { isLoaded, token, shopSuspended } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
     if (!isLoaded) return;
     SplashScreen.hideAsync();
+
+    // Shop suspended takes priority
+    if (token && shopSuspended) {
+      router.replace("/suspended");
+      return;
+    }
+
     const inAuthGroup = segments[0] === "(auth)";
+    const inSuspendedScreen = segments[0] === "suspended";
+
     if (!token && !inAuthGroup) router.replace("/(auth)/login");
     else if (token && inAuthGroup) router.replace("/(tabs)");
-  }, [isLoaded, token, segments]);
+    else if (!token && inSuspendedScreen) router.replace("/(auth)/login");
+    else if (token && !shopSuspended && inSuspendedScreen) router.replace("/(tabs)");
+  }, [isLoaded, token, shopSuspended, segments]);
 
   return null;
 }
@@ -33,21 +45,27 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <AuthGuard />
-        <Stack>
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="debts" options={{ headerShown: false }} />
-          <Stack.Screen name="purchases" options={{ headerShown: false }} />
-          <Stack.Screen name="reports" options={{ headerShown: false }} />
-          <Stack.Screen
-            name="modal"
-            options={{ presentation: "modal", title: "Modal" }}
-          />
-        </Stack>
-        <StatusBar style="auto" />
-      </ThemeProvider>
+      <ToastProvider>
+        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+          <AuthGuard />
+          <Stack>
+            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="suspended" options={{ headerShown: false }} />
+            <Stack.Screen name="debts" options={{ headerShown: false }} />
+            <Stack.Screen name="purchases" options={{ headerShown: false }} />
+            <Stack.Screen name="reports" options={{ headerShown: false }} />
+            <Stack.Screen name="users" options={{ headerShown: false }} />
+            <Stack.Screen name="sales" options={{ headerShown: false }} />
+            <Stack.Screen name="products" options={{ headerShown: false }} />
+            <Stack.Screen
+              name="modal"
+              options={{ presentation: "modal", title: "Modal" }}
+            />
+          </Stack>
+          <StatusBar style="auto" />
+        </ThemeProvider>
+      </ToastProvider>
     </AuthProvider>
   );
 }

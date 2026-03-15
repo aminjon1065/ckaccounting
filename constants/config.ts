@@ -1,6 +1,7 @@
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-export const BACKEND_URL = "https://techdev.tj";
+export const BACKEND_URL =
+  process.env.EXPO_PUBLIC_API_URL ?? "https://techdev.tj";
 export const API_VERSION = "v1";
 export const API_URL = `${BACKEND_URL}/api/${API_VERSION}`;
 
