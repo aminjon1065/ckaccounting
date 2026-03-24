@@ -126,37 +126,37 @@ function StatsGrid({ stats }: { stats: DashboardStats }) {
       <StatCard
         className="flex-1 basis-[46%]"
         title="Продажи"
-        value={`${fmtMoney(stats.total_sales)} ${DEFAULT_CURRENCY}`}
+        value={`${fmtMoney(stats?.total_sales ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="point-of-sale"
-        trend={stats.sales_change >= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats.sales_change)}
+        trend={(stats?.sales_change ?? 0) >= 0 ? "up" : "down"}
+        trendLabel={fmtChange(stats?.sales_change ?? 0)}
         subtitle="vs прош. период"
         variant="primary"
       />
       <StatCard
         className="flex-1 basis-[46%]"
         title="Расходы"
-        value={`${fmtMoney(stats.total_expenses)} ${DEFAULT_CURRENCY}`}
+        value={`${fmtMoney(stats?.total_expenses ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="account-balance-wallet"
-        trend={stats.expenses_change <= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats.expenses_change)}
+        trend={(stats?.expenses_change ?? 0) <= 0 ? "up" : "down"}
+        trendLabel={fmtChange(stats?.expenses_change ?? 0)}
         subtitle="vs прош. период"
         variant="destructive"
       />
       <StatCard
         className="flex-1 basis-[46%]"
         title="Прибыль"
-        value={`${fmtMoney(stats.profit)} ${DEFAULT_CURRENCY}`}
+        value={`${fmtMoney(stats?.profit ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="trending-up"
-        trend={stats.profit_change >= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats.profit_change)}
+        trend={(stats?.profit_change ?? 0) >= 0 ? "up" : "down"}
+        trendLabel={fmtChange(stats?.profit_change ?? 0)}
         subtitle="vs прош. период"
         variant="success"
       />
       <StatCard
         className="flex-1 basis-[46%]"
         title="Склад"
-        value={`${fmtMoney(stats.inventory_value)} ${DEFAULT_CURRENCY}`}
+        value={`${fmtMoney(stats?.inventory_value ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="inventory"
         trend="neutral"
         subtitle="стоимость склада"
@@ -179,7 +179,7 @@ function StatsGridSkeleton() {
 // ─── Low stock section ────────────────────────────────────────────────────────
 
 function LowStockSection({
-  items,
+  items = [],
   onViewAll,
 }: {
   items: LowStockItem[];
@@ -275,7 +275,7 @@ const PAYMENT_ICON: Record<string, React.ComponentProps<typeof MaterialIcons>["n
 };
 
 function RecentSalesSection({
-  sales,
+  sales = [],
   onViewAll,
 }: {
   sales: RecentSaleItem[];
@@ -464,11 +464,11 @@ export default function DashboardScreen() {
         ) : null}
 
         {/* ── Sales count chip ── */}
-        {!loading && summary && (
+        {!loading && summary?.stats && (
           <View className="flex-row items-center gap-1.5 px-5 mt-3">
             <MaterialIcons name="receipt" size={14} color="#94a3b8" />
             <Text variant="small">
-              {summary.stats.sales_count} продаж за период
+              {summary.stats.sales_count ?? 0} продаж за период
             </Text>
           </View>
         )}

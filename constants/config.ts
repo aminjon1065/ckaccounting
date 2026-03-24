@@ -24,7 +24,7 @@ export const STORAGE_KEYS = {
 
 export const APP_NAME = "CK Accounting";
 
-export const DEFAULT_CURRENCY = "UZS";
+export const DEFAULT_CURRENCY = "SMN";
 
 export const PAGINATION = {
   defaultPageSize: 20,

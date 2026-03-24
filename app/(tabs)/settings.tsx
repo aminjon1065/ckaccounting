@@ -163,11 +163,11 @@ function ShopSettingsModal({
               <Input
                 label="Валюта"
                 required
-                placeholder="напр. UZS"
+                placeholder="напр. SMN"
                 value={currency}
                 onChangeText={setCurrency}
                 autoCapitalize="characters"
-                hint="Код ISO (напр. UZS, USD, EUR)"
+                hint="Код ISO (напр. SMN, USD, EUR)"
               />
               <Input
                 label="Налог (%)"

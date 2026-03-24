@@ -450,7 +450,7 @@ export default function ProductsScreen() {
   const [hasMore, setHasMore] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [search, setSearch] = React.useState("");
-  const searchDebounce = React.useRef<ReturnType<typeof setTimeout>>();
+  const searchDebounce = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
@@ -499,7 +499,7 @@ export default function ProductsScreen() {
 
   function handleSearchChange(text: string) {
     setSearch(text);
-    clearTimeout(searchDebounce.current);
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
     searchDebounce.current = setTimeout(() => {
       setLoading(true);
       fetchProducts(true, text).finally(() => setLoading(false));

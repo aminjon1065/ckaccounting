@@ -10,6 +10,8 @@ import "react-native-reanimated";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -44,28 +46,32 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-          <AuthGuard />
-          <Stack>
-            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="suspended" options={{ headerShown: false }} />
-            <Stack.Screen name="debts" options={{ headerShown: false }} />
-            <Stack.Screen name="purchases" options={{ headerShown: false }} />
-            <Stack.Screen name="reports" options={{ headerShown: false }} />
-            <Stack.Screen name="users" options={{ headerShown: false }} />
-            <Stack.Screen name="sales" options={{ headerShown: false }} />
-            <Stack.Screen name="products" options={{ headerShown: false }} />
-            <Stack.Screen
-              name="modal"
-              options={{ presentation: "modal", title: "Modal" }}
-            />
-          </Stack>
-          <StatusBar style="auto" />
-        </ThemeProvider>
-      </ToastProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <AuthProvider>
+          <ToastProvider>
+            <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+              <AuthGuard />
+              <Stack>
+                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="suspended" options={{ headerShown: false }} />
+                <Stack.Screen name="debts" options={{ headerShown: false }} />
+                <Stack.Screen name="purchases" options={{ headerShown: false }} />
+                <Stack.Screen name="reports" options={{ headerShown: false }} />
+                <Stack.Screen name="users" options={{ headerShown: false }} />
+                <Stack.Screen name="sales" options={{ headerShown: false }} />
+                <Stack.Screen name="products" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="modal"
+                  options={{ presentation: "modal", title: "Modal" }}
+                />
+              </Stack>
+              <StatusBar style="auto" />
+            </ThemeProvider>
+          </ToastProvider>
+        </AuthProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }

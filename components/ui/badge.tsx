@@ -46,7 +46,7 @@ interface BadgeProps extends ViewProps, VariantProps<typeof badgeVariants> {
 function Badge({ className, variant, children, ...props }: BadgeProps) {
   return (
     <View className={cn(badgeVariants({ variant }), className)} {...props}>
-      {typeof children === "string" ? (
+      {React.Children.toArray(children).every(c => typeof c === "string" || typeof c === "number") ? (
         <Text className={cn(badgeTextVariants({ variant }))}>{children}</Text>
       ) : (
         children

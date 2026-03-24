@@ -442,10 +442,11 @@ async function request<T>(
       // Paginated response: meta & links live at the TOP LEVEL alongside data
       // e.g. { success, message, data: [...], meta: { current_page, ... }, links: {...} }
       if ("meta" in json && json.meta != null) {
+        const jsonAny = json as any;
         return {
-          data: json.data ?? [],
-          meta: json.meta,
-          links: json.links ?? {},
+          data: jsonAny.data ?? [],
+          meta: jsonAny.meta,
+          links: jsonAny.links ?? {},
         } as T;
       }
 

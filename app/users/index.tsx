@@ -236,7 +236,7 @@ function CreateUserModal({
                 <Select
                   label="Роль"
                   value={role}
-                  onChange={(v) => setRole(v as "owner" | "seller")}
+                  onValueChange={(v) => setRole(v as "owner" | "seller")}
                   options={roleOptions}
                   placeholder="Выберите роль"
                 />
@@ -371,7 +371,7 @@ function EditUserModal({
               <Select
                 label="Роль"
                 value={role}
-                onChange={(v) => setRole(v as "owner" | "seller")}
+                onValueChange={(v) => setRole(v as "owner" | "seller")}
                 options={roleOptions}
                 placeholder="Выберите роль"
               />
