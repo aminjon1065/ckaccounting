@@ -157,6 +157,7 @@ interface CartItem {
   product: Product;
   quantity: number;
   price: number;
+  markupPercent: string;
 }
 
 // ─── Create purchase modal ────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ function CreatePurchaseModal({
           c.product.id === p.id ? { ...c, quantity: c.quantity + 1 } : c
         );
       }
-      return [...prev, { product: p, quantity: 1, price: p.cost_price }];
+      return [...prev, { product: p, quantity: 1, price: p.cost_price, markupPercent: "" }];
     });
   }
 
@@ -220,6 +221,14 @@ function CreatePurchaseModal({
     );
   }
 
+  function updateMarkup(productId: number, markup: string) {
+    setCart((prev) =>
+      prev.map((c) =>
+        c.product.id === productId ? { ...c, markupPercent: markup } : c
+      )
+    );
+  }
+
   const total = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
   async function handleSubmit() {
@@ -232,6 +241,9 @@ function CreatePurchaseModal({
           product_id: c.product.id,
           quantity: c.quantity,
           price: c.price,
+          ...(c.markupPercent && !isNaN(Number(c.markupPercent))
+            ? { markup_percent: Number(c.markupPercent) }
+            : {}),
         })),
       };
       if (supplierName.trim()) payload.supplier_name = supplierName.trim();
@@ -357,6 +369,23 @@ function CreatePurchaseModal({
                       <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
                         {fmt(c.price * c.quantity)}
                       </Text>
+                    </View>
+                    {/* Markup row */}
+                    <View className="flex-row items-center gap-3 mt-2">
+                      <View className="flex-1">
+                        <Input
+                          value={c.markupPercent}
+                          onChangeText={(v) => updateMarkup(c.product.id, v)}
+                          keyboardType="numeric"
+                          placeholder="Наценка %"
+                          className="py-1 text-xs"
+                        />
+                      </View>
+                      {c.markupPercent !== "" && !isNaN(Number(c.markupPercent)) && (
+                        <Text className="text-xs text-slate-500 dark:text-slate-400">
+                          Продажа: {fmt(c.price * (1 + Number(c.markupPercent) / 100))}
+                        </Text>
+                      )}
                     </View>
                   </View>
                 ))}

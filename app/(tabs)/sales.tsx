@@ -54,10 +54,20 @@ const PAYMENT_LABELS: Record<string, string> = {
 
 // ─── Cart / service types ─────────────────────────────────────────────────────
 
+type PriceMode = "fixed" | "manual" | "auto";
+
+const PRICE_MODE_LABELS: Record<PriceMode, string> = {
+  fixed: "Фикс.",
+  manual: "Вручную",
+  auto: "Наценка",
+};
+
 interface CartItem {
   product: Product;
   quantity: number;
   price: number;
+  priceMode: PriceMode;
+  markupPercent: string;
 }
 
 interface ServiceLineItem {
@@ -264,7 +274,7 @@ function CreateSaleModal({
           c.product.id === p.id ? { ...c, quantity: c.quantity + 1 } : c
         );
       }
-      return [...prev, { product: p, quantity: 1, price: p.sale_price }];
+      return [...prev, { product: p, quantity: 1, price: p.sale_price, priceMode: "fixed" as PriceMode, markupPercent: "" }];
     });
   }
 
@@ -285,6 +295,32 @@ function CreateSaleModal({
           ? { ...c, price: isNaN(Number(price)) ? c.price : Number(price) }
           : c
       )
+    );
+  }
+
+  function updatePriceMode(productId: number, mode: PriceMode) {
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.product.id !== productId) return c;
+        let price = c.price;
+        if (mode === "fixed") price = c.product.sale_price;
+        if (mode === "auto" && c.markupPercent && !isNaN(Number(c.markupPercent))) {
+          price = c.product.cost_price * (1 + Number(c.markupPercent) / 100);
+        }
+        return { ...c, priceMode: mode, price };
+      })
+    );
+  }
+
+  function updateMarkup(productId: number, markup: string) {
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.product.id !== productId) return c;
+        const price = markup && !isNaN(Number(markup))
+          ? c.product.cost_price * (1 + Number(markup) / 100)
+          : c.price;
+        return { ...c, markupPercent: markup, price };
+      })
     );
   }
 
@@ -492,6 +528,28 @@ function CreateSaleModal({
                             <MaterialIcons name="close" size={16} color="#94a3b8" />
                           </TouchableOpacity>
                         </View>
+                        {/* Price mode toggle */}
+                        <View className="flex-row bg-slate-200 dark:bg-zinc-700 rounded-lg p-0.5 mb-2">
+                          {(["fixed", "manual", "auto"] as const).map((m) => (
+                            <TouchableOpacity
+                              key={m}
+                              onPress={() => updatePriceMode(c.product.id, m)}
+                              className={`flex-1 py-1.5 rounded-md items-center ${
+                                c.priceMode === m ? "bg-white dark:bg-zinc-900" : ""
+                              }`}
+                            >
+                              <Text
+                                className={`text-xs font-medium ${
+                                  c.priceMode === m
+                                    ? "text-primary-500"
+                                    : "text-slate-400 dark:text-slate-500"
+                                }`}
+                              >
+                                {PRICE_MODE_LABELS[m]}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
                         <View className="flex-row items-center gap-3">
                           <View className="flex-row items-center gap-2">
                             <TouchableOpacity
@@ -510,15 +568,28 @@ function CreateSaleModal({
                               <MaterialIcons name="add" size={14} color="#64748b" />
                             </TouchableOpacity>
                           </View>
-                          <View className="flex-1">
-                            <Input
-                              value={String(c.price)}
-                              onChangeText={(v) => updatePrice(c.product.id, v)}
-                              keyboardType="numeric"
-                              placeholder="Цена"
-                              className="py-1 text-xs"
-                            />
-                          </View>
+                          {c.priceMode === "auto" ? (
+                            <View className="flex-1">
+                              <Input
+                                value={c.markupPercent}
+                                onChangeText={(v) => updateMarkup(c.product.id, v)}
+                                keyboardType="numeric"
+                                placeholder="Наценка %"
+                                className="py-1 text-xs"
+                              />
+                            </View>
+                          ) : (
+                            <View className="flex-1">
+                              <Input
+                                value={String(c.price)}
+                                onChangeText={(v) => updatePrice(c.product.id, v)}
+                                keyboardType="numeric"
+                                placeholder="Цена"
+                                className="py-1 text-xs"
+                                editable={c.priceMode === "manual"}
+                              />
+                            </View>
+                          )}
                           <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
                             {fmt(c.price * c.quantity)}
                           </Text>

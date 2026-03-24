@@ -143,7 +143,7 @@ export interface Purchase {
 
 export interface CreatePurchasePayload {
   supplier_name?: string;
-  items: Array<{ product_id: number; quantity: number; price: number }>;
+  items: Array<{ product_id: number; quantity: number; price: number; markup_percent?: number }>;
 }
 
 // ─── Sales ────────────────────────────────────────────────────────────────────
@@ -344,87 +344,119 @@ export class ApiError extends Error {
   }
 }
 
+// ─── Retry helper ─────────────────────────────────────────────────────────────
+
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY = 1000;
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  method: string,
+  retries = MAX_RETRIES
+): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof ApiError && attempt < retries) {
+        const isWrite = ["POST", "PATCH", "PUT", "DELETE"].includes(method.toUpperCase());
+        const shouldRetry = err.status === 0 || (!isWrite && err.status >= 500);
+        if (shouldRetry) {
+          await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY * Math.pow(2, attempt)));
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+  throw new ApiError("Retry exhausted", 0);
+}
+
 // ─── Core fetch ───────────────────────────────────────────────────────────────
 
 async function request<T>(
   path: string,
   options: RequestInit & { token?: string } = {}
 ): Promise<T> {
-  const { token, headers: extraHeaders, ...rest } = options;
+  const method = options.method ?? "GET";
 
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    ...(extraHeaders as Record<string, string>),
-  };
+  return withRetry(async () => {
+    const { token, headers: extraHeaders, ...rest } = options;
 
-  // Don't set Content-Type for FormData — React Native sets it automatically
-  // with the correct multipart boundary. For all other bodies use JSON.
-  if (!(rest.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-  }
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      ...(extraHeaders as Record<string, string>),
+    };
 
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUTS.request);
-
-  let res: Response;
-  try {
-    res = await fetch(`${BASE_URL}${path}`, {
-      ...rest,
-      headers,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new ApiError("Превышено время ожидания. Проверьте соединение.", 0);
-    }
-    throw new ApiError("Нет соединения с сервером. Проверьте интернет.", 0);
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    // Signal the React tree if the shop has been suspended
-    if (res.status === 403) {
-      triggerSuspension();
-    }
-    throw new ApiError(
-      body.message ?? `Request failed with status ${res.status}`,
-      res.status,
-      body.errors
-    );
-  }
-
-  if (res.status === 204) return undefined as T;
-
-  let json: unknown;
-  try {
-    json = await res.json();
-  } catch {
-    throw new ApiError("Некорректный ответ сервера.", res.status);
-  }
-
-  // Auto-unwrap Laravel envelope: { success, message, data, [meta, links] }
-  if (json !== null && typeof json === "object" && "success" in json) {
-    // Paginated response: meta & links live at the TOP LEVEL alongside data
-    // e.g. { success, message, data: [...], meta: { current_page, ... }, links: {...} }
-    if ("meta" in json && json.meta != null) {
-      return {
-        data: json.data ?? [],
-        meta: json.meta,
-        links: json.links ?? {},
-      } as T;
+    // Don't set Content-Type for FormData — React Native sets it automatically
+    // with the correct multipart boundary. For all other bodies use JSON.
+    if (!(rest.body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
     }
 
-    // Single-object response: { success, message, data: { ... } }
-    if ("data" in json && json.data !== undefined && json.data !== null) {
-      return json.data as T;
-    }
-  }
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  return json as T;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUTS.request);
+
+    let res: Response;
+    try {
+      res = await fetch(`${BASE_URL}${path}`, {
+        ...rest,
+        headers,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new ApiError("Превышено время ожидания. Проверьте соединение.", 0);
+      }
+      throw new ApiError("Нет соединения с сервером. Проверьте интернет.", 0);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      // Signal the React tree if the shop has been suspended
+      if (res.status === 403) {
+        triggerSuspension();
+      }
+      throw new ApiError(
+        body.message ?? `Request failed with status ${res.status}`,
+        res.status,
+        body.errors
+      );
+    }
+
+    if (res.status === 204) return undefined as T;
+
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch {
+      throw new ApiError("Некорректный ответ сервера.", res.status);
+    }
+
+    // Auto-unwrap Laravel envelope: { success, message, data, [meta, links] }
+    if (json !== null && typeof json === "object" && "success" in json) {
+      // Paginated response: meta & links live at the TOP LEVEL alongside data
+      // e.g. { success, message, data: [...], meta: { current_page, ... }, links: {...} }
+      if ("meta" in json && json.meta != null) {
+        return {
+          data: json.data ?? [],
+          meta: json.meta,
+          links: json.links ?? {},
+        } as T;
+      }
+
+      // Single-object response: { success, message, data: { ... } }
+      if ("data" in json && json.data !== undefined && json.data !== null) {
+        return json.data as T;
+      }
+    }
+
+    return json as T;
+  }, method);
 }
 
 // ─── Query builder ────────────────────────────────────────────────────────────
