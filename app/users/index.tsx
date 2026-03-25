@@ -22,7 +22,7 @@ import {
   Skeleton,
   Text,
 } from "@/components/ui";
-import { api, ApiError, type AppUser, type CreateUserPayload } from "@/lib/api";
+import { api, ApiError, type AppUser, type CreateUserPayload, type Shop } from "@/lib/api";
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
@@ -128,6 +128,8 @@ function CreateUserModal({
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [role, setRole] = React.useState<"owner" | "seller">("seller");
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -144,9 +146,13 @@ function CreateUserModal({
       setEmail("");
       setPassword("");
       setRole("seller");
+      setShopId("");
       setError("");
+      if (isSuperAdmin) {
+        api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+      }
     }
-  }, [visible]);
+  }, [visible, isSuperAdmin, token]);
 
   async function handleSubmit() {
     setError("");
@@ -157,6 +163,11 @@ function CreateUserModal({
       return;
     }
     setSubmitting(true);
+    if (isSuperAdmin && !shopId) {
+      setError("Выберите магазин.");
+      setSubmitting(false);
+      return;
+    }
     try {
       const payload: CreateUserPayload = {
         name: name.trim(),
@@ -164,6 +175,7 @@ function CreateUserModal({
         password,
         role,
       };
+      if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
       const created = await api.users.create(payload, token);
       onCreated(created);
       onClose();
@@ -233,13 +245,23 @@ function CreateUserModal({
                 secureTextEntry
               />
               {isSuperAdmin && (
-                <Select
-                  label="Роль"
-                  value={role}
-                  onValueChange={(v) => setRole(v as "owner" | "seller")}
-                  options={roleOptions}
-                  placeholder="Выберите роль"
-                />
+                <>
+                  <Select
+                    label="Магазин"
+                    required
+                    value={shopId}
+                    onValueChange={setShopId}
+                    options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                    placeholder="Выберите магазин"
+                  />
+                  <Select
+                    label="Роль"
+                    value={role}
+                    onValueChange={(v) => setRole(v as "owner" | "seller")}
+                    options={roleOptions}
+                    placeholder="Выберите роль"
+                  />
+                </>
               )}
             </View>
 
@@ -279,6 +301,8 @@ function EditUserModal({
   const [name, setName] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [role, setRole] = React.useState<"owner" | "seller">("seller");
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -293,10 +317,14 @@ function EditUserModal({
     if (visible && editingUser) {
       setName(editingUser.name);
       setRole(editingUser.role as "owner" | "seller");
+      setShopId(editingUser.shop_id ? String(editingUser.shop_id) : "");
       setPassword("");
       setError("");
+      if (isSuperAdmin) {
+        api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+      }
     }
-  }, [visible, editingUser]);
+  }, [visible, editingUser, isSuperAdmin, token]);
 
   async function handleSubmit() {
     setError("");
@@ -306,8 +334,14 @@ function EditUserModal({
       return;
     }
     setSubmitting(true);
+    if (isSuperAdmin && !shopId) {
+      setError("Выберите магазин.");
+      setSubmitting(false);
+      return;
+    }
     try {
       const payload: Partial<CreateUserPayload> = { name: name.trim(), role };
+      if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
       if (password) payload.password = password;
       const updated = await api.users.update(editingUser!.id, payload, token);
       onSaved(updated);
@@ -368,6 +402,16 @@ function EditUserModal({
                 secureTextEntry
                 hint="Минимум 8 символов"
               />
+              {isSuperAdmin && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              )}
               <Select
                 label="Роль"
                 value={role}
@@ -416,7 +460,7 @@ export default function UsersScreen() {
     }
     api.users
       .list(token)
-      .then(setUsers)
+      .then((res: any) => setUsers(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
       .catch((e) => console.error("Users fetch error:", e))
       .finally(() => setLoading(false));
   }, [token, hasAccess]);
@@ -425,7 +469,7 @@ export default function UsersScreen() {
     if (!token) return Promise.resolve();
     return api.users
       .list(token)
-      .then(setUsers)
+      .then((res: any) => setUsers(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
       .catch((e) => console.error("Users fetch error:", e));
   }
 

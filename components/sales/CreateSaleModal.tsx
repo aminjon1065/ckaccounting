@@ -2,8 +2,9 @@ import * as React from "react";
 import { Modal, TouchableOpacity, View, FlatList, TextInput as RNTextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { Text, Button, Input, Skeleton, Badge } from "@/components/ui";
-import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType } from "@/lib/api";
+import { Text, Button, Input, Skeleton, Badge, Select } from "@/components/ui";
+import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
+import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
@@ -19,7 +20,12 @@ export function CreateSaleModal({
   onCreated: (s: Sale) => void;
   token: string;
 }) {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
+
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
 
   // Product sale state
   const [products, setProducts] = React.useState<Product[]>([]);
@@ -39,7 +45,14 @@ export function CreateSaleModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  // Reset everything when modal opens
+  // Load Shops for SuperAdmin
+  React.useEffect(() => {
+    if (visible && isSuperAdmin) {
+      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    }
+  }, [visible, isSuperAdmin, token]);
+
+  // Reset & load valid products
   React.useEffect(() => {
     if (!visible) return;
     setSaleType("product");
@@ -48,11 +61,28 @@ export function CreateSaleModal({
     setPaid(""); setNotes("");
     setPaymentType("cash"); setError("");
     serviceIdRef.current = 0;
-    api.products
-      .list(token, { limit: 100 })
-      .then((res) => setProducts(res.data))
-      .catch(() => {});
-  }, [visible]);
+    setShopId("");
+    if (!isSuperAdmin) {
+      api.products
+        .list(token, { limit: 100 })
+        .then((res: any) => setProducts(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
+        .catch(() => {});
+    } else {
+      setProducts([]);
+    }
+  }, [visible, isSuperAdmin, token]);
+
+  React.useEffect(() => {
+    if (visible && isSuperAdmin && shopId) {
+      api.products
+        .list(token, { limit: 100, shop_id: Number(shopId) })
+        .then((res: any) => setProducts(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
+        .catch(() => {});
+    } else if (visible && isSuperAdmin && !shopId) {
+      setProducts([]);
+      setCart([]);
+    }
+  }, [visible, isSuperAdmin, shopId, token]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
@@ -150,6 +180,8 @@ export function CreateSaleModal({
   async function handleSubmit() {
     setError("");
 
+    if (isSuperAdmin && !shopId) { setError("Выберите магазин."); return; }
+
     if (saleType === "product") {
       if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
     } else {
@@ -177,6 +209,7 @@ export function CreateSaleModal({
                 quantity: s.quantity,
                 price: parseFloat(s.price) || 0,
               })),
+        shop_id: isSuperAdmin && shopId ? Number(shopId) : undefined,
       };
       if (customerName.trim()) payload.customer_name = customerName.trim();
       if (discountVal > 0) payload.discount = discountVal;
@@ -232,6 +265,20 @@ export function CreateSaleModal({
               </View>
             )}
 
+            {/* ── Shop Selector for SuperAdmin ── */}
+            {isSuperAdmin && (
+              <View className="mb-4">
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              </View>
+            )}
+
             {/* ── Sale type toggle ─────────────────────────────────────────── */}
             <View className="flex-row bg-slate-100 dark:bg-zinc-800 rounded-xl p-1 mb-5">
               {(["product", "service"] as const).map((t) => (
@@ -279,7 +326,10 @@ export function CreateSaleModal({
                     Товары ({cart.length})
                   </Text>
                   <TouchableOpacity
-                    onPress={() => setPickerVisible(true)}
+                    onPress={() => {
+                      if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
+                      setPickerVisible(true);
+                    }}
                     className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
                   >
                     <MaterialIcons name="add" size={16} color="#0a7ea4" />

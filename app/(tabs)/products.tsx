@@ -18,12 +18,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Badge, Button, Input, Skeleton, Text } from "@/components/ui";
+import { Badge, Button, Input, Select, Skeleton, Text } from "@/components/ui";
 import {
   api,
   ApiError,
   type CreateProductPayload,
   type Product,
+  type Shop,
 } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
@@ -143,6 +144,7 @@ interface FormModalProps {
   onClose: () => void;
   onSaved: (p: Product, wasEditing: boolean) => void;
   token: string;
+  isSuperAdmin: boolean;
 }
 
 function ProductFormModal({
@@ -151,7 +153,11 @@ function ProductFormModal({
   onClose,
   onSaved,
   token,
+  isSuperAdmin,
 }: FormModalProps) {
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
+
   const [name, setName] = React.useState("");
   const [code, setCode] = React.useState("");
   const [unit, setUnit] = React.useState("");
@@ -172,6 +178,12 @@ function ProductFormModal({
   const alertRef = React.useRef<RNTextInput>(null);
 
   React.useEffect(() => {
+    if (visible && isSuperAdmin) {
+      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    }
+  }, [visible, isSuperAdmin, token]);
+
+  React.useEffect(() => {
     if (visible && editing) {
       setName(editing.name);
       setCode(editing.code ?? "");
@@ -181,11 +193,13 @@ function ProductFormModal({
       setStock(String(editing.stock_quantity));
       setLowAlert(editing.low_stock_alert != null ? String(editing.low_stock_alert) : "");
       setPhotoUri(editing.photo_url ?? null);
+      setShopId(editing.shop_id ? String(editing.shop_id) : "");
     } else if (visible && !editing) {
       setName(""); setCode(""); setUnit("");
       setCostPrice(""); setSalePrice("");
       setStock(""); setLowAlert("");
       setPhotoUri(null);
+      setShopId("");
     }
     setError("");
   }, [visible, editing]);
@@ -231,6 +245,7 @@ function ProductFormModal({
     if (!costPrice || isNaN(Number(costPrice))) { setError("Некорректная цена закупки."); return; }
     if (!salePrice || isNaN(Number(salePrice))) { setError("Некорректная цена продажи."); return; }
     if (!stock || isNaN(Number(stock))) { setError("Некорректное количество."); return; }
+    if (isSuperAdmin && !editing && !shopId) { setError("Выберите магазин."); return; }
 
     setSubmitting(true);
     try {
@@ -244,6 +259,9 @@ function ProductFormModal({
       if (unit.trim()) payload.unit = unit.trim();
       if (lowAlert.trim() && !isNaN(Number(lowAlert)))
         payload.low_stock_alert = parseFloat(lowAlert);
+      if (isSuperAdmin && shopId && !editing) {
+        payload.shop_id = parseInt(shopId, 10);
+      }
 
       // Only send photoUri if it's a new local file (not an existing remote URL)
       const isNewPhoto = photoUri && !photoUri.startsWith("http");
@@ -301,6 +319,16 @@ function ProductFormModal({
             )}
 
             <View className="gap-4">
+              {isSuperAdmin && !editing && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              )}
               {/* Photo picker */}
               <TouchableOpacity
                 onPress={pickPhoto}
@@ -442,6 +470,7 @@ export default function ProductsScreen() {
   const { showToast } = useToast();
   const router = useRouter();
   const canEdit = can(user?.role, "products:edit");
+  const isSuperAdmin = user?.role === "super_admin";
 
   const [products, setProducts] = React.useState<Product[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -653,6 +682,7 @@ export default function ProductsScreen() {
         onClose={() => setFormVisible(false)}
         onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
         token={token!}
+        isSuperAdmin={isSuperAdmin}
       />
     </SafeAreaView>
   );

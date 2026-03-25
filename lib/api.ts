@@ -43,10 +43,26 @@ export interface Paginated<T> {
   meta: PaginatedMeta;
 }
 
+// ─── Shops ────────────────────────────────────────────────────────────────────
+
+export interface Shop {
+  id: number;
+  name: string;
+  is_active: boolean;
+  owner_id?: number | null;
+  created_at: string;
+}
+
+export interface CreateShopPayload {
+  name: string;
+  is_active?: boolean;
+}
+
 // ─── Products ─────────────────────────────────────────────────────────────────
 
 export interface Product {
   id: number;
+  shop_id: number;
   name: string;
   code: string | null;
   unit: string | null;
@@ -67,6 +83,7 @@ export interface CreateProductPayload {
   sale_price: number;
   stock_quantity: number;
   low_stock_alert?: number;
+  shop_id?: number;
 }
 
 // ─── Expenses ─────────────────────────────────────────────────────────────────
@@ -197,6 +214,7 @@ export interface CreateSalePayload {
   discount?: number;
   paid?: number;
   notes?: string;
+  shop_id?: number;
   payment_type: "cash" | "card" | "transfer";
   items: Array<ProductSaleItemPayload | ServiceSaleItemPayload>;
 }
@@ -222,8 +240,9 @@ export interface AppUser {
 export interface CreateUserPayload {
   name: string;
   email: string;
-  password: string;
-  role: "owner" | "seller";
+  password?: string;
+  role: "owner" | "seller" | "super_admin";
+  shop_id?: number | null;
 }
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
@@ -506,18 +525,21 @@ export const api = {
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
   dashboard: {
-    summary: (period: DashboardPeriod, token: string) =>
-      request<DashboardSummary>(`/dashboard?period=${period}`, { token }),
+    summary: (period: DashboardPeriod, token: string, shopId?: number | null) =>
+      request<DashboardSummary>(
+        `/dashboard?period=${period}${shopId ? `&shop_id=${shopId}` : ""}`,
+        { token }
+      ),
   },
 
   // ── Products ──────────────────────────────────────────────────────────────
   products: {
     list: (
       token: string,
-      params: { page?: number; limit?: number; search?: string } = {}
+      params: { page?: number; limit?: number; search?: string; shop_id?: number } = {}
     ) =>
       request<Paginated<Product>>(
-        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search })}`,
+        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id })}`,
         { token }
       ),
 
@@ -704,6 +726,35 @@ export const api = {
 
     delete: (id: number, token: string) =>
       request<void>(`/users/${id}`, { method: "DELETE", token }),
+  },
+
+  // ─── Shops ──────────────────────────────────────────────────────────────────
+  shops: {
+    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+      request<Paginated<Shop>>(
+        `/shops${qs({ page: params.page, limit: params.limit ?? 100 })}`,
+        { token }
+      ),
+
+    get: (id: number, token: string) =>
+      request<Shop>(`/shops/${id}`, { token }),
+
+    create: (payload: CreateShopPayload, token: string) =>
+      request<Shop>("/shops", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        token,
+      }),
+
+    update: (id: number, payload: Partial<CreateShopPayload>, token: string) =>
+      request<Shop>(`/shops/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+        token,
+      }),
+
+    delete: (id: number, token: string) =>
+      request<void>(`/shops/${id}`, { method: "DELETE", token }),
   },
 
   // ── Profile (current user) ─────────────────────────────────────────────────

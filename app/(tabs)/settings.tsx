@@ -447,6 +447,20 @@ export default function SettingsScreen() {
           </Card>
         )}
 
+        {/* SuperAdmin-only */}
+        {user?.role === "super_admin" && (
+          <Card>
+            <CardContent className="p-0 pt-0 pb-0">
+              <SettingsRow
+                icon="store"
+                label="Магазины"
+                description="Управление всеми магазинами"
+                onPress={() => router.push("/shops")}
+              />
+            </CardContent>
+          </Card>
+        )}
+
         {/* Sign out */}
         <Card>
           <CardContent className="p-0 pt-0 pb-0">

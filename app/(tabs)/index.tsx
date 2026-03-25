@@ -22,6 +22,7 @@ import {
   Skeleton,
   StatCard,
   Text,
+  Select,
 } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import {
@@ -31,6 +32,7 @@ import {
   type DashboardSummary,
   type LowStockItem,
   type RecentSaleItem,
+  type Shop,
 } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
@@ -382,10 +384,20 @@ export default function DashboardScreen() {
   const router = useRouter();
 
   const [period, setPeriod] = React.useState<DashboardPeriod>("month");
+  const [activeShopId, setActiveShopId] = React.useState<number | null>(null);
+  const [shops, setShops] = React.useState<Shop[]>([]);
   const [summary, setSummary] = React.useState<DashboardSummary | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const isSuperAdmin = user?.role === "super_admin";
+
+  React.useEffect(() => {
+    if (isSuperAdmin && token) {
+      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    }
+  }, [isSuperAdmin, token]);
 
   const fetchDashboard = React.useCallback(
     async (isRefresh = false) => {
@@ -393,15 +405,15 @@ export default function DashboardScreen() {
       isRefresh ? setRefreshing(true) : setLoading(true);
       setError(null);
       try {
-        const summary = await api.dashboard.summary(period, token);
-        setSummary(summary);
+        const sum = await api.dashboard.summary(period, token, activeShopId);
+        setSummary(sum);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Ошибка загрузки данных");
       } finally {
         isRefresh ? setRefreshing(false) : setLoading(false);
       }
     },
-    [token, period]
+    [token, period, activeShopId]
   );
 
   React.useEffect(() => {
@@ -436,12 +448,24 @@ export default function DashboardScreen() {
         </View>
 
         {/* ── Shop name chip ── */}
-        {user?.shop_name && (
+        {isSuperAdmin ? (
+          <View className="px-5 pb-2 pt-1">
+            <Select
+              value={activeShopId ? String(activeShopId) : ""}
+              onValueChange={(v) => setActiveShopId(v ? Number(v) : null)}
+              options={[
+                { label: "Все магазины", value: "" },
+                ...shops.map(s => ({ label: s.name, value: String(s.id) }))
+              ]}
+              placeholder="Все магазины"
+            />
+          </View>
+        ) : user?.shop_name ? (
           <View className="flex-row items-center gap-1.5 px-5 pb-1">
             <MaterialIcons name="store" size={14} color="#94a3b8" />
             <Text variant="small">{user.shop_name}</Text>
           </View>
-        )}
+        ) : null}
 
         {/* ── Period filter ── */}
         <PeriodFilter value={period} onChange={setPeriod} />
