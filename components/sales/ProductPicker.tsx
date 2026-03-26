@@ -5,6 +5,7 @@ import { Text } from "@/components/ui";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { type Product } from "@/lib/api";
 import { fmt } from "./helpers";
+import { ScannerOverlay } from "../ScannerOverlay";
 
 export function ProductPicker({
   visible,
@@ -18,6 +19,7 @@ export function ProductPicker({
   onClose: () => void;
 }) {
   const [search, setSearch] = React.useState("");
+  const [showScanner, setShowScanner] = React.useState(false);
 
   const filtered = search
     ? products.filter(
@@ -46,17 +48,34 @@ export function ProductPicker({
         </View>
 
         <View className="px-4 py-3 border-b border-slate-100 dark:border-zinc-800">
-          <View className="flex-row items-center bg-slate-100 dark:bg-zinc-800 rounded-xl px-3 gap-2">
-            <MaterialIcons name="search" size={18} color="#94a3b8" />
-            <RNTextInput
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Поиск…"
-              placeholderTextColor="#94a3b8"
-              className="flex-1 py-2.5 text-sm text-slate-900 dark:text-slate-50"
-            />
+          <View className="flex-row items-center gap-2">
+            <View className="flex-1 flex-row items-center bg-slate-100 dark:bg-zinc-800 rounded-xl px-3 gap-2">
+              <MaterialIcons name="search" size={18} color="#94a3b8" />
+              <RNTextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Поиск по названию или штрих-коду…"
+                placeholderTextColor="#94a3b8"
+                className="flex-1 py-2.5 text-sm text-slate-900 dark:text-slate-50"
+              />
+            </View>
+            <TouchableOpacity
+              onPress={() => setShowScanner(true)}
+              className="w-10 h-10 bg-primary-100 dark:bg-blue-900/30 rounded-xl items-center justify-center"
+            >
+              <MaterialIcons name="qr-code-scanner" size={20} color="#0a7ea4" />
+            </TouchableOpacity>
           </View>
         </View>
+
+        <ScannerOverlay
+          visible={showScanner}
+          onClose={() => setShowScanner(false)}
+          onScan={(data) => {
+            setSearch(data);
+            setShowScanner(false);
+          }}
+        />
 
         <FlatList
           data={filtered}

@@ -8,6 +8,8 @@ import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
+import { useSyncStore } from "@/store/syncStore";
+import { useToast } from "@/store/toast";
 
 export function CreateSaleModal({
   visible,
@@ -23,6 +25,8 @@ export function CreateSaleModal({
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
+  const { addPendingSale } = useSyncStore();
+  const { showToast } = useToast();
 
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
@@ -191,36 +195,42 @@ export function CreateSaleModal({
       }
     }
 
+    const payload: CreateSalePayload = {
+      type: saleType,
+      payment_type: paymentType,
+      items:
+        saleType === "product"
+          ? cart.map((c) => ({
+              product_id: c.product.id,
+              quantity: c.quantity,
+              price: c.price,
+            }))
+          : serviceItems.map((s) => ({
+              name: s.name.trim(),
+              unit: s.unit.trim() || undefined,
+              quantity: s.quantity,
+              price: parseFloat(s.price) || 0,
+            })),
+      shop_id: isSuperAdmin && shopId ? Number(shopId) : undefined,
+    };
+    if (customerName.trim()) payload.customer_name = customerName.trim();
+    if (discountVal > 0) payload.discount = discountVal;
+    if (paidVal > 0) payload.paid = paidVal;
+    if (notes.trim()) payload.notes = notes.trim();
+
     setSubmitting(true);
     try {
-      const payload: CreateSalePayload = {
-        type: saleType,
-        payment_type: paymentType,
-        items:
-          saleType === "product"
-            ? cart.map((c) => ({
-                product_id: c.product.id,
-                quantity: c.quantity,
-                price: c.price,
-              }))
-            : serviceItems.map((s) => ({
-                name: s.name.trim(),
-                unit: s.unit.trim() || undefined,
-                quantity: s.quantity,
-                price: parseFloat(s.price) || 0,
-              })),
-        shop_id: isSuperAdmin && shopId ? Number(shopId) : undefined,
-      };
-      if (customerName.trim()) payload.customer_name = customerName.trim();
-      if (discountVal > 0) payload.discount = discountVal;
-      if (paidVal > 0) payload.paid = paidVal;
-      if (notes.trim()) payload.notes = notes.trim();
-
       const created = await api.sales.create(payload, token);
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        addPendingSale(payload);
+        showToast({ message: "Нет сети. Продажа сохранена в очередь.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
