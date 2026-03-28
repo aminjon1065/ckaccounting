@@ -70,7 +70,7 @@ function AuthGuard() {
 }
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
+  const { colorScheme } = useColorScheme();
 
   return (
     <SafeAreaProvider>
@@ -90,6 +90,7 @@ export default function RootLayout() {
                 <Stack.Screen name="users" options={{ headerShown: false }} />
                 <Stack.Screen name="sales" options={{ headerShown: false }} />
                 <Stack.Screen name="products" options={{ headerShown: false }} />
+                <Stack.Screen name="shops" options={{ headerShown: false }} />
                 <Stack.Screen
                   name="modal"
                   options={{ presentation: "modal", title: "Modal" }}

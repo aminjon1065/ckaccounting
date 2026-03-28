@@ -323,6 +323,7 @@ export default function ShopsScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingShop, setEditingShop] = React.useState<Shop | null>(null);
+  const [activeTab, setActiveTab] = React.useState<"all" | "active" | "suspended">("active");
 
   const isSuperAdmin = user?.role === "super_admin";
 
@@ -383,6 +384,12 @@ export default function ShopsScreen() {
     );
   }
 
+  const displayedShops = React.useMemo(() => {
+    if (activeTab === "all") return shops;
+    if (activeTab === "active") return shops.filter(s => s.is_active);
+    return shops.filter(s => !s.is_active);
+  }, [shops, activeTab]);
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
@@ -405,8 +412,28 @@ export default function ShopsScreen() {
           ))}
         </View>
       ) : (
-        <FlatList
-          data={shops}
+        <>
+          {/* Tabs */}
+          <View className="flex-row px-5 py-2 gap-2">
+            {(["active", "suspended", "all"] as const).map(t => {
+              const labels = { active: "Активные", suspended: "Приостановленные", all: "Все" };
+              const isTabActive = activeTab === t;
+              return (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => setActiveTab(t)}
+                  className={`px-4 py-1.5 rounded-full border ${isTabActive ? 'bg-primary-500 border-primary-500' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700'}`}
+                >
+                  <Text className={`text-sm font-medium ${isTabActive ? 'text-white' : 'text-slate-600 dark:text-slate-400'}`}>
+                    {labels[t]}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          
+          <FlatList
+            data={displayedShops}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
@@ -430,6 +457,7 @@ export default function ShopsScreen() {
             />
           )}
         />
+        </>
       )}
 
       {/* FAB */}

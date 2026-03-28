@@ -3,32 +3,20 @@ import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  ScrollView,
-  TextInput as RNTextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Badge, Button, Input, Skeleton, Text } from "@/components/ui";
-import {
-  api,
-  ApiError,
-  type CreateSalePayload,
-  type Product,
-  type Sale,
-  type SaleType,
-} from "@/lib/api";
+import { Skeleton, Text } from "@/components/ui";
+import { type Sale } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
 import { SaleCard } from "@/components/sales/SaleCard";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
+import { useSales } from "@/hooks/useSales";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -37,38 +25,19 @@ export default function SalesScreen() {
   const { showToast } = useToast();
   const router = useRouter();
 
-  const [sales, setSales] = React.useState<Sale[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [page, setPage] = React.useState(1);
-  const [hasMore, setHasMore] = React.useState(true);
-  const [loadingMore, setLoadingMore] = React.useState(false);
+  const {
+    sales,
+    setSales,
+    loading,
+    refreshing,
+    loadingMore,
+    error,
+    handleRefresh,
+    handleLoadMore,
+    retryFetch,
+  } = useSales({ token });
+
   const [createVisible, setCreateVisible] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  async function fetchSales(reset = false) {
-    if (!token) return;
-    const pg = reset ? 1 : page;
-    setError("");
-    try {
-      const res = await api.sales.list(token, { page: pg });
-      if (reset) {
-        setSales(res.data);
-        setPage(2);
-      } else {
-        setSales((prev) => [...prev, ...res.data]);
-        setPage(pg + 1);
-      }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e) {
-      console.error("Sales fetch error:", e);
-      if (reset) setError("Не удалось загрузить продажи.");
-    }
-  }
-
-  React.useEffect(() => {
-    fetchSales(true).finally(() => setLoading(false));
-  }, [token]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -95,7 +64,7 @@ export default function SalesScreen() {
           <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
           <Text variant="muted" className="mt-1 text-center">{error}</Text>
           <TouchableOpacity
-            onPress={() => { setLoading(true); fetchSales(true).finally(() => setLoading(false)); }}
+            onPress={retryFetch}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -108,15 +77,8 @@ export default function SalesScreen() {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            fetchSales(true).finally(() => setRefreshing(false));
-          }}
-          onEndReached={() => {
-            if (!hasMore || loadingMore) return;
-            setLoadingMore(true);
-            fetchSales(false).finally(() => setLoadingMore(false));
-          }}
+          onRefresh={handleRefresh}
+          onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
