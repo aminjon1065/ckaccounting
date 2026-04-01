@@ -97,6 +97,11 @@ export function ProductCard({
           <Text className="text-sm font-semibold text-primary-500">
             {fmt(item.sale_price)}
           </Text>
+          {item.bulk_price != null && item.bulk_threshold != null && (
+            <Text className="text-xs text-primary-600/80 mt-0.5">
+              Опт: {fmt(item.bulk_price)} (от {item.bulk_threshold})
+            </Text>
+          )}
         </View>
         <View className="flex-1 items-end">
           <Text variant="small">Остаток</Text>

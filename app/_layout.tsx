@@ -18,34 +18,11 @@ import { ToastProvider } from "@/store/toast";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/error-boundary";
 import * as Network from "expo-network";
-import { useSyncStore } from "@/store/syncStore";
+import { SyncProvider } from "@/lib/sync/SyncContext";
 
 SplashScreen.preventAutoHideAsync();
 
-function SyncGuard() {
-  const { token, isLoaded } = useAuth();
-  const syncSales = useSyncStore((s) => s.syncSales);
-
-  useEffect(() => {
-    if (!isLoaded || !token) return;
-
-    // Check on mount
-    Network.getNetworkStateAsync().then((state) => {
-      if (state.isConnected) syncSales(token);
-    });
-
-    // Or poll every 30 seconds to flush queue
-    const interval = setInterval(() => {
-      Network.getNetworkStateAsync().then((state) => {
-        if (state.isConnected) syncSales(token);
-      });
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [isLoaded, token, syncSales]);
-
-  return null;
-}
+// Removed SyncGuard in favor of SyncProvider and Background syncing.
 
 function AuthGuard() {
   const { isLoaded, token, shopSuspended } = useAuth();
@@ -84,7 +61,7 @@ export default function RootLayout() {
           <ToastProvider>
             <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
               <AuthGuard />
-              <SyncGuard />
+              <SyncProvider>
               <Stack>
                 <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -101,6 +78,7 @@ export default function RootLayout() {
                   options={{ presentation: "modal", title: "Modal" }}
                 />
               </Stack>
+              </SyncProvider>
               <StatusBar style="auto" />
             </ThemeProvider>
           </ToastProvider>

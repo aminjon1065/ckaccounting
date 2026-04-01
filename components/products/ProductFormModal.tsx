@@ -48,6 +48,8 @@ export function ProductFormModal({
   const [unit, setUnit] = React.useState("");
   const [costPrice, setCostPrice] = React.useState("");
   const [salePrice, setSalePrice] = React.useState("");
+  const [bulkPrice, setBulkPrice] = React.useState("");
+  const [bulkThreshold, setBulkThreshold] = React.useState("");
   const [stock, setStock] = React.useState("");
   const [lowAlert, setLowAlert] = React.useState("");
   const [photoUri, setPhotoUri] = React.useState<string | null>(null);
@@ -75,6 +77,8 @@ export function ProductFormModal({
       setUnit(editing.unit ?? "");
       setCostPrice(String(editing.cost_price));
       setSalePrice(String(editing.sale_price));
+      setBulkPrice(editing.bulk_price != null ? String(editing.bulk_price) : "");
+      setBulkThreshold(editing.bulk_threshold != null ? String(editing.bulk_threshold) : "");
       setStock(String(editing.stock_quantity));
       setLowAlert(editing.low_stock_alert != null ? String(editing.low_stock_alert) : "");
       setPhotoUri(editing.photo_url ?? null);
@@ -82,6 +86,7 @@ export function ProductFormModal({
     } else if (visible && !editing) {
       setName(""); setCode(""); setUnit("");
       setCostPrice(""); setSalePrice("");
+      setBulkPrice(""); setBulkThreshold("");
       setStock(""); setLowAlert("");
       setPhotoUri(null);
       setShopId("");
@@ -140,6 +145,8 @@ export function ProductFormModal({
         sale_price: parseFloat(salePrice),
         stock_quantity: parseFloat(stock),
       };
+      if (bulkPrice.trim() && !isNaN(Number(bulkPrice))) payload.bulk_price = parseFloat(bulkPrice);
+      if (bulkThreshold.trim() && !isNaN(Number(bulkThreshold))) payload.bulk_threshold = parseInt(bulkThreshold, 10);
       if (code.trim()) payload.code = code.trim();
       if (unit.trim()) payload.unit = unit.trim();
       if (lowAlert.trim() && !isNaN(Number(lowAlert)))

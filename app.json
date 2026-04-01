@@ -53,7 +53,8 @@
           "cameraPermission": "Разрешите доступ к камере для сканирования штрихкодов."
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,

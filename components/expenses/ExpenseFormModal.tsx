@@ -13,6 +13,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense } from "@/lib/api";
+import { queueSyncAction } from "@/lib/db";
+import { useToast } from "@/store/toast";
 
 export function ExpenseFormModal({
   visible,
@@ -33,6 +35,7 @@ export function ExpenseFormModal({
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const { showToast } = useToast();
 
   const qtyRef = React.useRef<RNTextInput>(null);
   const priceRef = React.useRef<RNTextInput>(null);
@@ -65,24 +68,31 @@ export function ExpenseFormModal({
       return;
     }
 
-    setSubmitting(true);
-    try {
-      const payload: CreateExpensePayload = {
-        name: name.trim(),
-        quantity: parseFloat(quantity),
-        price: parseFloat(price),
-      };
-      if (note.trim()) payload.note = note.trim();
+    const payload: CreateExpensePayload = {
+      name: name.trim(),
+      quantity: parseFloat(quantity),
+      price: parseFloat(price),
+    };
+    if (note.trim()) payload.note = note.trim();
 
+    setSubmitting(true);
+    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    try {
       const saved = editing
         ? await api.expenses.update(editing.id, payload, token)
-        : await api.expenses.create(payload, token);
+        : await api.expenses.create(payload, token, idempotencyKey);
       onSaved(saved, !!editing);
       onClose();
     } catch (e) {
-      setError(
-        e instanceof ApiError ? e.message : "Что-то пошло не так."
-      );
+      if (!editing && e instanceof ApiError && e.status === 0) {
+        await queueSyncAction("POST", "/expenses", payload, { "Idempotency-Key": idempotencyKey });
+        showToast({ message: "Нет сети. Расход сохранен в очередь.", variant: "warning" });
+        onClose();
+      } else {
+        setError(
+          e instanceof ApiError ? e.message : "Что-то пошло не так."
+        );
+      }
     } finally {
       setSubmitting(false);
     }

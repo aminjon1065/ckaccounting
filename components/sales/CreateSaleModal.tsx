@@ -8,7 +8,7 @@ import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
-import { useSyncStore } from "@/store/syncStore";
+import { getLocalProducts, queueSyncAction } from "@/lib/db";
 import { useToast } from "@/store/toast";
 
 export function CreateSaleModal({
@@ -25,7 +25,6 @@ export function CreateSaleModal({
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
-  const { addPendingSale } = useSyncStore();
   const { showToast } = useToast();
 
   const [shopId, setShopId] = React.useState<string>("");
@@ -67,26 +66,20 @@ export function CreateSaleModal({
     serviceIdRef.current = 0;
     setShopId("");
     if (!isSuperAdmin) {
-      api.products
-        .list(token, { limit: 100 })
-        .then((res: any) => setProducts(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-        .catch(() => {});
+      getLocalProducts(user?.shop_id).then(setProducts).catch(console.error);
     } else {
       setProducts([]);
     }
-  }, [visible, isSuperAdmin, token]);
+  }, [visible, isSuperAdmin, token, user?.shop_id]);
 
   React.useEffect(() => {
     if (visible && isSuperAdmin && shopId) {
-      api.products
-        .list(token, { limit: 100, shop_id: Number(shopId) })
-        .then((res: any) => setProducts(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-        .catch(() => {});
+      getLocalProducts(Number(shopId)).then(setProducts).catch(console.error);
     } else if (visible && isSuperAdmin && !shopId) {
       setProducts([]);
       setCart([]);
     }
-  }, [visible, isSuperAdmin, shopId, token]);
+  }, [visible, isSuperAdmin, shopId]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
@@ -219,13 +212,14 @@ export function CreateSaleModal({
     if (notes.trim()) payload.notes = notes.trim();
 
     setSubmitting(true);
+    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
     try {
-      const created = await api.sales.create(payload, token);
+      const created = await api.sales.create(payload, token, idempotencyKey);
       onCreated(created);
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        addPendingSale(payload);
+        await queueSyncAction("POST", "/sales", payload, { "Idempotency-Key": idempotencyKey });
         showToast({ message: "Нет сети. Продажа сохранена в очередь.", variant: "warning" });
         onClose();
       } else {

@@ -68,6 +68,8 @@ export interface Product {
   unit: string | null;
   cost_price: number;
   sale_price: number;
+  bulk_price?: number | null;
+  bulk_threshold?: number | null;
   stock_quantity: number;
   low_stock_alert: number | null;
   photo_url: string | null;
@@ -81,6 +83,8 @@ export interface CreateProductPayload {
   unit?: string;
   cost_price: number;
   sale_price: number;
+  bulk_price?: number;
+  bulk_threshold?: number;
   stock_quantity: number;
   low_stock_alert?: number;
   shop_id?: number;
@@ -592,10 +596,11 @@ export const api = {
     get: (id: number, token: string) =>
       request<Expense>(`/expenses/${id}`, { token }),
 
-    create: (payload: CreateExpensePayload, token: string) =>
+    create: (payload: CreateExpensePayload, token: string, idempotencyKey?: string) =>
       request<Expense>("/expenses", {
         method: "POST",
         body: JSON.stringify(payload),
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
         token,
       }),
 
@@ -670,10 +675,11 @@ export const api = {
     get: (id: number, token: string) =>
       request<Sale>(`/sales/${id}`, { token }),
 
-    create: (payload: CreateSalePayload, token: string) =>
+    create: (payload: CreateSalePayload, token: string, idempotencyKey?: string) =>
       request<Sale>("/sales", {
         method: "POST",
         body: JSON.stringify(payload),
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
         token,
       }),
   },
