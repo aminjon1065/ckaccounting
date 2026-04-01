@@ -312,26 +312,15 @@ export interface ProductMovementsResponse {
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-export type DashboardPeriod = "day" | "week" | "month";
-
-export interface DashboardStats {
-  total_sales: number;
-  total_expenses: number;
-  profit: number;
-  inventory_value: number;
-  sales_change: number;
-  expenses_change: number;
-  profit_change: number;
-  sales_count: number;
-}
+export type DashboardPeriod = "day" | "week" | "month" | "year" | "custom";
 
 export interface LowStockItem {
   id: number;
   name: string;
   code: string;
-  stock: number;
+  stock_quantity: number;
   low_stock_alert: number;
-  unit: string;
+  unit?: string;
 }
 
 export interface RecentSaleItem {
@@ -339,15 +328,33 @@ export interface RecentSaleItem {
   total: number;
   paid: number;
   debt: number;
-  payment_method: "cash" | "card" | "transfer";
+  payment_type: "cash" | "card" | "transfer";
   created_at: string;
   customer_name?: string;
+  actor_name?: string;
 }
 
 export interface DashboardSummary {
-  stats: DashboardStats;
-  low_stock: LowStockItem[];
+  period: DashboardPeriod;
+  date_from: string;
+  date_to: string;
+  shop_id: number | null;
+  period_sales_total: number;
+  period_expenses_total: number;
+  period_profit: number;
+  period_cogs: number;
+  debts_receivable: number;
+  debts_payable: number;
+  debts_net: number;
+  stock_total_qty: number;
+  stock_total_cost: number;
+  stock_total_sales_value: number;
+  low_stock_count: number;
   recent_sales: RecentSaleItem[];
+  recent_expenses: Array<any>;
+  recent_debt_transactions: Array<any>;
+  low_stock_products: LowStockItem[];
+  unpaid_debts: Array<any>;
 }
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -525,9 +532,9 @@ export const api = {
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
   dashboard: {
-    summary: (period: DashboardPeriod, token: string, shopId?: number | null) =>
+    summary: (period: DashboardPeriod, token: string, shopId?: number | null, dateFrom?: string, dateTo?: string) =>
       request<DashboardSummary>(
-        `/dashboard?period=${period}${shopId ? `&shop_id=${shopId}` : ""}`,
+        `/dashboard?period=${period}${shopId ? `&shop_id=${shopId}` : ""}${dateFrom ? `&date_from=${dateFrom}` : ""}${dateTo ? `&date_to=${dateTo}` : ""}`,
         { token }
       ),
   },

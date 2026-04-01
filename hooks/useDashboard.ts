@@ -9,6 +9,9 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  const [dateFrom, setDateFrom] = useState<string | null>(null);
+  const [dateTo, setDateTo] = useState<string | null>(null);
 
   useEffect(() => {
     if (isSuperAdmin && token) {
@@ -21,14 +24,14 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
     isRefresh ? setRefreshing(true) : setLoading(true);
     setError(null);
     try {
-      const sum = await api.dashboard.summary(period, token, activeShopId ?? undefined);
+      const sum = await api.dashboard.summary(period, token, activeShopId ?? undefined, dateFrom ?? undefined, dateTo ?? undefined);
       setSummary(sum);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки данных");
     } finally {
       isRefresh ? setRefreshing(false) : setLoading(false);
     }
-  }, [token, period, activeShopId]);
+  }, [token, period, activeShopId, dateFrom, dateTo]);
 
   useEffect(() => {
     fetchDashboard();
@@ -45,5 +48,9 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
     refreshing,
     error,
     fetchDashboard,
+    dateFrom,
+    setDateFrom,
+    dateTo,
+    setDateTo,
   };
 }

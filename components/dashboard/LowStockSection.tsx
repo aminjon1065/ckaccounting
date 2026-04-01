@@ -38,9 +38,9 @@ export function LowStockSection({
         ) : (
           items.map((item, idx) => {
             const stockPct = item.low_stock_alert > 0
-              ? Math.min((item.stock / item.low_stock_alert) * 100, 100)
+              ? Math.min((item.stock_quantity / item.low_stock_alert) * 100, 100)
               : 0;
-            const outOfStock = item.stock === 0;
+            const outOfStock = item.stock_quantity === 0;
 
             return (
               <View key={item.id}>
@@ -54,7 +54,7 @@ export function LowStockSection({
                       <Text variant="small">{item.code}</Text>
                     </View>
                     <Badge variant={outOfStock ? "destructive" : "warning"}>
-                      {outOfStock ? "Нет в наличии" : `${item.stock} ${item.unit}`}
+                      {outOfStock ? "Нет в наличии" : `${item.stock_quantity} ${item.unit}`}
                     </Badge>
                   </View>
                   <Progress

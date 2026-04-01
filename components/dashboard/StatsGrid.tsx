@@ -2,50 +2,40 @@ import * as React from "react";
 import { View } from "react-native";
 import { StatCard, Skeleton } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import { type DashboardStats } from "@/lib/api";
-import { fmtMoney, fmtChange } from "@/lib/formatters";
+import { type DashboardSummary } from "@/lib/api";
+import { fmtMoney } from "@/lib/formatters";
 
-export function StatsGrid({ stats }: { stats: DashboardStats }) {
+export function StatsGrid({ summary, isDataHidden }: { summary: DashboardSummary; isDataHidden: boolean }) {
+  const hiddenText = "***";
   return (
-    <View className="flex-row flex-wrap gap-3 px-5">
+    <View className="flex-row flex-wrap gap-3 px-5 mb-4">
       <StatCard
         className="flex-1 basis-[46%]"
-        title="Продажи"
-        value={`${fmtMoney(stats?.total_sales ?? 0)} ${DEFAULT_CURRENCY}`}
+        title="Продажа"
+        value={isDataHidden ? hiddenText : `${fmtMoney(summary?.period_sales_total ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="point-of-sale"
-        trend={(stats?.sales_change ?? 0) >= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats?.sales_change ?? 0)}
-        subtitle="vs прош. период"
         variant="primary"
       />
       <StatCard
         className="flex-1 basis-[46%]"
-        title="Расходы"
-        value={`${fmtMoney(stats?.total_expenses ?? 0)} ${DEFAULT_CURRENCY}`}
+        title="Себестоимость"
+        value={isDataHidden ? hiddenText : `${fmtMoney(summary?.period_cogs ?? 0)} ${DEFAULT_CURRENCY}`}
+        iconName="inventory"
+        variant="warning"
+      />
+      <StatCard
+        className="flex-1 basis-[46%]"
+        title="Расход"
+        value={isDataHidden ? hiddenText : `${fmtMoney(summary?.period_expenses_total ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="account-balance-wallet"
-        trend={(stats?.expenses_change ?? 0) <= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats?.expenses_change ?? 0)}
-        subtitle="vs прош. период"
         variant="destructive"
       />
       <StatCard
         className="flex-1 basis-[46%]"
-        title="Прибыль"
-        value={`${fmtMoney(stats?.profit ?? 0)} ${DEFAULT_CURRENCY}`}
+        title="Чистая прибыль"
+        value={isDataHidden ? hiddenText : `${fmtMoney(summary?.period_profit ?? 0)} ${DEFAULT_CURRENCY}`}
         iconName="trending-up"
-        trend={(stats?.profit_change ?? 0) >= 0 ? "up" : "down"}
-        trendLabel={fmtChange(stats?.profit_change ?? 0)}
-        subtitle="vs прош. период"
         variant="success"
-      />
-      <StatCard
-        className="flex-1 basis-[46%]"
-        title="Склад"
-        value={`${fmtMoney(stats?.inventory_value ?? 0)} ${DEFAULT_CURRENCY}`}
-        iconName="inventory"
-        trend="neutral"
-        subtitle="стоимость склада"
-        variant="warning"
       />
     </View>
   );

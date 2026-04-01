@@ -56,7 +56,7 @@ export function RecentSalesSection({
                   {/* Payment method icon */}
                   <View className="w-9 h-9 rounded-xl bg-primary-50 dark:bg-blue-900/30 items-center justify-center">
                     <MaterialIcons
-                      name={PAYMENT_ICON[sale.payment_method] ?? "payments"}
+                      name={PAYMENT_ICON[sale.payment_type] ?? "payments"}
                       size={18}
                       color="#0a7ea4"
                     />
@@ -68,7 +68,7 @@ export function RecentSalesSection({
                       {sale.customer_name ?? "Покупатель"}
                     </Text>
                     <Text variant="small">
-                      #{sale.id} · {fmtTime(sale.created_at)} · {PAYMENT_LABELS[sale.payment_method]}
+                      #{sale.id} · {fmtTime(sale.created_at)} · {PAYMENT_LABELS[sale.payment_type]}
                     </Text>
                   </View>
 
