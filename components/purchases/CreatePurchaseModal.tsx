@@ -141,7 +141,7 @@ export function CreatePurchaseModal({
       .list(token, { limit: 100 })
       .then((res) => setProducts(res.data))
       .catch(() => {});
-  }, [visible]);
+  }, [token, visible]);
 
   function addToCart(p: Product) {
     setCart((prev) => {

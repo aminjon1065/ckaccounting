@@ -141,7 +141,7 @@ export default function ProductMovementScreen() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
 
-  async function fetchMovements() {
+  const fetchMovements = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
     try {
@@ -151,11 +151,11 @@ export default function ProductMovementScreen() {
     } catch {
       setError("Не удалось загрузить историю движения.");
     }
-  }
+  }, [id, token]);
 
   React.useEffect(() => {
     fetchMovements().finally(() => setLoading(false));
-  }, [token, id]);
+  }, [fetchMovements]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">

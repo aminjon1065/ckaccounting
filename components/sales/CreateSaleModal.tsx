@@ -1,12 +1,13 @@
 import * as React from "react";
-import { Modal, TouchableOpacity, View, FlatList, TextInput as RNTextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
+import { Modal, TouchableOpacity, View, TextInput as RNTextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { Text, Button, Input, Skeleton, Badge, Select } from "@/components/ui";
+import { Text, Button, Input, Select } from "@/components/ui";
 import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
+import { useSync } from "@/lib/sync/SyncContext";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
-import { fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
+import { defaultPriceMode, deriveProductPrice, fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
 import { getLocalProducts, queueSyncAction } from "@/lib/db";
 import { useToast } from "@/store/toast";
@@ -26,6 +27,7 @@ export function CreateSaleModal({
   const isSuperAdmin = user?.role === "super_admin";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
   const { showToast } = useToast();
+  const { refreshPendingActions } = useSync();
 
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
@@ -87,20 +89,59 @@ export function CreateSaleModal({
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === p.id);
       if (existing) {
-        return prev.map((c) =>
-          c.product.id === p.id ? { ...c, quantity: c.quantity + 1 } : c
-        );
+        return prev.map((c) => {
+          if (c.product.id !== p.id) {
+            return c;
+          }
+
+          const quantity = c.quantity + 1;
+
+          return {
+            ...c,
+            quantity,
+            price: c.priceMode === "manual"
+              ? c.price
+              : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
+          };
+        });
       }
-      return [...prev, { product: p, quantity: 1, price: p.sale_price, priceMode: "fixed" as PriceMode, markupPercent: "" }];
+
+      const priceMode = defaultPriceMode(p);
+      const markupPercent = priceMode === "markup" && p.markup_percent != null
+        ? String(p.markup_percent)
+        : "";
+
+      return [
+        ...prev,
+        {
+          product: p,
+          quantity: 1,
+          price: deriveProductPrice(p, priceMode, markupPercent, 1),
+          priceMode,
+          markupPercent,
+        },
+      ];
     });
   }
 
   function updateQty(productId: number, delta: number) {
     setCart((prev) =>
       prev
-        .map((c) =>
-          c.product.id === productId ? { ...c, quantity: c.quantity + delta } : c
-        )
+        .map((c) => {
+          if (c.product.id !== productId) {
+            return c;
+          }
+
+          const quantity = c.quantity + delta;
+
+          return {
+            ...c,
+            quantity,
+            price: c.priceMode === "manual"
+              ? c.price
+              : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
+          };
+        })
         .filter((c) => c.quantity > 0)
     );
   }
@@ -119,12 +160,14 @@ export function CreateSaleModal({
     setCart((prev) =>
       prev.map((c) => {
         if (c.product.id !== productId) return c;
-        let price = c.price;
-        if (mode === "fixed") price = c.product.sale_price;
-        if (mode === "auto" && c.markupPercent && !isNaN(Number(c.markupPercent))) {
-          price = c.product.cost_price * (1 + Number(c.markupPercent) / 100);
-        }
-        return { ...c, priceMode: mode, price };
+        const nextMarkupPercent = mode === "markup"
+          ? (c.markupPercent || (c.product.markup_percent != null ? String(c.product.markup_percent) : ""))
+          : c.markupPercent;
+        const price = mode === "manual"
+          ? c.price
+          : deriveProductPrice(c.product, mode, nextMarkupPercent, c.quantity);
+
+        return { ...c, priceMode: mode, markupPercent: nextMarkupPercent, price };
       })
     );
   }
@@ -134,7 +177,7 @@ export function CreateSaleModal({
       prev.map((c) => {
         if (c.product.id !== productId) return c;
         const price = markup && !isNaN(Number(markup))
-          ? c.product.cost_price * (1 + Number(markup) / 100)
+          ? deriveProductPrice(c.product, "markup", markup, c.quantity)
           : c.price;
         return { ...c, markupPercent: markup, price };
       })
@@ -220,6 +263,7 @@ export function CreateSaleModal({
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         await queueSyncAction("POST", "/sales", payload, { "Idempotency-Key": idempotencyKey });
+        await refreshPendingActions();
         showToast({ message: "Нет сети. Продажа сохранена в очередь.", variant: "warning" });
         onClose();
       } else {
@@ -374,7 +418,7 @@ export function CreateSaleModal({
                         </View>
                         {/* Price mode toggle */}
                         <View className="flex-row bg-slate-200 dark:bg-zinc-700 rounded-lg p-0.5 mb-2">
-                          {(["fixed", "manual", "auto"] as const).map((m) => (
+                          {(["fixed", "manual", "markup"] as const).map((m) => (
                             <TouchableOpacity
                               key={m}
                               onPress={() => updatePriceMode(c.product.id, m)}
@@ -412,7 +456,7 @@ export function CreateSaleModal({
                               <MaterialIcons name="add" size={14} color="#64748b" />
                             </TouchableOpacity>
                           </View>
-                          {c.priceMode === "auto" ? (
+                          {c.priceMode === "markup" ? (
                             <View className="flex-1">
                               <Input
                                 value={c.markupPercent}

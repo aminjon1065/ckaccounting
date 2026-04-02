@@ -11,11 +11,28 @@ function fmt(n: number) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-function stockColor(p: Product) {
-  if (p.stock_quantity === 0) return "text-red-500";
-  if (p.low_stock_alert != null && p.stock_quantity <= p.low_stock_alert)
+function stockColor(product: Product) {
+  if (product.stock_quantity === 0) {
+    return "text-red-500";
+  }
+
+  if (product.low_stock_alert != null && product.stock_quantity <= product.low_stock_alert) {
     return "text-amber-500";
+  }
+
   return "text-green-600";
+}
+
+function pricingLabel(product: Product) {
+  if (product.pricing_mode === "markup") {
+    return `Наценка ${product.markup_percent ?? 0}%`;
+  }
+
+  if (product.pricing_mode === "manual") {
+    return "Ручная";
+  }
+
+  return "Фикс.";
 }
 
 interface ProductCardProps {
@@ -52,9 +69,7 @@ export function ProductCard({
       }
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 shadow-sm border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
-      {/* Top row */}
       <View className="flex-row items-center gap-3 mb-2">
-        {/* Thumbnail */}
         {item.photo_url ? (
           <Image
             source={{ uri: item.photo_url }}
@@ -66,7 +81,7 @@ export function ProductCard({
             <MaterialIcons name="inventory-2" size={22} color="#94a3b8" />
           </View>
         )}
-        {/* Name + meta */}
+
         <View className="flex-1">
           <View className="flex-row items-start justify-between">
             <Text className="text-base font-semibold text-slate-900 dark:text-slate-50 flex-1 mr-2">
@@ -81,10 +96,12 @@ export function ProductCard({
           <Text variant="small">
             {[item.code, item.unit].filter(Boolean).join(" · ") || "—"}
           </Text>
+          <Text className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {pricingLabel(item)}
+          </Text>
         </View>
       </View>
 
-      {/* Prices row */}
       <View className="flex-row gap-4">
         <View>
           <Text variant="small">Закупка</Text>

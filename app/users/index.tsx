@@ -47,7 +47,7 @@ function UserCard({
   const isSelf = item.id === currentUserId;
 
   function handleLongPress() {
-    const actions: Array<{ text: string; style?: "destructive" | "cancel"; onPress?: () => void }> = [];
+    const actions: { text: string; style?: "destructive" | "cancel"; onPress?: () => void }[] = [];
     if (canEdit) actions.push({ text: "Изменить", onPress: onEdit });
     if (canDelete) actions.push({ text: "Удалить", style: "destructive", onPress: onDelete });
     actions.push({ text: "Отмена", style: "cancel" });

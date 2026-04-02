@@ -39,7 +39,7 @@ function ShopCard({
   const isActive = item.is_active;
 
   function handleLongPress() {
-    const actions: Array<{ text: string; style?: "destructive" | "cancel" | "default"; onPress?: () => void }> = [
+    const actions: { text: string; style?: "destructive" | "cancel" | "default"; onPress?: () => void }[] = [
       { text: "Изменить", onPress: onEdit },
       { 
         text: isActive ? "Приостановить" : "Активировать", 
@@ -327,25 +327,32 @@ export default function ShopsScreen() {
 
   const isSuperAdmin = user?.role === "super_admin";
 
+  const fetchShops = React.useCallback(() => {
+    if (!token) {
+      return Promise.resolve();
+    }
+
+    return api.shops
+      .list(token)
+      .then((res: any) =>
+        setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])
+      )
+      .catch((e) => console.error("Shops fetch error:", e));
+  }, [token]);
+
+  const displayedShops = React.useMemo(() => {
+    if (activeTab === "all") return shops;
+    if (activeTab === "active") return shops.filter((shop) => shop.is_active);
+    return shops.filter((shop) => !shop.is_active);
+  }, [activeTab, shops]);
+
   React.useEffect(() => {
     if (!isSuperAdmin || !token) {
       setLoading(false);
       return;
     }
-    api.shops
-      .list(token)
-      .then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-      .catch((e) => console.error("Shops fetch error:", e))
-      .finally(() => setLoading(false));
-  }, [token, isSuperAdmin]);
-
-  function fetchShops() {
-    if (!token) return Promise.resolve();
-    return api.shops
-      .list(token)
-      .then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-      .catch((e) => console.error("Shops fetch error:", e));
-  }
+    fetchShops().finally(() => setLoading(false));
+  }, [fetchShops, isSuperAdmin, token]);
 
   if (!isSuperAdmin) {
     return (
@@ -383,12 +390,6 @@ export default function ShopsScreen() {
       ]
     );
   }
-
-  const displayedShops = React.useMemo(() => {
-    if (activeTab === "all") return shops;
-    if (activeTab === "active") return shops.filter(s => s.is_active);
-    return shops.filter(s => !s.is_active);
-  }, [shops, activeTab]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">

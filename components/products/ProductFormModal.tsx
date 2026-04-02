@@ -32,6 +32,19 @@ interface FormModalProps {
   isSuperAdmin: boolean;
 }
 
+type PricingMode = "fixed" | "markup" | "manual";
+
+function computeMarkupPrice(costPrice: string, markupPercent: string): string {
+  const parsedCost = Number(costPrice);
+  const parsedMarkup = Number(markupPercent);
+
+  if (Number.isNaN(parsedCost) || Number.isNaN(parsedMarkup)) {
+    return "";
+  }
+
+  return (parsedCost * (1 + parsedMarkup / 100)).toFixed(2);
+}
+
 export function ProductFormModal({
   visible,
   editing,
@@ -48,6 +61,8 @@ export function ProductFormModal({
   const [unit, setUnit] = React.useState("");
   const [costPrice, setCostPrice] = React.useState("");
   const [salePrice, setSalePrice] = React.useState("");
+  const [pricingMode, setPricingMode] = React.useState<PricingMode>("fixed");
+  const [markupPercent, setMarkupPercent] = React.useState("");
   const [bulkPrice, setBulkPrice] = React.useState("");
   const [bulkThreshold, setBulkThreshold] = React.useState("");
   const [stock, setStock] = React.useState("");
@@ -56,7 +71,6 @@ export function ProductFormModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  // Refs for focus chain
   const codeRef = React.useRef<RNTextInput>(null);
   const unitRef = React.useRef<RNTextInput>(null);
   const costRef = React.useRef<RNTextInput>(null);
@@ -66,7 +80,10 @@ export function ProductFormModal({
 
   React.useEffect(() => {
     if (visible && isSuperAdmin) {
-      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+      api.shops
+        .list(token)
+        .then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
+        .catch(console.error);
     }
   }, [visible, isSuperAdmin, token]);
 
@@ -77,22 +94,36 @@ export function ProductFormModal({
       setUnit(editing.unit ?? "");
       setCostPrice(String(editing.cost_price));
       setSalePrice(String(editing.sale_price));
+      setPricingMode(editing.pricing_mode ?? "fixed");
+      setMarkupPercent(editing.markup_percent != null ? String(editing.markup_percent) : "");
       setBulkPrice(editing.bulk_price != null ? String(editing.bulk_price) : "");
       setBulkThreshold(editing.bulk_threshold != null ? String(editing.bulk_threshold) : "");
       setStock(String(editing.stock_quantity));
       setLowAlert(editing.low_stock_alert != null ? String(editing.low_stock_alert) : "");
-      setPhotoUri(editing.photo_url ?? null);
+      setPhotoUri(editing.photo_url ?? editing.image_url ?? null);
       setShopId(editing.shop_id ? String(editing.shop_id) : "");
     } else if (visible && !editing) {
-      setName(""); setCode(""); setUnit("");
-      setCostPrice(""); setSalePrice("");
-      setBulkPrice(""); setBulkThreshold("");
-      setStock(""); setLowAlert("");
+      setName("");
+      setCode("");
+      setUnit("");
+      setCostPrice("");
+      setSalePrice("");
+      setPricingMode("fixed");
+      setMarkupPercent("");
+      setBulkPrice("");
+      setBulkThreshold("");
+      setStock("");
+      setLowAlert("");
       setPhotoUri(null);
       setShopId("");
     }
+
     setError("");
   }, [visible, editing]);
+
+  const computedMarkupPrice = pricingMode === "markup"
+    ? computeMarkupPrice(costPrice, markupPercent)
+    : salePrice;
 
   async function pickPhoto() {
     const options = [
@@ -105,20 +136,30 @@ export function ProductFormModal({
             aspect: [1, 1] as [number, number],
             quality: 0.7,
           });
-          if (!result.canceled) setPhotoUri(result.assets[0].uri);
+
+          if (!result.canceled) {
+            setPhotoUri(result.assets[0].uri);
+          }
         },
       },
       {
         text: "Сделать фото",
         onPress: async () => {
-          const perm = await ImagePicker.requestCameraPermissionsAsync();
-          if (perm.status !== "granted") return;
+          const permission = await ImagePicker.requestCameraPermissionsAsync();
+
+          if (permission.status !== "granted") {
+            return;
+          }
+
           const result = await ImagePicker.launchCameraAsync({
             allowsEditing: true,
             aspect: [1, 1] as [number, number],
             quality: 0.7,
           });
-          if (!result.canceled) setPhotoUri(result.assets[0].uri);
+
+          if (!result.canceled) {
+            setPhotoUri(result.assets[0].uri);
+          }
         },
       },
       ...(photoUri
@@ -126,41 +167,90 @@ export function ProductFormModal({
         : []),
       { text: "Отмена", style: "cancel" as const },
     ];
+
     Alert.alert("Фото товара", "Выберите действие", options);
   }
 
   async function handleSubmit() {
     setError("");
-    if (!name.trim()) { setError("Введите название товара."); return; }
-    if (!costPrice || isNaN(Number(costPrice))) { setError("Некорректная цена закупки."); return; }
-    if (!salePrice || isNaN(Number(salePrice))) { setError("Некорректная цена продажи."); return; }
-    if (!stock || isNaN(Number(stock))) { setError("Некорректное количество."); return; }
-    if (isSuperAdmin && !editing && !shopId) { setError("Выберите магазин."); return; }
+
+    if (!name.trim()) {
+      setError("Введите название товара.");
+      return;
+    }
+
+    if (!costPrice || Number.isNaN(Number(costPrice))) {
+      setError("Некорректная цена закупки.");
+      return;
+    }
+
+    if (pricingMode !== "markup" && (!salePrice || Number.isNaN(Number(salePrice)))) {
+      setError("Некорректная цена продажи.");
+      return;
+    }
+
+    if (pricingMode === "markup" && (!markupPercent || Number.isNaN(Number(markupPercent)))) {
+      setError("Укажите наценку в процентах.");
+      return;
+    }
+
+    if (!stock || Number.isNaN(Number(stock))) {
+      setError("Некорректное количество.");
+      return;
+    }
+
+    if (isSuperAdmin && !editing && !shopId) {
+      setError("Выберите магазин.");
+      return;
+    }
 
     setSubmitting(true);
+
     try {
       const payload: CreateProductPayload = {
         name: name.trim(),
         cost_price: parseFloat(costPrice),
-        sale_price: parseFloat(salePrice),
+        pricing_mode: pricingMode,
         stock_quantity: parseFloat(stock),
       };
-      if (bulkPrice.trim() && !isNaN(Number(bulkPrice))) payload.bulk_price = parseFloat(bulkPrice);
-      if (bulkThreshold.trim() && !isNaN(Number(bulkThreshold))) payload.bulk_threshold = parseInt(bulkThreshold, 10);
-      if (code.trim()) payload.code = code.trim();
-      if (unit.trim()) payload.unit = unit.trim();
-      if (lowAlert.trim() && !isNaN(Number(lowAlert)))
+
+      if (pricingMode === "markup") {
+        payload.markup_percent = parseFloat(markupPercent);
+        payload.sale_price = parseFloat(computedMarkupPrice);
+      } else {
+        payload.sale_price = parseFloat(salePrice);
+      }
+
+      if (bulkPrice.trim() && !Number.isNaN(Number(bulkPrice))) {
+        payload.bulk_price = parseFloat(bulkPrice);
+      }
+
+      if (bulkThreshold.trim() && !Number.isNaN(Number(bulkThreshold))) {
+        payload.bulk_threshold = parseInt(bulkThreshold, 10);
+      }
+
+      if (code.trim()) {
+        payload.code = code.trim();
+      }
+
+      if (unit.trim()) {
+        payload.unit = unit.trim();
+      }
+
+      if (lowAlert.trim() && !Number.isNaN(Number(lowAlert))) {
         payload.low_stock_alert = parseFloat(lowAlert);
+      }
+
       if (isSuperAdmin && shopId && !editing) {
         payload.shop_id = parseInt(shopId, 10);
       }
 
-      // Only send photoUri if it's a new local file (not an existing remote URL)
       const isNewPhoto = photoUri && !photoUri.startsWith("http");
 
       const saved = editing
         ? await api.products.update(editing.id, payload, token, isNewPhoto ? photoUri : undefined)
         : await api.products.create(payload, token, photoUri ?? undefined);
+
       onSaved(saved, !!editing);
       onClose();
     } catch (e) {
@@ -182,7 +272,6 @@ export function ProductFormModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        {/* Header */}
         <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
           <TouchableOpacity onPress={onClose} hitSlop={10}>
             <MaterialIcons name="close" size={22} color="#94a3b8" />
@@ -217,11 +306,11 @@ export function ProductFormModal({
                   required
                   value={shopId}
                   onValueChange={setShopId}
-                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  options={shops.map((shop) => ({ label: shop.name, value: String(shop.id) }))}
                   placeholder="Выберите магазин"
                 />
               )}
-              {/* Photo picker */}
+
               <TouchableOpacity
                 onPress={pickPhoto}
                 className="self-center w-28 h-28 rounded-2xl bg-slate-100 dark:bg-zinc-800 items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 dark:border-zinc-600"
@@ -252,18 +341,19 @@ export function ProductFormModal({
               <Input
                 label="Название товара"
                 required
-                placeholder="напр. Беспроводная мышь"
+                placeholder="например, Беспроводная мышь"
                 value={name}
                 onChangeText={setName}
                 returnKeyType="next"
                 onSubmitEditing={() => codeRef.current?.focus()}
               />
+
               <View className="flex-row gap-3">
                 <View className="flex-1">
                   <Input
                     ref={codeRef}
                     label="Код / Артикул"
-                    placeholder="напр. WM-001"
+                    placeholder="например, WM-001"
                     value={code}
                     onChangeText={setCode}
                     returnKeyType="next"
@@ -274,7 +364,7 @@ export function ProductFormModal({
                   <Input
                     ref={unitRef}
                     label="Ед. изм."
-                    placeholder="напр. шт"
+                    placeholder="например, шт"
                     value={unit}
                     onChangeText={setUnit}
                     returnKeyType="next"
@@ -282,6 +372,7 @@ export function ProductFormModal({
                   />
                 </View>
               </View>
+
               <View className="flex-row gap-3">
                 <View className="flex-1">
                   <Input
@@ -297,19 +388,69 @@ export function ProductFormModal({
                   />
                 </View>
                 <View className="flex-1">
-                  <Input
-                    ref={saleRef}
-                    label="Цена продажи"
-                    required
-                    placeholder="0"
-                    value={salePrice}
-                    onChangeText={setSalePrice}
-                    keyboardType="numeric"
-                    returnKeyType="next"
-                    onSubmitEditing={() => stockRef.current?.focus()}
+                  <Select
+                    label="Режим цены"
+                    value={pricingMode}
+                    onValueChange={(value) => setPricingMode(value)}
+                    options={[
+                      { label: "Фиксированная", value: "fixed", description: "Используется sale price" },
+                      { label: "Наценка %", value: "markup", description: "Цена считается от закупки" },
+                      { label: "Ручная", value: "manual", description: "Цена вводится на кассе" },
+                    ]}
                   />
                 </View>
               </View>
+
+              <View className="flex-row gap-3">
+                <View className="flex-1">
+                  <Input
+                    ref={saleRef}
+                    label="Цена продажи"
+                    required={pricingMode !== "markup"}
+                    placeholder="0"
+                    value={pricingMode === "markup" ? computedMarkupPrice : salePrice}
+                    onChangeText={setSalePrice}
+                    keyboardType="numeric"
+                    returnKeyType="next"
+                    editable={pricingMode !== "markup"}
+                    hint={pricingMode === "manual" ? "Эта цена используется как стартовая, но в POS её можно изменить." : undefined}
+                    onSubmitEditing={() => stockRef.current?.focus()}
+                  />
+                </View>
+                <View className="flex-1">
+                  <Input
+                    label="Наценка %"
+                    placeholder="0"
+                    value={markupPercent}
+                    onChangeText={setMarkupPercent}
+                    keyboardType="numeric"
+                    editable={pricingMode === "markup"}
+                    hint={pricingMode === "markup" ? "Автоматически пересчитывает цену продажи." : undefined}
+                  />
+                </View>
+              </View>
+
+              <View className="flex-row gap-3">
+                <View className="flex-1">
+                  <Input
+                    label="Оптовая цена"
+                    placeholder="0"
+                    value={bulkPrice}
+                    onChangeText={setBulkPrice}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View className="flex-1">
+                  <Input
+                    label="Порог опта"
+                    placeholder="например, 10"
+                    value={bulkThreshold}
+                    onChangeText={setBulkThreshold}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
               <View className="flex-row gap-3">
                 <View className="flex-1">
                   <Input
@@ -328,7 +469,7 @@ export function ProductFormModal({
                   <Input
                     ref={alertRef}
                     label="Порог остатка"
-                    placeholder="напр. 5"
+                    placeholder="например, 5"
                     value={lowAlert}
                     onChangeText={setLowAlert}
                     keyboardType="numeric"

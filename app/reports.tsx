@@ -2,7 +2,6 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
 import * as React from "react";
 import {
-  ActivityIndicator,
   ScrollView,
   TextInput as RNTextInput,
   TouchableOpacity,
@@ -227,7 +226,7 @@ export default function ReportsScreen() {
   const [stockReport, setStockReport] = React.useState<StockReport | null>(null);
   const [error, setError] = React.useState("");
 
-  async function loadReport() {
+  const loadReport = React.useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setError("");
@@ -260,11 +259,11 @@ export default function ReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [activeTab, dateFrom, dateTo, token]);
 
   React.useEffect(() => {
     loadReport();
-  }, [activeTab, token]);
+  }, [loadReport]);
 
   const currentData =
     activeTab === "sales" ? salesReport :

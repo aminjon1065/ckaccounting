@@ -68,11 +68,14 @@ export interface Product {
   unit: string | null;
   cost_price: number;
   sale_price: number;
+  pricing_mode: "fixed" | "markup" | "manual";
+  markup_percent?: number | null;
   bulk_price?: number | null;
   bulk_threshold?: number | null;
   stock_quantity: number;
   low_stock_alert: number | null;
   photo_url: string | null;
+  image_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -82,7 +85,9 @@ export interface CreateProductPayload {
   code?: string;
   unit?: string;
   cost_price: number;
-  sale_price: number;
+  sale_price?: number;
+  pricing_mode?: "fixed" | "markup" | "manual";
+  markup_percent?: number;
   bulk_price?: number;
   bulk_threshold?: number;
   stock_quantity: number;
@@ -164,7 +169,7 @@ export interface Purchase {
 
 export interface CreatePurchasePayload {
   supplier_name?: string;
-  items: Array<{ product_id: number; quantity: number; price: number; markup_percent?: number }>;
+  items: { product_id: number; quantity: number; price: number; markup_percent?: number }[];
 }
 
 // ─── Sales ────────────────────────────────────────────────────────────────────
@@ -174,6 +179,7 @@ export type SaleType = "product" | "service";
 export interface SaleItem {
   id: number;
   product_id: number | null;
+  name?: string | null;
   product_name: string | null;
   /** Populated for service-type sales */
   service_name?: string | null;
@@ -220,7 +226,7 @@ export interface CreateSalePayload {
   notes?: string;
   shop_id?: number;
   payment_type: "cash" | "card" | "transfer";
-  items: Array<ProductSaleItemPayload | ServiceSaleItemPayload>;
+  items: (ProductSaleItemPayload | ServiceSaleItemPayload)[];
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -259,7 +265,7 @@ export interface SalesReport {
   transfer: number;
   date_from: string;
   date_to: string;
-  data: Array<{ date: string; count: number; amount: number }>;
+  data: { date: string; count: number; amount: number }[];
 }
 
 export interface ExpensesReport {
@@ -267,7 +273,7 @@ export interface ExpensesReport {
   count: number;
   date_from: string;
   date_to: string;
-  data: Array<{ date: string; count: number; amount: number }>;
+  data: { date: string; count: number; amount: number }[];
 }
 
 export interface ProfitReport {
@@ -284,13 +290,13 @@ export interface StockReport {
   total_value: number;
   low_stock: number;
   out_of_stock: number;
-  data: Array<{
+  data: {
     id: number;
     name: string;
     stock_quantity: number;
     sale_price: number;
     value: number;
-  }>;
+  }[];
 }
 
 // ─── Product Movement ─────────────────────────────────────────────────────────
@@ -355,10 +361,10 @@ export interface DashboardSummary {
   stock_total_sales_value: number;
   low_stock_count: number;
   recent_sales: RecentSaleItem[];
-  recent_expenses: Array<any>;
-  recent_debt_transactions: Array<any>;
+  recent_expenses: any[];
+  recent_debt_transactions: any[];
   low_stock_products: LowStockItem[];
-  unpaid_debts: Array<any>;
+  unpaid_debts: any[];
 }
 
 // ─── Error ────────────────────────────────────────────────────────────────────

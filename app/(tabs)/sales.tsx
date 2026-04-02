@@ -10,13 +10,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Skeleton, Text } from "@/components/ui";
-import { type Sale } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
 import { SaleCard } from "@/components/sales/SaleCard";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
 import { useSales } from "@/hooks/useSales";
+import { useSync } from "@/lib/sync/SyncContext";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -24,6 +24,7 @@ export default function SalesScreen() {
   const { token } = useAuth();
   const { showToast } = useToast();
   const router = useRouter();
+  const { isOnline, isSyncing, pendingActionsCount, triggerSync } = useSync();
 
   const {
     sales,
@@ -48,6 +49,34 @@ export default function SalesScreen() {
           Учёт продаж
         </Text>
       </View>
+
+      {(!isOnline || pendingActionsCount > 0) && (
+        <View className="mx-4 mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+          <View className="flex-row items-center justify-between gap-3">
+            <View className="flex-1">
+              <Text className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                {!isOnline ? "Офлайн-режим" : "Есть очередь синхронизации"}
+              </Text>
+              <Text className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+                {!isOnline
+                  ? "Продажи сохраняются локально и будут отправлены после восстановления сети."
+                  : `В очереди ${pendingActionsCount} операций.`}
+              </Text>
+            </View>
+            {isOnline && pendingActionsCount > 0 && (
+              <TouchableOpacity
+                onPress={() => triggerSync().catch(console.error)}
+                disabled={isSyncing}
+                className="rounded-xl bg-amber-500 px-3 py-2 disabled:opacity-60"
+              >
+                <Text className="text-xs font-semibold text-white">
+                  {isSyncing ? "Sync..." : "Sync"}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      )}
 
       {/* List */}
       {loading ? (

@@ -100,6 +100,10 @@ export default function ProductsScreen() {
           data={products}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          removeClippedSubviews
           refreshing={refreshing}
           onRefresh={handleRefresh}
           onEndReached={handleLoadMore}

@@ -18,6 +18,8 @@ export async function initDb() {
       unit TEXT,
       cost_price REAL NOT NULL,
       sale_price REAL NOT NULL,
+      pricing_mode TEXT DEFAULT 'fixed',
+      markup_percent REAL,
       bulk_price REAL,
       bulk_threshold INTEGER,
       stock_quantity REAL NOT NULL,
@@ -27,8 +29,7 @@ export async function initDb() {
       last_synced_at TEXT
     );
 
-    DROP TABLE IF EXISTS sync_queue;
-    CREATE TABLE sync_queue (
+    CREATE TABLE IF NOT EXISTS sync_queue (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       method TEXT NOT NULL,
       path TEXT NOT NULL,
@@ -39,6 +40,17 @@ export async function initDb() {
       created_at TEXT NOT NULL
     );
   `);
+
+  const productColumns = await db.getAllAsync<{ name: string }>("PRAGMA table_info(products)");
+  const existingProductColumns = new Set(productColumns.map((column) => column.name));
+
+  if (!existingProductColumns.has("pricing_mode")) {
+    await db.execAsync("ALTER TABLE products ADD COLUMN pricing_mode TEXT DEFAULT 'fixed';");
+  }
+
+  if (!existingProductColumns.has("markup_percent")) {
+    await db.execAsync("ALTER TABLE products ADD COLUMN markup_percent REAL;");
+  }
 }
 
 export async function clearLocalData() {

@@ -4,7 +4,6 @@ import {
   View,
   Text,
   type TextInputProps,
-  type ViewProps,
 } from "react-native";
 import { cn } from "@/lib/utils";
 import { Label } from "./label";

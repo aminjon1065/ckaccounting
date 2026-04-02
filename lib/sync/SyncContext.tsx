@@ -1,45 +1,61 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import NetInfo from "@react-native-community/netinfo";
-import { initDb, getPendingSyncActions, markSyncActionStatus, insertOrUpdateProducts } from "../db";
+import {
+  initDb,
+  getPendingSyncActions,
+  getPendingSyncActionsCount,
+  insertOrUpdateProducts,
+  markSyncActionStatus,
+} from "../db";
 import { api, Product } from "../api";
+import { API_URL } from "@/constants/config";
 import { useAuth } from "@/store/auth";
 
 interface SyncContextType {
   isOnline: boolean;
   isSyncing: boolean;
   lastSyncedAt: Date | null;
+  pendingActionsCount: number;
   triggerSync: () => Promise<void>;
   fetchRemoteProducts: () => Promise<void>;
+  refreshPendingActions: () => Promise<void>;
 }
 
 const SyncContext = createContext<SyncContextType>({
   isOnline: true,
   isSyncing: false,
   lastSyncedAt: null,
+  pendingActionsCount: 0,
   triggerSync: async () => {},
   fetchRemoteProducts: async () => {},
+  refreshPendingActions: async () => {},
 });
 
 export function SyncProvider({ children }: { children: React.ReactNode }) {
   const [isOnline, setIsOnline] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [pendingActionsCount, setPendingActionsCount] = useState(0);
   const { token, user } = useAuth();
   
   const syncLock = useRef(false);
 
   useEffect(() => {
-    let mounted = true;
     initDb().catch(console.error);
+    getPendingSyncActionsCount().then(setPendingActionsCount).catch(console.error);
 
     const unsubscribe = NetInfo.addEventListener((state: any) => {
       setIsOnline(!!state.isConnected && !!state.isInternetReachable);
     });
 
     return () => {
-      mounted = false;
       unsubscribe();
     };
+  }, []);
+
+  const refreshPendingActions = useCallback(async () => {
+    const count = await getPendingSyncActionsCount();
+    setPendingActionsCount(count);
   }, []);
 
   const triggerSync = useCallback(async () => {
@@ -65,9 +81,13 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
             let customHeaders = {};
             try {
                if (action.headers) customHeaders = JSON.parse(action.headers);
-            } catch (e) {}
+            } catch {}
 
-            const response = await fetch(action.path, {
+            const requestUrl = action.path.startsWith("http")
+              ? action.path
+              : `${API_URL}${action.path.startsWith("/") ? action.path : `/${action.path}`}`;
+
+            const response = await fetch(requestUrl, {
               method: action.method,
               headers: { ...baseHeaders, ...customHeaders },
               body: action.payload
@@ -86,18 +106,19 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
                  console.error("Unrecoverable sync error:", body);
               }
             }
-          } catch (e) {
+          } catch {
             await markSyncActionStatus(action.id, "failed", true);
           }
         }
       }
 
+      await refreshPendingActions();
       setLastSyncedAt(new Date());
     } finally {
       setIsSyncing(false);
       syncLock.current = false;
     }
-  }, [isOnline, token]);
+  }, [isOnline, refreshPendingActions, token]);
 
   const fetchRemoteProducts = useCallback(async () => {
     if (!isOnline || !token || !user?.shop_id) return;
@@ -122,8 +143,8 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       if (allProducts.length > 0) {
         await insertOrUpdateProducts(allProducts);
       }
-    } catch (e) {
-      console.error("Failed to fetch remote products:", e);
+    } catch (error) {
+      console.error("Failed to fetch remote products:", error);
     }
   }, [isOnline, token, user]);
 
@@ -132,11 +153,23 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     if (isOnline && token) {
       triggerSync().catch(console.error);
       fetchRemoteProducts().catch(console.error);
+    } else {
+      refreshPendingActions().catch(console.error);
     }
-  }, [isOnline, token, triggerSync, fetchRemoteProducts]);
+  }, [isOnline, token, triggerSync, fetchRemoteProducts, refreshPendingActions]);
 
   return (
-    <SyncContext.Provider value={{ isOnline, isSyncing, lastSyncedAt, triggerSync, fetchRemoteProducts }}>
+    <SyncContext.Provider
+      value={{
+        isOnline,
+        isSyncing,
+        lastSyncedAt,
+        pendingActionsCount,
+        triggerSync,
+        fetchRemoteProducts,
+        refreshPendingActions,
+      }}
+    >
       {children}
     </SyncContext.Provider>
   );

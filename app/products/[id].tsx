@@ -59,7 +59,7 @@ export default function ProductDetailScreen() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
 
-  async function fetchProduct() {
+  const fetchProduct = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
     try {
@@ -68,11 +68,11 @@ export default function ProductDetailScreen() {
     } catch {
       setError("Не удалось загрузить товар.");
     }
-  }
+  }, [id, token]);
 
   React.useEffect(() => {
     fetchProduct().finally(() => setLoading(false));
-  }, [token, id]);
+  }, [fetchProduct]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">

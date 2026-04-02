@@ -10,11 +10,11 @@ export async function insertOrUpdateProducts(products: Product[]) {
       await db.runAsync(
         `INSERT OR REPLACE INTO products (
           id, shop_id, name, code, unit, cost_price, sale_price, 
-          bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, updated_at, last_synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, updated_at, last_synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           p.id, p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
-          p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url, p.updated_at, new Date().toISOString()
+          p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null, p.updated_at, new Date().toISOString()
         ]
       );
     }
@@ -44,6 +44,8 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
     ...r,
     cost_price: Number(r.cost_price),
     sale_price: Number(r.sale_price),
+    pricing_mode: r.pricing_mode ?? "fixed",
+    markup_percent: r.markup_percent != null ? Number(r.markup_percent) : undefined,
     bulk_price: r.bulk_price != null ? Number(r.bulk_price) : undefined,
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
@@ -59,6 +61,8 @@ export async function getLocalProductById(id: number): Promise<Product | null> {
     ...r,
     cost_price: Number(r.cost_price),
     sale_price: Number(r.sale_price),
+    pricing_mode: r.pricing_mode ?? "fixed",
+    markup_percent: r.markup_percent != null ? Number(r.markup_percent) : undefined,
     bulk_price: r.bulk_price != null ? Number(r.bulk_price) : undefined,
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
@@ -102,6 +106,15 @@ export async function getPendingSyncActions(): Promise<SyncAction[]> {
   return await db.getAllAsync<SyncAction>(
     "SELECT * FROM sync_queue WHERE status = 'pending' OR status = 'failed' ORDER BY id ASC LIMIT 50"
   );
+}
+
+export async function getPendingSyncActionsCount(): Promise<number> {
+  const db = getDb();
+  const result = await db.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) as count FROM sync_queue WHERE status = 'pending' OR status = 'failed'"
+  );
+
+  return Number(result?.count ?? 0);
 }
 
 export async function markSyncActionStatus(id: number, status: "pending" | "processing" | "failed" | "completed", incrementRetry = false) {

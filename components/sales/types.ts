@@ -1,6 +1,6 @@
 import { Product } from "@/lib/api";
 
-export type PriceMode = "fixed" | "manual" | "auto";
+export type PriceMode = "fixed" | "manual" | "markup";
 
 export interface CartItem {
   product: Product;

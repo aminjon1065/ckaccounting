@@ -18,15 +18,11 @@ import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function fmt(n: number) {
   return Math.round(Math.abs(n))
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
-
-// ─── Debt card ────────────────────────────────────────────────────────────────
 
 function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
   const isPositive = item.balance >= 0;
@@ -43,9 +39,7 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
         <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
           {item.person_name}
         </Text>
-        <Text variant="small">
-          Нач. баланс: {fmt(item.opening_balance)}
-        </Text>
+        <Text variant="small">РќР°С‡. Р±Р°Р»Р°РЅСЃ: {fmt(item.opening_balance)}</Text>
       </View>
       <View className="items-end">
         <Text
@@ -53,16 +47,20 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
             isPositive ? "text-green-600" : "text-red-500"
           }`}
         >
-          {isPositive ? "+" : "−"}{fmt(item.balance)}
+          {isPositive ? "+" : "в€’"}
+          {fmt(item.balance)}
         </Text>
-        <Text variant="small">{isPositive ? "Должны нам" : "Мы должны"}</Text>
+        <Text variant="small">{isPositive ? "Р”РѕР»Р¶РЅС‹ РЅР°Рј" : "РњС‹ РґРѕР»Р¶РЅС‹"}</Text>
       </View>
-      <MaterialIcons name="chevron-right" size={18} color="#94a3b8" className="ml-2" />
+      <MaterialIcons
+        name="chevron-right"
+        size={18}
+        color="#94a3b8"
+        className="ml-2"
+      />
     </TouchableOpacity>
   );
 }
-
-// ─── Create debt modal ────────────────────────────────────────────────────────
 
 function CreateDebtModal({
   visible,
@@ -81,12 +79,19 @@ function CreateDebtModal({
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
-    if (visible) { setPersonName(""); setOpeningBalance(""); setError(""); }
+    if (visible) {
+      setPersonName("");
+      setOpeningBalance("");
+      setError("");
+    }
   }, [visible]);
 
   async function handleSubmit() {
     setError("");
-    if (!personName.trim()) { setError("Введите имя."); return; }
+    if (!personName.trim()) {
+      setError("Р’РІРµРґРёС‚Рµ РёРјСЏ.");
+      return;
+    }
     setSubmitting(true);
     try {
       const payload: CreateDebtPayload = { person_name: personName.trim() };
@@ -97,7 +102,7 @@ function CreateDebtModal({
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      setError(e instanceof ApiError ? e.message : "Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.");
     } finally {
       setSubmitting(false);
     }
@@ -115,7 +120,9 @@ function CreateDebtModal({
           <TouchableOpacity onPress={onClose} hitSlop={10}>
             <MaterialIcons name="close" size={22} color="#94a3b8" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Новый долг</Text>
+          <Text variant="h5" className="flex-1 text-center">
+            РќРѕРІС‹Р№ РґРѕР»Рі
+          </Text>
           <View style={{ width: 22 }} />
         </View>
 
@@ -137,17 +144,17 @@ function CreateDebtModal({
 
             <View className="gap-4">
               <Input
-                label="Имя"
+                label="РРјСЏ"
                 required
-                placeholder="напр. Иван Иванов"
+                placeholder="РЅР°РїСЂ. РРІР°РЅ РРІР°РЅРѕРІ"
                 value={personName}
                 onChangeText={setPersonName}
                 returnKeyType="next"
               />
               <Input
-                label="Нач. баланс"
-                placeholder="0 (необязательно)"
-                hint="Положительный — должны вам, отрицательный — вы должны"
+                label="РќР°С‡. Р±Р°Р»Р°РЅСЃ"
+                placeholder="0 (РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅРѕ)"
+                hint="РџРѕР»РѕР¶РёС‚РµР»СЊРЅС‹Р№ вЂ” РґРѕР»Р¶РЅС‹ РІР°Рј, РѕС‚СЂРёС†Р°С‚РµР»СЊРЅС‹Р№ вЂ” РІС‹ РґРѕР»Р¶РЅС‹"
                 value={openingBalance}
                 onChangeText={setOpeningBalance}
                 keyboardType="numeric"
@@ -156,8 +163,14 @@ function CreateDebtModal({
               />
             </View>
 
-            <Button className="mt-6" size="lg" onPress={handleSubmit} loading={submitting} disabled={submitting}>
-              Создать
+            <Button
+              className="mt-6"
+              size="lg"
+              onPress={handleSubmit}
+              loading={submitting}
+              disabled={submitting}
+            >
+              РЎРѕР·РґР°С‚СЊ
             </Button>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -165,8 +178,6 @@ function CreateDebtModal({
     </Modal>
   );
 }
-
-// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function DebtsScreen() {
   const { token } = useAuth();
@@ -182,44 +193,47 @@ export default function DebtsScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
 
-  async function fetchDebts(reset = false) {
-    if (!token) return;
-    const pg = reset ? 1 : page;
-    setError("");
-    try {
-      const res = await api.debts.list(token, { page: pg });
-      if (reset) {
-        setDebts(res.data);
-        setPage(2);
-      } else {
-        setDebts((prev) => [...prev, ...res.data]);
-        setPage(pg + 1);
+  const fetchDebts = React.useCallback(
+    async (reset = false) => {
+      if (!token) return;
+      const pg = reset ? 1 : page;
+      setError("");
+      try {
+        const res = await api.debts.list(token, { page: pg });
+        if (reset) {
+          setDebts(res.data);
+          setPage(2);
+        } else {
+          setDebts((prev) => [...prev, ...res.data]);
+          setPage(pg + 1);
+        }
+        setHasMore(res.meta.current_page < res.meta.last_page);
+      } catch (e) {
+        console.error("Debts fetch error:", e);
+        if (reset) setError("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ РґРѕР»РіРё.");
       }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e) {
-      console.error("Debts fetch error:", e);
-      if (reset) setError("Не удалось загрузить долги.");
-    }
-  }
+    },
+    [page, token]
+  );
 
   React.useEffect(() => {
     fetchDebts(true).finally(() => setLoading(false));
-  }, [token]);
+  }, [fetchDebts]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-      {/* Header */}
       <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
         <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
           <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
         </TouchableOpacity>
         <View className="flex-1">
-          <Text variant="h4">Долги</Text>
-          <Text variant="muted" className="mt-0.5">Учёт долгов</Text>
+          <Text variant="h4">Р”РѕР»РіРё</Text>
+          <Text variant="muted" className="mt-0.5">
+            РЈС‡С‘С‚ РґРѕР»РіРѕРІ
+          </Text>
         </View>
       </View>
 
-      {/* List */}
       {loading ? (
         <View className="flex-1 px-4 pt-4">
           {[1, 2, 3].map((i) => (
@@ -231,14 +245,21 @@ export default function DebtsScreen() {
       ) : error ? (
         <View className="flex-1 items-center justify-center px-8">
           <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
-          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
-          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <Text variant="h5" className="mt-4 text-center">
+            РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё
+          </Text>
+          <Text variant="muted" className="mt-1 text-center">
+            {error}
+          </Text>
           <TouchableOpacity
-            onPress={() => { setLoading(true); fetchDebts(true).finally(() => setLoading(false)); }}
+            onPress={() => {
+              setLoading(true);
+              fetchDebts(true).finally(() => setLoading(false));
+            }}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
-            <Text className="text-sm font-semibold text-white">Повторить</Text>
+            <Text className="text-sm font-semibold text-white">РџРѕРІС‚РѕСЂРёС‚СЊ</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -261,7 +282,7 @@ export default function DebtsScreen() {
             <View className="items-center justify-center py-20">
               <MaterialIcons name="people" size={48} color="#94a3b8" />
               <Text variant="muted" className="mt-3 text-center">
-                Долгов нет.{"\n"}Нажмите + для добавления.
+                Р”РѕР»РіРѕРІ РЅРµС‚.{"\n"}РќР°Р¶РјРёС‚Рµ + РґР»СЏ РґРѕР±Р°РІР»РµРЅРёСЏ.
               </Text>
             </View>
           }
@@ -271,15 +292,11 @@ export default function DebtsScreen() {
             ) : null
           }
           renderItem={({ item }) => (
-            <DebtCard
-              item={item}
-              onPress={() => router.push(`/debts/${item.id}`)}
-            />
+            <DebtCard item={item} onPress={() => router.push(`/debts/${item.id}`)} />
           )}
         />
       )}
 
-      {/* FAB */}
       <TouchableOpacity
         onPress={() => setCreateVisible(true)}
         className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
@@ -288,13 +305,12 @@ export default function DebtsScreen() {
         <MaterialIcons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      {/* Create modal */}
       <CreateDebtModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
         onCreated={(d) => {
           setDebts((prev) => [d, ...prev]);
-          showToast({ message: "Долг добавлен", variant: "success" });
+          showToast({ message: "Р”РѕР»Рі РґРѕР±Р°РІР»РµРЅ", variant: "success" });
         }}
         token={token!}
       />

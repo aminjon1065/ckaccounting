@@ -1,14 +1,13 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { ScrollView, TouchableOpacity, View } from "react-native";
+import { Alert, ScrollView, Share, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
 import { api, type Sale, type SaleItem } from "@/lib/api";
+import { buildReceiptText } from "@/lib/receipt";
 import { useAuth } from "@/store/auth";
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(n: number) {
   return Math.round(n)
@@ -39,8 +38,6 @@ const PAYMENT_LABELS: Record<string, string> = {
   transfer: "Перевод",
 };
 
-// ─── Sale item row ─────────────────────────────────────────────────────────────
-
 function SaleItemRow({ item }: { item: SaleItem }) {
   const displayName = item.service_name ?? item.product_name ?? "—";
   const unitLabel = item.unit ? ` · ${item.unit}` : "";
@@ -52,7 +49,7 @@ function SaleItemRow({ item }: { item: SaleItem }) {
           {displayName}
         </Text>
         <Text variant="small">
-          {fmt(item.price)}{unitLabel} × {item.quantity}
+          {fmt(item.price)}{unitLabel} x {item.quantity}
         </Text>
       </View>
       <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
@@ -61,8 +58,6 @@ function SaleItemRow({ item }: { item: SaleItem }) {
     </View>
   );
 }
-
-// ─── Summary row ──────────────────────────────────────────────────────────────
 
 function SummaryRow({
   label,
@@ -77,7 +72,10 @@ function SummaryRow({
 }) {
   return (
     <View className="flex-row items-center justify-between py-2">
-      <Text variant={bold ? undefined : "muted"} className={bold ? "text-sm font-semibold text-slate-900 dark:text-slate-50" : undefined}>
+      <Text
+        variant={bold ? undefined : "muted"}
+        className={bold ? "text-sm font-semibold text-slate-900 dark:text-slate-50" : undefined}
+      >
         {label}
       </Text>
       <Text
@@ -90,8 +88,6 @@ function SummaryRow({
   );
 }
 
-// ─── Sale detail screen ───────────────────────────────────────────────────────
-
 export default function SaleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { token } = useAuth();
@@ -101,8 +97,26 @@ export default function SaleDetailScreen() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
 
+  const handleShareReceipt = React.useCallback(async () => {
+    if (!sale) {
+      return;
+    }
+
+    try {
+      await Share.share({
+        title: `Receipt #${sale.id}`,
+        message: buildReceiptText(sale),
+      });
+    } catch {
+      Alert.alert("Ошибка", "Не удалось поделиться чеком.");
+    }
+  }, [sale]);
+
   React.useEffect(() => {
-    if (!token || !id) return;
+    if (!token || !id) {
+      return;
+    }
+
     setError("");
     api.sales
       .get(Number(id), token)
@@ -117,7 +131,6 @@ export default function SaleDetailScreen() {
   if (loading) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-        {/* Header skeleton */}
         <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
           <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
             <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
@@ -143,14 +156,16 @@ export default function SaleDetailScreen() {
         <View className="flex-row gap-3 mt-4">
           <Button variant="outline" onPress={() => router.back()}>Назад</Button>
           {!!error && (
-            <Button onPress={() => {
-              setLoading(true);
-              setError("");
-              api.sales.get(Number(id), token!)
-                .then(setSale)
-                .catch(() => setError("Не удалось загрузить продажу."))
-                .finally(() => setLoading(false));
-            }}>
+            <Button
+              onPress={() => {
+                setLoading(true);
+                setError("");
+                api.sales.get(Number(id), token!)
+                  .then(setSale)
+                  .catch(() => setError("Не удалось загрузить продажу."))
+                  .finally(() => setLoading(false));
+              }}
+            >
               Повторить
             </Button>
           )}
@@ -165,7 +180,6 @@ export default function SaleDetailScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-      {/* Header */}
       <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
         <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
           <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
@@ -176,6 +190,13 @@ export default function SaleDetailScreen() {
           </Text>
           <Text variant="muted" className="mt-0.5">{fmtDate(sale.created_at)}</Text>
         </View>
+        <TouchableOpacity
+          onPress={handleShareReceipt}
+          hitSlop={10}
+          className="mr-3 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+        >
+          <MaterialIcons name="share" size={18} color="#0a7ea4" />
+        </TouchableOpacity>
         <View className="flex-row items-center gap-2">
           {sale.type === "service" && <Badge variant="secondary">Услуга</Badge>}
           {hasDebt && <Badge variant="destructive">Долг</Badge>}
@@ -187,7 +208,6 @@ export default function SaleDetailScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Payment & status */}
         <Card className="mb-4">
           <CardContent className="pt-4">
             <View className="flex-row items-center gap-2 mb-3">
@@ -208,38 +228,26 @@ export default function SaleDetailScreen() {
 
             <Separator className="mb-3" />
 
-            {/* Financial summary */}
             {hasDiscount && (
               <SummaryRow label="Подытог" value={fmt(subtotal)} />
             )}
             {hasDiscount && (
-              <SummaryRow label="Скидка" value={`− ${fmt(sale.discount)}`} color="#f59e0b" />
+              <SummaryRow label="Скидка" value={`- ${fmt(sale.discount)}`} color="#f59e0b" />
             )}
             <SummaryRow label="Итого" value={fmt(sale.total)} bold />
-            <SummaryRow
-              label="Оплачено"
-              value={fmt(sale.paid)}
-              color="#22c55e"
-            />
+            <SummaryRow label="Оплачено" value={fmt(sale.paid)} color="#22c55e" />
             {hasDebt && (
-              <SummaryRow
-                label="Остаток долга"
-                value={fmt(sale.debt)}
-                color="#ef4444"
-              />
+              <SummaryRow label="Остаток долга" value={fmt(sale.debt)} color="#ef4444" />
             )}
             {!!sale.notes && (
-              <>
-                <View className="border-t border-slate-100 dark:border-zinc-800 mt-1 pt-2">
-                  <Text variant="muted" className="text-xs mb-0.5">Заметки</Text>
-                  <Text className="text-sm text-slate-700 dark:text-slate-300">{sale.notes}</Text>
-                </View>
-              </>
+              <View className="border-t border-slate-100 dark:border-zinc-800 mt-1 pt-2">
+                <Text variant="muted" className="text-xs mb-0.5">Заметки</Text>
+                <Text className="text-sm text-slate-700 dark:text-slate-300">{sale.notes}</Text>
+              </View>
             )}
           </CardContent>
         </Card>
 
-        {/* Items */}
         <Card>
           <CardContent className="pt-3 pb-0">
             <View className="flex-row items-center justify-between mb-1">
@@ -254,7 +262,6 @@ export default function SaleDetailScreen() {
                 item={item}
               />
             ))}
-            {/* Total row */}
             <View className="flex-row items-center justify-between py-3">
               <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
                 Сумма
@@ -265,6 +272,10 @@ export default function SaleDetailScreen() {
             </View>
           </CardContent>
         </Card>
+
+        <Button className="mt-4" variant="outline" onPress={handleShareReceipt}>
+          Поделиться чеком
+        </Button>
       </ScrollView>
     </SafeAreaView>
   );

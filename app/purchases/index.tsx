@@ -4,23 +4,13 @@ import * as React from "react";
 import {
   ActivityIndicator,
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  ScrollView,
-  TextInput as RNTextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Skeleton, Text } from "@/components/ui";
-import {
-  api,
-  ApiError,
-  type Product,
-  type Purchase,
-} from "@/lib/api";
+import { Skeleton, Text } from "@/components/ui";
+import { api, type Purchase } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { useAuth } from "@/store/auth";
@@ -93,7 +83,7 @@ export default function PurchasesScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
 
-  async function fetchPurchases(reset = false) {
+  const fetchPurchases = React.useCallback(async (reset = false) => {
     if (!token) return;
     const pg = reset ? 1 : page;
     setError("");
@@ -111,11 +101,11 @@ export default function PurchasesScreen() {
       console.error("Purchases fetch error:", e);
       if (reset) setError("Не удалось загрузить закупки.");
     }
-  }
+  }, [page, token]);
 
   React.useEffect(() => {
     fetchPurchases(true).finally(() => setLoading(false));
-  }, [token]);
+  }, [fetchPurchases]);
 
   if (!can(user?.role, "purchases:view")) {
     return (
