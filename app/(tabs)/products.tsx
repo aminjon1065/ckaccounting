@@ -17,6 +17,7 @@ import { useAuth } from "@/store/auth";
 
 import { ProductCard } from "@/components/products/ProductCard";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
+import { ScannerOverlay } from "@/components/ScannerOverlay";
 import { useProducts } from "@/hooks/useProducts";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ export default function ProductsScreen() {
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
+  const [scannerVisible, setScannerVisible] = React.useState(false);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -70,6 +72,9 @@ export default function ProductsScreen() {
             returnKeyType="search"
             clearButtonMode="while-editing"
           />
+          <TouchableOpacity onPress={() => setScannerVisible(true)} hitSlop={8}>
+            <MaterialIcons name="qr-code-scanner" size={20} color="#94a3b8" />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -162,6 +167,25 @@ export default function ProductsScreen() {
         onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
         token={token!}
         isSuperAdmin={isSuperAdmin}
+      />
+
+      {/* Barcode scanner for product search */}
+      <ScannerOverlay
+        visible={scannerVisible}
+        onClose={() => setScannerVisible(false)}
+        onScan={(code) => {
+          setScannerVisible(false);
+          // Try exact match first
+          const exact = products.find(
+            (p) => p.code && p.code.toLowerCase() === code.toLowerCase()
+          );
+          if (exact) {
+            router.push(`/products/${exact.id}`);
+          } else {
+            // Fall back to filtering by the scanned code
+            handleSearchChange(code);
+          }
+        }}
       />
     </SafeAreaView>
   );

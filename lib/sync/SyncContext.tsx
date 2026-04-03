@@ -37,7 +37,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [pendingActionsCount, setPendingActionsCount] = useState(0);
   const { token, user } = useAuth();
-  
+
   const syncLock = useRef(false);
 
   useEffect(() => {
@@ -70,17 +70,17 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
         for (const action of pending) {
           try {
             await markSyncActionStatus(action.id, "processing");
-            
+
             // Reconstruct the request dynamically
             const baseHeaders = {
               "Content-Type": "application/json",
               "Authorization": `Bearer ${token}`,
               "Accept": "application/json"
             };
-            
+
             let customHeaders = {};
             try {
-               if (action.headers) customHeaders = JSON.parse(action.headers);
+              if (action.headers) customHeaders = JSON.parse(action.headers);
             } catch {}
 
             const requestUrl = action.path.startsWith("http")
@@ -98,12 +98,12 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
             } else {
               const body = await response.json().catch(() => ({}));
               if (response.status >= 500) {
-                 await markSyncActionStatus(action.id, "failed", true);
+                await markSyncActionStatus(action.id, "failed", true);
               } else {
-                 // 4xx errors usually mean bad payload (e.g. out of stock remotely), we keep them failed or discard them.
-                 // For now, mark them completed/failed and stop retrying to prevent deadlocks.
-                 await markSyncActionStatus(action.id, "completed");
-                 console.error("Unrecoverable sync error:", body);
+                // 4xx errors usually mean bad payload (e.g. out of stock remotely).
+                // Mark completed to prevent deadlocks.
+                await markSyncActionStatus(action.id, "completed");
+                console.error("Unrecoverable sync error:", body);
               }
             }
           } catch {
@@ -123,8 +123,6 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   const fetchRemoteProducts = useCallback(async () => {
     if (!isOnline || !token || !user?.shop_id) return;
     try {
-      // Basic implementation for pulling products
-      // In a real app we'd paginate or use an 'updated_since' timestamp
       let allProducts: Product[] = [];
       let page = 1;
       let hasMore = true;
@@ -148,7 +146,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isOnline, token, user]);
 
-  // Sync when coming online
+  // Sync when coming online / token changes
   useEffect(() => {
     if (isOnline && token) {
       triggerSync().catch(console.error);
@@ -157,6 +155,15 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       refreshPendingActions().catch(console.error);
     }
   }, [isOnline, token, triggerSync, fetchRemoteProducts, refreshPendingActions]);
+
+  // Periodic sync every 60 seconds while online
+  useEffect(() => {
+    if (!isOnline || !token) return;
+    const interval = setInterval(() => {
+      triggerSync().catch(console.error);
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [isOnline, token, triggerSync]);
 
   return (
     <SyncContext.Provider

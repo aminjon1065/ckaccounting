@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
+import { ScannerOverlay } from "@/components/ScannerOverlay";
 import {
   api,
   ApiError,
@@ -70,6 +71,7 @@ export function ProductFormModal({
   const [photoUri, setPhotoUri] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const [codeScannerVisible, setCodeScannerVisible] = React.useState(false);
 
   const codeRef = React.useRef<RNTextInput>(null);
   const unitRef = React.useRef<RNTextInput>(null);
@@ -348,7 +350,8 @@ export function ProductFormModal({
                 onSubmitEditing={() => codeRef.current?.focus()}
               />
 
-              <View className="flex-row gap-3">
+              {/* Code / Unit row with barcode scan button */}
+              <View className="flex-row gap-2 items-end">
                 <View className="flex-1">
                   <Input
                     ref={codeRef}
@@ -360,6 +363,13 @@ export function ProductFormModal({
                     onSubmitEditing={() => unitRef.current?.focus()}
                   />
                 </View>
+                <TouchableOpacity
+                  onPress={() => setCodeScannerVisible(true)}
+                  className="mb-0.5 w-11 h-11 rounded-xl bg-slate-100 dark:bg-zinc-800 items-center justify-center border border-slate-200 dark:border-zinc-700"
+                  hitSlop={8}
+                >
+                  <MaterialIcons name="qr-code-scanner" size={20} color="#64748b" />
+                </TouchableOpacity>
                 <View className="flex-1">
                   <Input
                     ref={unitRef}
@@ -492,6 +502,16 @@ export function ProductFormModal({
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      {/* Barcode scanner for populating the code field */}
+      <ScannerOverlay
+        visible={codeScannerVisible}
+        onClose={() => setCodeScannerVisible(false)}
+        onScan={(scannedCode) => {
+          setCode(scannedCode);
+          setCodeScannerVisible(false);
+        }}
+      />
     </Modal>
   );
 }

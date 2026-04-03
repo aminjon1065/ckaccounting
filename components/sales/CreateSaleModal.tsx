@@ -7,6 +7,7 @@ import { api, ApiError, type CreateSalePayload, type Product, type Sale, type Sa
 import { useSync } from "@/lib/sync/SyncContext";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
+import { ScannerOverlay } from "@/components/ScannerOverlay";
 import { defaultPriceMode, deriveProductPrice, fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
 import { getLocalProducts, queueSyncAction } from "@/lib/db";
@@ -49,6 +50,7 @@ export function CreateSaleModal({
   const [paymentType, setPaymentType] = React.useState<"cash" | "card" | "transfer">("cash");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const [scannerVisible, setScannerVisible] = React.useState(false);
 
   // Load Shops for SuperAdmin
   React.useEffect(() => {
@@ -373,18 +375,30 @@ export function CreateSaleModal({
                   <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
                     Товары ({cart.length})
                   </Text>
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
-                      setPickerVisible(true);
-                    }}
-                    className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
-                  >
-                    <MaterialIcons name="add" size={16} color="#0a7ea4" />
-                    <Text className="text-xs font-semibold text-primary-500">
-                      Добавить товар
-                    </Text>
-                  </TouchableOpacity>
+                  <View className="flex-row items-center gap-2">
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин."); return; }
+                        setScannerVisible(true);
+                      }}
+                      className="flex-row items-center gap-1 bg-slate-100 dark:bg-zinc-800 px-3 py-1.5 rounded-lg"
+                    >
+                      <MaterialIcons name="qr-code-scanner" size={16} color="#64748b" />
+                      <Text className="text-xs font-semibold text-slate-600 dark:text-slate-400">Скан</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
+                        setPickerVisible(true);
+                      }}
+                      className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
+                    >
+                      <MaterialIcons name="add" size={16} color="#0a7ea4" />
+                      <Text className="text-xs font-semibold text-primary-500">
+                        Добавить товар
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {cart.length === 0 ? (
@@ -712,6 +726,24 @@ export function CreateSaleModal({
           onClose={() => setPickerVisible(false)}
         />
       )}
+
+      {/* Barcode scanner */}
+      <ScannerOverlay
+        visible={scannerVisible}
+        onClose={() => setScannerVisible(false)}
+        onScan={(code) => {
+          setScannerVisible(false);
+          const found = products.find(
+            (p) => p.code && p.code.toLowerCase() === code.toLowerCase()
+          );
+          if (found) {
+            addToCart(found);
+            showToast({ message: `${found.name} добавлен в корзину`, variant: "success" });
+          } else {
+            showToast({ message: `Товар с кодом ${code} не найден`, variant: "error" });
+          }
+        }}
+      />
     </Modal>
   );
 }

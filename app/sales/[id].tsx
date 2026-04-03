@@ -3,10 +3,11 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
 import { Alert, ScrollView, Share, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Print from "expo-print";
 
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
 import { api, type Sale, type SaleItem } from "@/lib/api";
-import { buildReceiptText } from "@/lib/receipt";
+import { buildReceiptText, generateReceiptHtml } from "@/lib/receipt";
 import { useAuth } from "@/store/auth";
 
 function fmt(n: number) {
@@ -98,10 +99,7 @@ export default function SaleDetailScreen() {
   const [error, setError] = React.useState("");
 
   const handleShareReceipt = React.useCallback(async () => {
-    if (!sale) {
-      return;
-    }
-
+    if (!sale) return;
     try {
       await Share.share({
         title: `Receipt #${sale.id}`,
@@ -109,6 +107,15 @@ export default function SaleDetailScreen() {
       });
     } catch {
       Alert.alert("Ошибка", "Не удалось поделиться чеком.");
+    }
+  }, [sale]);
+
+  const handlePrintReceipt = React.useCallback(async () => {
+    if (!sale) return;
+    try {
+      await Print.printAsync({ html: generateReceiptHtml(sale) });
+    } catch {
+      Alert.alert("Ошибка", "Не удалось открыть печать.");
     }
   }, [sale]);
 
@@ -273,9 +280,14 @@ export default function SaleDetailScreen() {
           </CardContent>
         </Card>
 
-        <Button className="mt-4" variant="outline" onPress={handleShareReceipt}>
-          Поделиться чеком
-        </Button>
+        <View className="flex-row gap-3 mt-4">
+          <Button className="flex-1" variant="outline" onPress={handlePrintReceipt}>
+            Печать
+          </Button>
+          <Button className="flex-1" onPress={handleShareReceipt}>
+            Поделиться
+          </Button>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );

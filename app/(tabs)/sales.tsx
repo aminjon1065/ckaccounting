@@ -105,6 +105,10 @@ export default function SalesScreen() {
           data={sales}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews
           refreshing={refreshing}
           onRefresh={handleRefresh}
           onEndReached={handleLoadMore}

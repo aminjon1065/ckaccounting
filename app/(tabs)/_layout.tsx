@@ -1,9 +1,10 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Tabs } from "expo-router";
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useSync } from "@/lib/sync/SyncContext";
 
 const PRIMARY = "#0a7ea4";
 const MUTED = "#94a3b8";
@@ -12,6 +13,31 @@ type IconName = React.ComponentProps<typeof MaterialIcons>["name"];
 
 function TabIcon({ name, color }: { name: IconName; color: string }) {
   return <MaterialIcons name={name} size={24} color={color} />;
+}
+
+function SalesTabIcon({ color }: { color: string }) {
+  const { pendingActionsCount } = useSync();
+  return (
+    <View>
+      <MaterialIcons name="receipt-long" size={24} color={color} />
+      {pendingActionsCount > 0 && (
+        <View
+          style={{
+            position: "absolute",
+            top: -3,
+            right: -6,
+            backgroundColor: "#f59e0b",
+            borderRadius: 6,
+            minWidth: 12,
+            height: 12,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingHorizontal: 2,
+          }}
+        />
+      )}
+    </View>
+  );
 }
 
 export default function TabLayout() {
@@ -56,9 +82,7 @@ export default function TabLayout() {
         name="sales"
         options={{
           title: "Продажи",
-          tabBarIcon: ({ color }) => (
-            <TabIcon name="receipt-long" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <SalesTabIcon color={color} />,
         }}
       />
       <Tabs.Screen
