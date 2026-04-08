@@ -287,9 +287,9 @@ export default function ReportsScreen() {
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
       <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+
+
+
         <View className="flex-1">
           <Text variant="h4">Отчёты</Text>
           <Text variant="muted" className="mt-0.5">Аналитика</Text>

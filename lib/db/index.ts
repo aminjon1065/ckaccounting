@@ -1,7 +1,7 @@
 import { getDb, initDb, clearLocalData } from "./schema";
 
 // Product Queries
-import { Product } from "@/lib/api";
+import { Product, Debt, DebtTransaction } from "@/lib/api";
 
 export async function insertOrUpdateProducts(products: Product[]) {
   const db = getDb();
@@ -73,6 +73,102 @@ export async function getLocalProductById(id: number): Promise<Product | null> {
 export async function decrementLocalProductStock(id: number, quantity: number) {
   const db = getDb();
   await db.runAsync("UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?) WHERE id = ?", [quantity, id]);
+}
+
+// Debt Queries
+export async function insertOrUpdateDebts(debts: Debt[], shopId?: number) {
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    for (const d of debts) {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO debts (
+          id, shop_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          d.id, shopId ?? null, d.person_name, d.opening_balance ?? 0, d.balance, 
+          "receivable", d.updated_at, new Date().toISOString()
+        ]
+      );
+      if (d.transactions) {
+        for (const tx of d.transactions) {
+          await db.runAsync(
+            `INSERT OR REPLACE INTO debt_transactions (
+              id, debt_id, type, amount, note, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)`,
+            [tx.id, tx.debt_id, tx.type, tx.amount, tx.note ?? null, tx.created_at]
+          );
+        }
+      }
+    }
+  });
+}
+
+export async function insertOrUpdateDebtTransactions(transactions: DebtTransaction[]) {
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    for (const tx of transactions) {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO debt_transactions (
+          id, debt_id, type, amount, note, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [tx.id, tx.debt_id, tx.type, tx.amount, tx.note ?? null, tx.created_at]
+      );
+    }
+  });
+}
+
+export async function getLocalDebts(shop_id?: number): Promise<Debt[]> {
+  const db = getDb();
+  let query = "SELECT * FROM debts";
+  const params: any[] = [];
+  if (shop_id) {
+    query += " WHERE shop_id = ? OR shop_id IS NULL";
+    params.push(shop_id);
+  }
+  query += " ORDER BY updated_at DESC";
+  
+  const results = await db.getAllAsync<any>(query, params);
+  return results.map(r => ({
+    id: r.id,
+    person_name: r.person_name,
+    opening_balance: Number(r.opening_balance),
+    balance: Number(r.balance),
+    created_at: r.updated_at,
+    updated_at: r.updated_at,
+  }));
+}
+
+export async function getLocalDebtById(id: number): Promise<Debt | null> {
+  const db = getDb();
+  const r = await db.getFirstAsync<any>("SELECT * FROM debts WHERE id = ?", [id]);
+  if (!r) return null;
+  
+  const txs = await getLocalDebtTransactions(id);
+  return {
+    id: r.id,
+    person_name: r.person_name,
+    opening_balance: Number(r.opening_balance),
+    balance: Number(r.balance),
+    transactions: txs,
+    created_at: r.updated_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export async function getLocalDebtTransactions(debt_id: number): Promise<DebtTransaction[]> {
+  const db = getDb();
+  const results = await db.getAllAsync<any>(
+    "SELECT * FROM debt_transactions WHERE debt_id = ? ORDER BY created_at DESC", 
+    [debt_id]
+  );
+  return results.map(r => ({
+    id: r.id,
+    debt_id: r.debt_id,
+    type: r.type,
+    amount: Number(r.amount),
+    note: r.note,
+    created_at: r.created_at,
+  }));
 }
 
 // Queue Queries

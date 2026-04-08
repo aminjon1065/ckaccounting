@@ -1,9 +1,10 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { Alert, ScrollView, Share, TouchableOpacity, View } from "react-native";
+import { Alert, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
 import { api, type Sale, type SaleItem } from "@/lib/api";
@@ -101,12 +102,15 @@ export default function SaleDetailScreen() {
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
     try {
-      await Share.share({
-        title: `Receipt #${sale.id}`,
-        message: buildReceiptText(sale),
-      });
+      const { uri } = await Print.printToFileAsync({ html: generateReceiptHtml(sale) });
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf', dialogTitle: `Чек #${sale.id}` });
+      } else {
+        Alert.alert("Ошибка", "Функция шэринга файлов недоступна.");
+      }
     } catch {
-      Alert.alert("Ошибка", "Не удалось поделиться чеком.");
+      Alert.alert("Ошибка", "Не удалось сформировать чек.");
     }
   }, [sale]);
 

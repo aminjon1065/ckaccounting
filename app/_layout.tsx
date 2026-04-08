@@ -65,7 +65,7 @@ export default function RootLayout() {
                   <Stack.Screen name="suspended" options={{ headerShown: false }} />
                   <Stack.Screen name="debts" options={{ headerShown: false }} />
                   <Stack.Screen name="purchases" options={{ headerShown: false }} />
-                  <Stack.Screen name="reports" options={{ headerShown: false }} />
+                  <Stack.Screen name="expenses" options={{ headerShown: false }} />
                   <Stack.Screen name="users" options={{ headerShown: false }} />
                   <Stack.Screen name="sales" options={{ headerShown: false }} />
                   <Stack.Screen name="products" options={{ headerShown: false }} />

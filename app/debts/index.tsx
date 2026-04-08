@@ -17,6 +17,8 @@ import { Button, Input, Skeleton, Text } from "@/components/ui";
 import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
+import { getLocalDebts, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { useSync } from "@/lib/sync/SyncContext";
 
 function fmt(n: number) {
   return Math.round(Math.abs(n))
@@ -78,6 +80,9 @@ function CreateDebtModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
+  const { user } = useAuth();
+  const { refreshPendingActions, triggerSync } = useSync();
+
   React.useEffect(() => {
     if (visible) {
       setPersonName("");
@@ -89,20 +94,38 @@ function CreateDebtModal({
   async function handleSubmit() {
     setError("");
     if (!personName.trim()) {
-      setError("Р’РІРµРґРёС‚Рµ РёРјСЏ.");
+      setError("Введите имя.");
       return;
     }
     setSubmitting(true);
     try {
-      const payload: CreateDebtPayload = { person_name: personName.trim() };
+      const payload: CreateDebtPayload & { _temp_id?: number } = { person_name: personName.trim() };
       if (openingBalance && !isNaN(Number(openingBalance))) {
         payload.opening_balance = parseFloat(openingBalance);
       }
-      const created = await api.debts.create(payload, token);
-      onCreated(created);
+      
+      const tempId = -Date.now();
+      payload._temp_id = tempId;
+
+      const newDebt: Debt = {
+        id: tempId,
+        person_name: payload.person_name,
+        opening_balance: payload.opening_balance ?? 0,
+        balance: payload.opening_balance ?? 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      await insertOrUpdateDebts([newDebt], user?.shop_id);
+      await queueSyncAction("POST", "/debts", payload);
+      await refreshPendingActions();
+      
+      onCreated(newDebt);
       onClose();
+      
+      triggerSync().catch(console.error);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.");
+      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
     } finally {
       setSubmitting(false);
     }
@@ -180,40 +203,31 @@ function CreateDebtModal({
 }
 
 export default function DebtsScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { showToast } = useToast();
   const router = useRouter();
 
   const [debts, setDebts] = React.useState<Debt[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
-  const [page, setPage] = React.useState(1);
-  const [hasMore, setHasMore] = React.useState(true);
+  const [hasMore, setHasMore] = React.useState(false); // local lists are unpaginated
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
 
   const fetchDebts = React.useCallback(
     async (reset = false) => {
-      if (!token) return;
-      const pg = reset ? 1 : page;
       setError("");
       try {
-        const res = await api.debts.list(token, { page: pg });
-        if (reset) {
-          setDebts(res.data);
-          setPage(2);
-        } else {
-          setDebts((prev) => [...prev, ...res.data]);
-          setPage(pg + 1);
-        }
-        setHasMore(res.meta.current_page < res.meta.last_page);
+        const localDebts = await getLocalDebts(user?.shop_id);
+        setDebts(localDebts);
+        setHasMore(false);
       } catch (e) {
         console.error("Debts fetch error:", e);
-        if (reset) setError("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ РґРѕР»РіРё.");
+        if (reset) setError("Не удалось загрузить долги.");
       }
     },
-    [page, token]
+    [user?.shop_id]
   );
 
   React.useEffect(() => {

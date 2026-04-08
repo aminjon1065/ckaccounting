@@ -86,15 +86,15 @@ export default function SettingsScreen() {
                     description="Валюта, налог"
                     onPress={() => setShopSettingsVisible(true)}
                   />
-                  {can(user?.role, "reports:view") && <Separator className="ml-16" />}
+                  {can(user?.role, "expenses:view") && <Separator className="ml-16" />}
                 </>
               )}
-              {can(user?.role, "reports:view") && (
+              {can(user?.role, "expenses:view") && (
                 <SettingsRow
-                  icon="bar-chart"
-                  label="Отчёты"
-                  description="Продажи, расходы, прибыль"
-                  onPress={() => router.push("/reports")}
+                  icon="account-balance-wallet"
+                  label="Расходы"
+                  description="Учёт расходов"
+                  onPress={() => router.push("/expenses")}
                 />
               )}
             </CardContent>

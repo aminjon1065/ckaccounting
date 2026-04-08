@@ -39,6 +39,26 @@ export async function initDb() {
       retries INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS debts (
+      id INTEGER PRIMARY KEY,
+      shop_id INTEGER,
+      person_name TEXT NOT NULL,
+      opening_balance REAL DEFAULT 0,
+      balance REAL DEFAULT 0,
+      direction TEXT DEFAULT 'receivable',
+      updated_at TEXT,
+      last_synced_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS debt_transactions (
+      id INTEGER PRIMARY KEY,
+      debt_id INTEGER,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      created_at TEXT
+    );
   `);
 
   const productColumns = await db.getAllAsync<{ name: string }>("PRAGMA table_info(products)");
@@ -58,5 +78,7 @@ export async function clearLocalData() {
   await db.execAsync(`
     DELETE FROM products;
     DELETE FROM sync_queue;
+    DELETE FROM debts;
+    DELETE FROM debt_transactions;
   `);
 }

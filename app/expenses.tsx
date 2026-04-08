@@ -1,4 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -21,6 +22,7 @@ import { useExpenses } from "@/hooks/useExpenses";
 
 export default function ExpensesScreen() {
   const { token, user } = useAuth();
+  const router = useRouter();
 
   const {
     expenses,
@@ -53,11 +55,16 @@ export default function ExpensesScreen() {
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <Text variant="h4">Расходы</Text>
-        <Text variant="muted" className="mt-0.5">
-          Учёт расходов
-        </Text>
+      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
+          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
+        </TouchableOpacity>
+        <View className="flex-1">
+          <Text variant="h4">Расходы</Text>
+          <Text variant="muted" className="mt-0.5">
+            Учёт расходов
+          </Text>
+        </View>
       </View>
 
       {/* List */}

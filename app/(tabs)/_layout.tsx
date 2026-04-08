@@ -81,18 +81,18 @@ export default function TabLayout() {
       <Tabs.Screen
         name="sales"
         options={{
-          title: "Продажи",
+          title: "Продажа",
           tabBarIcon: ({ color }) => <SalesTabIcon color={color} />,
         }}
       />
       <Tabs.Screen
-        name="expenses"
+        name="reports"
         options={{
-          title: "Расходы",
+          title: "Отчёты",
           tabBarIcon: ({ color }) => (
-            <TabIcon name="account-balance-wallet" color={color} />
+            <TabIcon name="bar-chart" color={color} />
           ),
-          tabBarItemStyle: can(user?.role, "expenses:view")
+          tabBarItemStyle: can(user?.role, "reports:view")
             ? undefined
             : { display: "none" },
         }}

@@ -21,6 +21,8 @@ import {
   type DebtTransaction,
 } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { getLocalDebtById, insertOrUpdateDebtTransactions, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { useSync } from "@/lib/sync/SyncContext";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,6 +105,8 @@ function AddTransactionModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
+  const { refreshPendingActions, triggerSync } = useSync();
+
   React.useEffect(() => {
     if (visible) { setType("give"); setAmount(""); setNote(""); setError(""); }
   }, [visible]);
@@ -120,14 +124,34 @@ function AddTransactionModal({
         amount: parseFloat(amount),
       };
       if (note.trim()) payload.note = note.trim();
-      const tx = await api.debts.addTransaction(debtId, payload, token);
+      const tempId = -Date.now();
+      const tx: DebtTransaction = {
+        id: tempId,
+        debt_id: debtId,
+        type: payload.type,
+        amount: payload.amount,
+        note: payload.note ?? null,
+        created_at: new Date().toISOString()
+      };
       // Estimate new balance change for optimistic update
       const delta =
         type === "give" ? parseFloat(amount) :
         type === "take" ? -parseFloat(amount) :
         parseFloat(amount); // repay reduces debt
+      // Update local db
+      await insertOrUpdateDebtTransactions([tx]);
+      const debt = await getLocalDebtById(debtId);
+      if (debt) {
+         debt.balance += delta;
+         await insertOrUpdateDebts([debt]);
+      }
+
+      await queueSyncAction("POST", `/debts/${debtId}/transactions`, payload);
+      await refreshPendingActions();
+
       onAdded(tx, delta);
       onClose();
+      triggerSync().catch(console.error);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
     } finally {
@@ -249,13 +273,13 @@ export default function DebtDetailScreen() {
   const [txVisible, setTxVisible] = React.useState(false);
 
   React.useEffect(() => {
-    if (!token || !id) return;
-    api.debts
-      .get(Number(id), token)
+    if (!id) return;
+
+    getLocalDebtById(Number(id))
       .then(setDebt)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [token, id]);
+  }, [id]);
 
   function handleTxAdded(tx: DebtTransaction, balanceDelta: number) {
     setDebt((prev) => {
