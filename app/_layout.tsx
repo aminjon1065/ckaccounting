@@ -10,6 +10,7 @@ import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/error-boundary";
+import { BiometricGuard } from "@/components/auth/BiometricGuard";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
 import { AuthProvider, useAuth } from "@/store/auth";
@@ -59,7 +60,8 @@ export default function RootLayout() {
             <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
               <AuthGuard />
               <SyncProvider>
-                <Stack>
+                <BiometricGuard>
+                  <Stack>
                   <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                   <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                   <Stack.Screen name="suspended" options={{ headerShown: false }} />
@@ -74,7 +76,8 @@ export default function RootLayout() {
                     name="modal"
                     options={{ presentation: "modal", title: "Modal" }}
                   />
-                </Stack>
+                  </Stack>
+                </BiometricGuard>
               </SyncProvider>
               <StatusBar style="auto" />
             </ThemeProvider>
