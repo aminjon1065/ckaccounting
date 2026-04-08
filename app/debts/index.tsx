@@ -41,7 +41,7 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
         <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
           {item.person_name}
         </Text>
-        <Text variant="small">РќР°С‡. Р±Р°Р»Р°РЅСЃ: {fmt(item.opening_balance)}</Text>
+        <Text variant="small">Нач. баланс: {fmt(item.opening_balance)}</Text>
       </View>
       <View className="items-end">
         <Text
@@ -52,7 +52,7 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
           {isPositive ? "+" : "в€’"}
           {fmt(item.balance)}
         </Text>
-        <Text variant="small">{isPositive ? "Р”РѕР»Р¶РЅС‹ РЅР°Рј" : "РњС‹ РґРѕР»Р¶РЅС‹"}</Text>
+        <Text variant="small">{isPositive ? "Должны нам" : "Мы должны"}</Text>
       </View>
       <MaterialIcons
         name="chevron-right"
@@ -144,7 +144,7 @@ function CreateDebtModal({
             <MaterialIcons name="close" size={22} color="#94a3b8" />
           </TouchableOpacity>
           <Text variant="h5" className="flex-1 text-center">
-            РќРѕРІС‹Р№ РґРѕР»Рі
+            Новый долг
           </Text>
           <View style={{ width: 22 }} />
         </View>
@@ -175,9 +175,9 @@ function CreateDebtModal({
                 returnKeyType="next"
               />
               <Input
-                label="РќР°С‡. Р±Р°Р»Р°РЅСЃ"
-                placeholder="0 (РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅРѕ)"
-                hint="РџРѕР»РѕР¶РёС‚РµР»СЊРЅС‹Р№ вЂ” РґРѕР»Р¶РЅС‹ РІР°Рј, РѕС‚СЂРёС†Р°С‚РµР»СЊРЅС‹Р№ вЂ” РІС‹ РґРѕР»Р¶РЅС‹"
+                label="Нач. баланс"
+                placeholder="0 (необязательно)"
+                hint="Положительный — должны вам, отрицательный — вы должны"
                 value={openingBalance}
                 onChangeText={setOpeningBalance}
                 keyboardType="numeric"
@@ -193,7 +193,7 @@ function CreateDebtModal({
               loading={submitting}
               disabled={submitting}
             >
-              РЎРѕР·РґР°С‚СЊ
+              Создать
             </Button>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -241,9 +241,9 @@ export default function DebtsScreen() {
           <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
         </TouchableOpacity>
         <View className="flex-1">
-          <Text variant="h4">Р”РѕР»РіРё</Text>
+          <Text variant="h4">Долги</Text>
           <Text variant="muted" className="mt-0.5">
-            РЈС‡С‘С‚ РґРѕР»РіРѕРІ
+            Учёт долгов
           </Text>
         </View>
       </View>
@@ -260,7 +260,7 @@ export default function DebtsScreen() {
         <View className="flex-1 items-center justify-center px-8">
           <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
           <Text variant="h5" className="mt-4 text-center">
-            РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё
+            Ошибка загрузки
           </Text>
           <Text variant="muted" className="mt-1 text-center">
             {error}
@@ -273,7 +273,7 @@ export default function DebtsScreen() {
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
-            <Text className="text-sm font-semibold text-white">РџРѕРІС‚РѕСЂРёС‚СЊ</Text>
+            <Text className="text-sm font-semibold text-white">Повторить</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -296,7 +296,7 @@ export default function DebtsScreen() {
             <View className="items-center justify-center py-20">
               <MaterialIcons name="people" size={48} color="#94a3b8" />
               <Text variant="muted" className="mt-3 text-center">
-                Р”РѕР»РіРѕРІ РЅРµС‚.{"\n"}РќР°Р¶РјРёС‚Рµ + РґР»СЏ РґРѕР±Р°РІР»РµРЅРёСЏ.
+                Долгов нет.{"\n"}Нажмите + для добавления.
               </Text>
             </View>
           }
@@ -324,7 +324,7 @@ export default function DebtsScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(d) => {
           setDebts((prev) => [d, ...prev]);
-          showToast({ message: "Р”РѕР»Рі РґРѕР±Р°РІР»РµРЅ", variant: "success" });
+          showToast({ message: "Долг добавлен", variant: "success" });
         }}
         token={token!}
       />

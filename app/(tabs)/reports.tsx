@@ -2,12 +2,15 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
 import * as React from "react";
 import {
+  ActivityIndicator,
   ScrollView,
   TextInput as RNTextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 
 import { Card, CardContent, Skeleton, Text } from "@/components/ui";
 import {
@@ -225,6 +228,156 @@ export default function ReportsScreen() {
   const [profitReport, setProfitReport] = React.useState<ProfitReport | null>(null);
   const [stockReport, setStockReport] = React.useState<StockReport | null>(null);
   const [error, setError] = React.useState("");
+  const [generatingPDF, setGeneratingPDF] = React.useState(false);
+
+  const generatePDF = React.useCallback(async () => {
+    const currentData =
+      activeTab === "sales" ? salesReport :
+      activeTab === "expenses" ? expensesReport :
+      activeTab === "profit" ? profitReport :
+      stockReport;
+
+    if (!currentData) return;
+    setGeneratingPDF(true);
+    
+    try {
+      let html = `
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
+          <style>
+            body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 20px; color: #333; }
+            h1 { font-size: 24px; color: #0a7ea4; text-align: center; margin-bottom: 5px; }
+            h3 { font-size: 16px; color: #666; text-align: center; margin-top: 0; margin-bottom: 20px; }
+            .stat-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #eee; }
+            .stat-label { color: #666; font-size: 14px; }
+            .stat-value { font-weight: bold; font-size: 16px; }
+            .table-title { font-weight: bold; margin-top: 20px; margin-bottom: 10px; font-size: 18px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { text-align: left; padding: 10px; border-bottom: 1px solid #ddd; }
+            th { background-color: #f8f9fa; color: #555; font-size: 12px; text-transform: uppercase; }
+            .text-right { text-align: right; }
+          </style>
+        </head>
+        <body>
+          <h1>Отчёт: ${TABS.find(t => t.key === activeTab)?.label}</h1>
+          <h3>${activeTab === 'stock' ? 'На текущий момент' : `За период: ${dateFrom} - ${dateTo}`}</h3>
+          <div style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e5e7eb;">
+      `;
+
+      if (activeTab === "sales") {
+        const d = currentData;
+        html += `
+          <div class="stat-row">
+            <span class="stat-label">Кол-во продаж</span>
+            <span class="stat-value">${fmt(d.total_sales)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Выручка</span>
+            <span class="stat-value" style="color: #0a7ea4;">${fmt(d.total_amount)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Наличные</span>
+            <span class="stat-value">${fmt(d.cash)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Карта</span>
+            <span class="stat-value">${fmt(d.card)}</span>
+          </div>
+          <div class="stat-row border-0">
+            <span class="stat-label">Перевод</span>
+            <span class="stat-value">${fmt(d.transfer)}</span>
+          </div>
+        </div>`;
+
+        if (d.data && d.data.length > 0) {
+          html += `<div class="table-title">По дням</div><table><thead><tr><th>Дата</th><th>Продажи</th><th class="text-right">Сумма</th></tr></thead><tbody>`;
+          d.data.forEach(item => {
+            html += `<tr><td>${item.date}</td><td>${item.count}</td><td class="text-right"><b>${fmt(item.amount)}</b></td></tr>`;
+          });
+          html += `</tbody></table>`;
+        }
+
+      } else if (activeTab === "expenses") {
+        const d = currentData;
+        html += `
+          <div class="stat-row">
+            <span class="stat-label">Кол-во расходов</span>
+            <span class="stat-value">${d.count}</span>
+          </div>
+          <div class="stat-row border-0">
+            <span class="stat-label">Общая сумма</span>
+            <span class="stat-value" style="color: #ef4444;">${fmt(d.total_amount)}</span>
+          </div>
+        </div>`;
+
+      } else if (activeTab === "profit") {
+        const d = currentData;
+        const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#333";
+        html += `
+          <div class="stat-row">
+            <span class="stat-label">Выручка</span>
+            <span class="stat-value">${fmt(d.total_sales)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Себестоимость</span>
+            <span class="stat-value">${fmt(d.total_cost)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Расходы</span>
+            <span class="stat-value">${fmt(d.total_expenses)}</span>
+          </div>
+          <div class="stat-row border-0">
+            <span class="stat-label">Чистая прибыль</span>
+            <span class="stat-value" style="color: ${profitColor}; font-size: 18px;">${(d.profit >= 0 ? "+" : "−") + fmt(d.profit)}</span>
+          </div>
+        </div>`;
+        
+      } else if (activeTab === "stock") {
+        const d = currentData;
+        html += `
+          <div class="stat-row">
+            <span class="stat-label">Всего товаров</span>
+            <span class="stat-value">${d.total_products}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Общая стоимость</span>
+            <span class="stat-value" style="color: #0a7ea4;">${fmt(d.total_value)}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Мало на складе</span>
+            <span class="stat-value" style="color: #f59e0b;">${d.low_stock}</span>
+          </div>
+          <div class="stat-row border-0">
+            <span class="stat-label">Нет в наличии</span>
+            <span class="stat-value" style="color: #ef4444;">${d.out_of_stock}</span>
+          </div>
+        </div>`;
+
+        if (d.data && d.data.length > 0) {
+          html += `<div class="table-title">Товары по стоимости</div><table><thead><tr><th>Товар</th><th>Остаток</th><th class="text-right">Стоимость</th></tr></thead><tbody>`;
+          d.data.slice(0, 50).forEach(item => {
+            html += `<tr><td>${item.name}</td><td>${item.stock_quantity}</td><td class="text-right"><b>${fmt(item.value)}</b></td></tr>`;
+          });
+          html += `</tbody></table>`;
+        }
+      }
+
+      html += `</body></html>`;
+
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+      } else {
+        setError("Поделиться недоступно на вашем устройстве");
+      }
+    } catch (e) {
+      console.error(e);
+      setError("Не удалось создать PDF");
+    } finally {
+      setGeneratingPDF(false);
+    }
+  }, [activeTab, salesReport, expensesReport, profitReport, stockReport, dateFrom, dateTo]);
 
   const loadReport = React.useCallback(async () => {
     if (!token) return;
@@ -290,10 +443,21 @@ export default function ReportsScreen() {
 
 
 
-        <View className="flex-1">
+                <View className="flex-1">
           <Text variant="h4">Отчёты</Text>
           <Text variant="muted" className="mt-0.5">Аналитика</Text>
         </View>
+        <TouchableOpacity 
+          onPress={generatePDF}
+          disabled={!currentData || generatingPDF}
+          className={`w-10 h-10 items-center justify-center rounded-full ${(!currentData || generatingPDF) ? 'opacity-50' : 'bg-primary-50 dark:bg-blue-900/20 active:bg-primary-100'}`}
+        >
+          {generatingPDF ? (
+            <ActivityIndicator size="small" color="#0a7ea4" />
+          ) : (
+            <MaterialIcons name="ios-share" size={22} color="#0a7ea4" />
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Tabs */}
