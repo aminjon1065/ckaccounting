@@ -51,6 +51,7 @@ export default function DashboardScreen() {
     loading,
     refreshing,
     error,
+    isOffline,
     fetchDashboard,
     setDateFrom,
     setDateTo,
@@ -109,8 +110,8 @@ export default function DashboardScreen() {
         ) : null}
 
         {/* ── Period filter ── */}
-        <PeriodFilter 
-          value={period} 
+        <PeriodFilter
+          value={period}
           onChange={(p) => {
             if (p === "custom") {
               setCustomModalVisible(true);
@@ -119,8 +120,18 @@ export default function DashboardScreen() {
               setDateTo(null);
               setPeriod(p);
             }
-          }} 
+          }}
         />
+
+        {/* ── Offline banner ── */}
+        {isOffline && (
+          <Alert
+            variant="warning"
+            title="Офлайн режим"
+            description="Показаны сохранённые данные. Некоторые данные могут быть устаревшими."
+            className="mx-5 mb-4"
+          />
+        )}
 
         {/* ── Error ── */}
         {error && (

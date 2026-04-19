@@ -30,12 +30,13 @@ export default function ExpensesScreen() {
     refreshing,
     loadingMore,
     error,
+    isOffline,
     handleDelete,
     handleSaved,
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = useExpenses({ token });
+  } = useExpenses({ token, shopId: user?.shop_id });
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);

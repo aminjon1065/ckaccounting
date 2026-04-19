@@ -20,6 +20,10 @@ import {
   type Product,
   type Purchase,
 } from "@/lib/api";
+import { insertOrUpdatePurchase } from "@/lib/db";
+import { type LocalPurchase } from "@/lib/db";
+import { useToast } from "@/store/toast";
+import { useAuth } from "@/store/auth";
 
 // ─── Product picker ───────────────────────────────────────────────────────────
 
@@ -114,6 +118,14 @@ function fmt(n: number) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
+function generateUUID() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 // ─── Create purchase modal ────────────────────────────────────────────────────
 
 export function CreatePurchaseModal({
@@ -133,6 +145,8 @@ export function CreatePurchaseModal({
   const [supplierName, setSupplierName] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const { showToast } = useToast();
+  const { user } = useAuth();
 
   React.useEffect(() => {
     if (!visible) return;
@@ -189,23 +203,48 @@ export function CreatePurchaseModal({
     setError("");
     if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
     setSubmitting(true);
+    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    const payload: CreatePurchasePayload = {
+      items: cart.map((c) => ({
+        product_id: c.product.id,
+        quantity: c.quantity,
+        price: c.price,
+        ...(c.markupPercent && !isNaN(Number(c.markupPercent))
+          ? { markup_percent: Number(c.markupPercent) }
+          : {}),
+      })),
+    };
+    if (supplierName.trim()) payload.supplier_name = supplierName.trim();
     try {
-      const payload: CreatePurchasePayload = {
-        items: cart.map((c) => ({
-          product_id: c.product.id,
-          quantity: c.quantity,
-          price: c.price,
-          ...(c.markupPercent && !isNaN(Number(c.markupPercent))
-            ? { markup_percent: Number(c.markupPercent) }
-            : {}),
-        })),
-      };
-      if (supplierName.trim()) payload.supplier_name = supplierName.trim();
       const created = await api.purchases.create(payload, token);
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        const localId = generateUUID();
+        const now = new Date().toISOString();
+        const localPurchase: Purchase = {
+          id: -Date.now(),
+          supplier_name: supplierName.trim() || null,
+          total,
+          items: cart.map((c) => ({
+            id: 0,
+            product_id: c.product.id,
+            product_name: c.product.name,
+            quantity: c.quantity,
+            price: c.price,
+            total: c.price * c.quantity,
+          })),
+          created_at: now,
+          updated_at: now,
+        };
+        await insertOrUpdatePurchase(localPurchase, localId);
+        onCreated({ ...localPurchase, local_id: localId, status: "pending", sync_action: "create" } as LocalPurchase);
+        showToast({ message: "Нет сети. Закупка сохранена локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }

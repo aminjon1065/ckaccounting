@@ -22,8 +22,18 @@ import {
   Text,
 } from "@/components/ui";
 import { api, ApiError, type Shop, type CreateShopPayload } from "@/lib/api";
+import { queueSyncAction, insertOrUpdateLocalShop, type LocalShop } from "@/lib/db";
+import { useShops } from "@/hooks/useShops";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
+
+function generateUUID() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 // ─── Shop card ────────────────────────────────────────────────────────────────
 
@@ -100,11 +110,13 @@ function CreateShopModal({
   onClose,
   onCreated,
   token,
+  showToast,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (s: Shop) => void;
   token: string;
+  showToast: ReturnType<typeof useToast>["showToast"];
 }) {
   const [name, setName] = React.useState("");
   const [error, setError] = React.useState("");
@@ -121,16 +133,30 @@ function CreateShopModal({
     setError("");
     if (!name.trim()) { setError("Введите название магазина."); return; }
     setSubmitting(true);
+    const payload: CreateShopPayload = {
+      name: name.trim(),
+      is_active: true,
+    };
     try {
-      const payload: CreateShopPayload = {
-        name: name.trim(),
-        is_active: true,
-      };
       const created = await api.shops.create(payload, token);
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        const localId = generateUUID();
+        const localShop = {
+          id: -Date.now(),
+          name: name.trim(),
+          is_active: true,
+        };
+        await insertOrUpdateLocalShop(localShop, localId, "create");
+        await queueSyncAction("POST", "/shops", payload, {});
+        onCreated({ ...localShop, local_id: localId, status: "pending", sync_action: "create" } as LocalShop);
+        showToast({ message: "Нет сети. Магазин сохранен локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -203,12 +229,14 @@ function EditShopModal({
   onClose,
   onSaved,
   token,
+  showToast,
 }: {
   visible: boolean;
   editingShop: Shop | null;
   onClose: () => void;
   onSaved: (s: Shop) => void;
   token: string;
+  showToast: ReturnType<typeof useToast>["showToast"];
 }) {
   const [name, setName] = React.useState("");
   const [isActive, setIsActive] = React.useState<"active" | "suspended">("active");
@@ -227,16 +255,30 @@ function EditShopModal({
     setError("");
     if (!name.trim()) { setError("Введите название."); return; }
     setSubmitting(true);
+    const payload: Partial<CreateShopPayload> = {
+      name: name.trim(),
+      is_active: isActive === "active",
+    };
     try {
-      const payload: Partial<CreateShopPayload> = {
-        name: name.trim(),
-        is_active: isActive === "active",
-      };
       const updated = await api.shops.update(editingShop!.id, payload, token);
       onSaved(updated);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        const localId = (editingShop as LocalShop)?.local_id || String(editingShop!.id);
+        const localShop = {
+          id: editingShop!.id,
+          name: name.trim(),
+          is_active: isActive === "active",
+        };
+        await insertOrUpdateLocalShop(localShop, localId, "update");
+        await queueSyncAction("PATCH", `/shops/${editingShop!.id}`, payload, {});
+        onSaved({ ...localShop, local_id: localId, status: "pending", sync_action: "update" } as LocalShop);
+        showToast({ message: "Нет сети. Изменения сохранены локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -317,9 +359,16 @@ export default function ShopsScreen() {
   const { showToast } = useToast();
   const router = useRouter();
 
-  const [shops, setShops] = React.useState<Shop[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
+  const {
+    shops,
+    setShops,
+    loading,
+    refreshing,
+    error,
+    handleRefresh,
+    retryFetch,
+  } = useShops({ token });
+
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingShop, setEditingShop] = React.useState<Shop | null>(null);
@@ -327,32 +376,11 @@ export default function ShopsScreen() {
 
   const isSuperAdmin = user?.role === "super_admin";
 
-  const fetchShops = React.useCallback(() => {
-    if (!token) {
-      return Promise.resolve();
-    }
-
-    return api.shops
-      .list(token)
-      .then((res: any) =>
-        setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])
-      )
-      .catch((e) => console.error("Shops fetch error:", e));
-  }, [token]);
-
   const displayedShops = React.useMemo(() => {
     if (activeTab === "all") return shops;
     if (activeTab === "active") return shops.filter((shop) => shop.is_active);
     return shops.filter((shop) => !shop.is_active);
   }, [activeTab, shops]);
-
-  React.useEffect(() => {
-    if (!isSuperAdmin || !token) {
-      setLoading(false);
-      return;
-    }
-    fetchShops().finally(() => setLoading(false));
-  }, [fetchShops, isSuperAdmin, token]);
 
   if (!isSuperAdmin) {
     return (
@@ -438,10 +466,7 @@ export default function ShopsScreen() {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            fetchShops().finally(() => setRefreshing(false));
-          }}
+          onRefresh={handleRefresh}
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
               <MaterialIcons name="storefront" size={48} color="#94a3b8" />
@@ -475,9 +500,9 @@ export default function ShopsScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(s) => {
           setShops((prev) => [s, ...prev]);
-          showToast({ message: "Магазин создан", variant: "success" });
         }}
         token={token!}
+        showToast={showToast}
       />
 
       <EditShopModal
@@ -486,9 +511,9 @@ export default function ShopsScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-          showToast({ message: "Магазин обновлён", variant: "success" });
         }}
         token={token!}
+        showToast={showToast}
       />
     </SafeAreaView>
   );

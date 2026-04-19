@@ -9,6 +9,7 @@ import * as Sharing from "expo-sharing";
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
 import { api, type Sale, type SaleItem } from "@/lib/api";
 import { buildReceiptText, generateReceiptHtml } from "@/lib/receipt";
+import { getLocalSaleById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 
 function fmt(n: number) {
@@ -98,6 +99,7 @@ export default function SaleDetailScreen() {
   const [sale, setSale] = React.useState<Sale | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [isOffline, setIsOffline] = React.useState(false);
 
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
@@ -123,21 +125,32 @@ export default function SaleDetailScreen() {
     }
   }, [sale]);
 
-  React.useEffect(() => {
-    if (!token || !id) {
-      return;
-    }
-
+  const fetchSale = React.useCallback(async () => {
+    if (!token || !id) return;
     setError("");
-    api.sales
-      .get(Number(id), token)
-      .then(setSale)
-      .catch((e) => {
-        console.error("Sale fetch error:", e);
-        setError("Не удалось загрузить продажу.");
-      })
-      .finally(() => setLoading(false));
-  }, [token, id]);
+
+    // Always load local first — works for pending local sales with negative id as local_id
+    const local = await getLocalSaleById(id);
+    if (local) setSale(local);
+
+    try {
+      const s = await api.sales.get(Number(id), token);
+      setSale(s);
+      setIsOffline(false);
+    } catch (e: any) {
+      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+      if (isOfflineError) {
+        setIsOffline(true);
+        if (!local) setError("Нет сети. Продажа недоступна офлайн.");
+      } else {
+        if (!local) setError("Не удалось загрузить продажу.");
+      }
+    }
+  }, [id, token]);
+
+  React.useEffect(() => {
+    fetchSale().finally(() => setLoading(false));
+  }, [fetchSale]);
 
   if (loading) {
     return (
@@ -170,11 +183,7 @@ export default function SaleDetailScreen() {
             <Button
               onPress={() => {
                 setLoading(true);
-                setError("");
-                api.sales.get(Number(id), token!)
-                  .then(setSale)
-                  .catch(() => setError("Не удалось загрузить продажу."))
-                  .finally(() => setLoading(false));
+                fetchSale().finally(() => setLoading(false));
               }}
             >
               Повторить

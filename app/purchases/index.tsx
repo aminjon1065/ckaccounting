@@ -10,11 +10,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Skeleton, Text } from "@/components/ui";
-import { api, type Purchase } from "@/lib/api";
+import { type Purchase } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { useAuth } from "@/store/auth";
-import { useToast } from "@/store/toast";
+import { usePurchases } from "@/hooks/usePurchases";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -71,41 +71,22 @@ function PurchaseCard({
 
 export default function PurchasesScreen() {
   const { token, user } = useAuth();
-  const { showToast } = useToast();
   const router = useRouter();
 
-  const [purchases, setPurchases] = React.useState<Purchase[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [page, setPage] = React.useState(1);
-  const [hasMore, setHasMore] = React.useState(true);
-  const [loadingMore, setLoadingMore] = React.useState(false);
+  const {
+    purchases,
+    setPurchases,
+    loading,
+    refreshing,
+    hasMore,
+    loadingMore,
+    error,
+    handleRefresh,
+    handleLoadMore,
+    retryFetch,
+  } = usePurchases({ token });
+
   const [createVisible, setCreateVisible] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  const fetchPurchases = React.useCallback(async (reset = false) => {
-    if (!token) return;
-    const pg = reset ? 1 : page;
-    setError("");
-    try {
-      const res = await api.purchases.list(token, { page: pg });
-      if (reset) {
-        setPurchases(res.data);
-        setPage(2);
-      } else {
-        setPurchases((prev) => [...prev, ...res.data]);
-        setPage(pg + 1);
-      }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e) {
-      console.error("Purchases fetch error:", e);
-      if (reset) setError("Не удалось загрузить закупки.");
-    }
-  }, [page, token]);
-
-  React.useEffect(() => {
-    fetchPurchases(true).finally(() => setLoading(false));
-  }, [fetchPurchases]);
 
   if (!can(user?.role, "purchases:view")) {
     return (
@@ -147,7 +128,7 @@ export default function PurchasesScreen() {
           <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
           <Text variant="muted" className="mt-1 text-center">{error}</Text>
           <TouchableOpacity
-            onPress={() => { setLoading(true); fetchPurchases(true).finally(() => setLoading(false)); }}
+            onPress={retryFetch}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -160,15 +141,8 @@ export default function PurchasesScreen() {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            fetchPurchases(true).finally(() => setRefreshing(false));
-          }}
-          onEndReached={() => {
-            if (!hasMore || loadingMore) return;
-            setLoadingMore(true);
-            fetchPurchases(false).finally(() => setLoadingMore(false));
-          }}
+          onRefresh={handleRefresh}
+          onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
@@ -207,7 +181,6 @@ export default function PurchasesScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(p) => {
           setPurchases((prev) => [p, ...prev]);
-          showToast({ message: "Закупка создана", variant: "success" });
         }}
         token={token!}
       />

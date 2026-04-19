@@ -13,8 +13,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense } from "@/lib/api";
-import { queueSyncAction } from "@/lib/db";
+import { insertOrUpdateExpense } from "@/lib/db";
 import { useToast } from "@/store/toast";
+import { useAuth } from "@/store/auth";
+import type { LocalExpense } from "@/lib/db";
 
 export function ExpenseFormModal({
   visible,
@@ -36,6 +38,7 @@ export function ExpenseFormModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const { showToast } = useToast();
+  const { user } = useAuth();
 
   const qtyRef = React.useRef<RNTextInput>(null);
   const priceRef = React.useRef<RNTextInput>(null);
@@ -84,9 +87,22 @@ export function ExpenseFormModal({
       onSaved(saved, !!editing);
       onClose();
     } catch (e) {
-      if (!editing && e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("POST", "/expenses", payload, { "Idempotency-Key": idempotencyKey });
-        showToast({ message: "Нет сети. Расход сохранен в очередь.", variant: "warning" });
+      if (e instanceof ApiError && e.status === 0) {
+        const localId = generateUUID();
+        const now = new Date().toISOString();
+        const localExpense: Expense = {
+          id: -Date.now(),
+          name: name.trim(),
+          quantity: parseFloat(quantity),
+          price: parseFloat(price),
+          total,
+          note: note.trim() || null,
+          created_at: now,
+          updated_at: now,
+        };
+        await insertOrUpdateExpense(localExpense, localId, user?.shop_id, user?.id);
+        onSaved({ ...localExpense, local_id: localId, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
+        showToast({ message: "Нет сети. Расход сохранен локально.", variant: "warning" });
         onClose();
       } else {
         setError(
@@ -102,6 +118,14 @@ export function ExpenseFormModal({
     return Math.round(n)
       .toString()
       .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  }
+
+  function generateUUID() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
   }
 
   return (

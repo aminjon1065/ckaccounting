@@ -131,6 +131,7 @@ export interface Debt {
   person_name: string;
   opening_balance: number;
   balance: number;
+  direction?: "receivable" | "payable";
   transactions?: DebtTransaction[];
   created_at: string;
   updated_at: string;
@@ -538,6 +539,12 @@ export const api = {
 
     logout: (token: string) =>
       request<void>(AUTH_ENDPOINTS.logout, { method: "POST", token }),
+
+    refresh: (token: string) =>
+      request<{ token: string }>(AUTH_ENDPOINTS.refresh, {
+        method: "POST",
+        token,
+      }),
   },
 
   // ── Dashboard ─────────────────────────────────────────────────────────────

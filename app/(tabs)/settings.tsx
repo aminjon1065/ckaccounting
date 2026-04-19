@@ -121,6 +121,13 @@ export default function SettingsScreen() {
                 />
               </>
             )}
+            <Separator className="ml-16" />
+            <SettingsRow
+              icon="notifications"
+              label="Уведомления"
+              description="Мало товара и другое"
+              onPress={() => router.push("/notifications")}
+            />
           </CardContent>
         </Card>
 

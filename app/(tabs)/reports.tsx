@@ -266,7 +266,7 @@ export default function ReportsScreen() {
       `;
 
       if (activeTab === "sales") {
-        const d = currentData;
+        const d = currentData as SalesReport;
         html += `
           <div class="stat-row">
             <span class="stat-label">Кол-во продаж</span>
@@ -299,7 +299,7 @@ export default function ReportsScreen() {
         }
 
       } else if (activeTab === "expenses") {
-        const d = currentData;
+        const d = currentData as ExpensesReport;
         html += `
           <div class="stat-row">
             <span class="stat-label">Кол-во расходов</span>
@@ -312,7 +312,7 @@ export default function ReportsScreen() {
         </div>`;
 
       } else if (activeTab === "profit") {
-        const d = currentData;
+        const d = currentData as ProfitReport;
         const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#333";
         html += `
           <div class="stat-row">
@@ -334,7 +334,7 @@ export default function ReportsScreen() {
         </div>`;
         
       } else if (activeTab === "stock") {
-        const d = currentData;
+        const d = currentData as StockReport;
         html += `
           <div class="stat-row">
             <span class="stat-label">Всего товаров</span>

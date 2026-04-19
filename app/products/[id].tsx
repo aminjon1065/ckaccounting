@@ -8,6 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import { api, type Product } from "@/lib/api";
+import { getLocalProductById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -58,15 +59,28 @@ export default function ProductDetailScreen() {
   const [product, setProduct] = React.useState<Product | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [isOffline, setIsOffline] = React.useState(false);
 
   const fetchProduct = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
+
+    // Always load local first — instant, always works
+    const local = await getLocalProductById(Number(id));
+    if (local) setProduct(local);
+
     try {
       const p = await api.products.get(Number(id), token);
       setProduct(p);
-    } catch {
-      setError("Не удалось загрузить товар.");
+      setIsOffline(false);
+    } catch (e: any) {
+      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+      if (isOfflineError) {
+        setIsOffline(true);
+        if (!local) setError("Нет сети. Данные недоступны.");
+      } else {
+        if (!local) setError("Не удалось загрузить товар.");
+      }
     }
   }, [id, token]);
 

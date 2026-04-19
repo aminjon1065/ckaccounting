@@ -11,6 +11,7 @@ export const AUTH_ENDPOINTS = {
   login: "/auth/login",
   logout: "/auth/logout",
   me: "/auth/me",
+  refresh: "/auth/refresh",
 } as const;
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
@@ -18,6 +19,11 @@ export const AUTH_ENDPOINTS = {
 export const STORAGE_KEYS = {
   authToken: "ck_auth_token",
   authUser: "ck_auth_user",
+  authCredentials: "ck_auth_credentials", // { email, password } stored after first login
+  authPin: "ck_auth_pin", // SHA-256 hash of PIN
+  authPinSalt: "ck_auth_pin_salt", // random salt for PIN hashing
+  authPasswordHash: "ck_auth_password_hash", // hash of password for offline login
+  authPasswordSalt: "ck_auth_password_salt", // random salt for password hashing
 } as const;
 
 // ─── App ──────────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Text } from "@/components/ui";
 import { api, ApiError, type ShopSettings } from "@/lib/api";
+import { queueSyncAction } from "@/lib/db";
 import { useToast } from "@/store/toast";
 
 export function ShopSettingsModal({
@@ -46,15 +47,19 @@ export function ShopSettingsModal({
       return;
     }
     setSubmitting(true);
+    const payload = { default_currency: currency.trim().toUpperCase(), tax_percent: tax };
     try {
-      await api.settings.update(
-        { default_currency: currency.trim().toUpperCase(), tax_percent: tax },
-        token
-      );
+      await api.settings.update(payload, token);
       showToast({ message: "Настройки магазина обновлены", variant: "success" });
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Не удалось сохранить.");
+      if (e instanceof ApiError && e.status === 0) {
+        await queueSyncAction("PATCH", "/settings", payload, {});
+        showToast({ message: "Нет сети. Настройки сохранены локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Не удалось сохранить.");
+      }
     } finally {
       setSubmitting(false);
     }

@@ -1,3 +1,5 @@
+import { Alert, Button, Input, Text } from "@/components/ui";
+import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
 import {
@@ -8,23 +10,36 @@ import {
   TextInput,
   View,
 } from "react-native";
-
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Alert, Button, Input, Text } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
 export default function LoginScreen() {
-  const { signIn } = useAuth();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin } = useAuth();
+  const router = useRouter();
 
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [showPinSetup, setShowPinSetup] = React.useState(false);
+  const [pinValue, setPinValue] = React.useState("");
+  const [pinConfirm, setPinConfirm] = React.useState("");
+  const [pinError, setPinError] = React.useState("");
+  const [pendingCredentials, setPendingCredentials] = React.useState<{
+    email: string;
+    password: string;
+  } | null>(null);
+  const [hasOfflineCreds, setHasOfflineCreds] = React.useState(false);
 
   const passwordRef = React.useRef<TextInput>(null);
+
+  // Check for cached credentials on mount
+  React.useEffect(() => {
+    hasCredentials().then(setHasOfflineCreds);
+  }, []);
 
   async function handleLogin() {
     const trimmedEmail = email.trim();
@@ -39,12 +54,25 @@ export default function LoginScreen() {
 
     try {
       await signIn({ email: trimmedEmail, password, device_name: Platform.OS });
-      // AuthGuard in _layout.tsx handles the redirect automatically
+      // After successful login, check if PIN is set — if not, prompt setup
+      const pinSet = await hasPin();
+      if (!pinSet) {
+        setShowPinSetup(true);
+      } else {
+        router.replace("/(tabs)");
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         setError("Слишком много попыток входа. Повторите через несколько минут.");
       } else if (err instanceof ApiError && err.status === 0) {
-        setError(err.message); // timeout or no connection — already friendly
+        // No network — check if we have cached credentials for offline login
+        const hasCached = await hasCredentials();
+        if (hasCached) {
+          setPendingCredentials({ email: trimmedEmail, password });
+          setError("");
+        } else {
+          setError("Нет сети. Войдите при наличии интернета.");
+        }
       } else {
         setError(
           err instanceof Error ? err.message : "Ошибка входа. Попробуйте снова.",
@@ -53,6 +81,143 @@ export default function LoginScreen() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleOfflineLogin() {
+    setLoading(true);
+    setError("");
+    const success = await signInOffline();
+    if (success) {
+      const pinSet = await hasPin();
+      if (!pinSet) {
+        setShowPinSetup(true);
+      } else {
+        router.replace("/(tabs)");
+      }
+    } else {
+      setError("Не удалось войти офлайн. Проверьте подключение.");
+    }
+    setLoading(false);
+  }
+
+  async function handlePinSubmit() {
+    if (pinValue.length < 4 || pinValue.length > 6) {
+      setPinError("PIN должен быть от 4 до 6 цифр.");
+      return;
+    }
+    if (pinValue !== pinConfirm) {
+      setPinError("PIN-коды не совпадают.");
+      return;
+    }
+    setPinError("");
+    try {
+      await setPin(pinValue);
+      router.replace("/(tabs)");
+    } catch {
+      setPinError("Не удалось сохранить PIN. Попробуйте снова.");
+    }
+  }
+
+  // ── PIN Setup Screen ─────────────────────────────────────────────────────────
+  if (showPinSetup) {
+    return (
+      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          className="flex-1"
+        >
+          <ScrollView
+            className="flex-1"
+            contentContainerStyle={{
+              flexGrow: 1,
+              justifyContent: "center",
+              paddingHorizontal: 24,
+              paddingVertical: 48,
+            }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View className="items-center mb-8">
+              <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-4">
+                <MaterialIcons name="lock" size={28} color="#fff" />
+              </View>
+              <Text variant="h2" className="text-center">
+                Защитите аккаунт
+              </Text>
+              <Text variant="muted" className="text-center mt-2 text-center">
+                Создайте PIN-код для быстрого входа. Используется как резервный способ, если биометрия недоступна.
+              </Text>
+            </View>
+
+            {!!pinError && (
+              <Alert
+                variant="destructive"
+                title="Ошибка"
+                description={pinError}
+                className="mb-4"
+              />
+            )}
+
+            <View className="gap-4">
+              <Input
+                label="PIN-код"
+                placeholder="4–6 цифр"
+                value={pinValue}
+                onChangeText={(t) => {
+                  setPinValue(t.replace(/\D/g, "").slice(0, 6));
+                  if (pinError) setPinError("");
+                }}
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={6}
+                leftIcon={
+                  <MaterialIcons name="pin" size={18} color="#94a3b8" />
+                }
+              />
+
+              <Input
+                label="Подтвердите PIN"
+                placeholder="Повторите PIN"
+                value={pinConfirm}
+                onChangeText={(t) => {
+                  setPinConfirm(t.replace(/\D/g, "").slice(0, 6));
+                  if (pinError) setPinError("");
+                }}
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={6}
+                leftIcon={
+                  <MaterialIcons name="pin" size={18} color="#94a3b8" />
+                }
+              />
+
+              <Button
+                className="mt-2"
+                size="lg"
+                onPress={handlePinSubmit}
+                disabled={pinValue.length < 4 || pinConfirm.length < 4}
+              >
+                Сохранить PIN
+              </Button>
+
+              <Pressable
+                className="items-center mt-2"
+                onPress={() => {
+                  setShowPinSetup(false);
+                  setPinValue("");
+                  setPinConfirm("");
+                  setPinError("");
+                }}
+              >
+                <Text variant="small" className="text-slate-400">
+                  Пропустить
+                </Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -156,6 +321,25 @@ export default function LoginScreen() {
             >
               Войти
             </Button>
+
+            {/* ── Offline login ── */}
+            {hasOfflineCreds && pendingCredentials && (
+              <Button
+                variant="outline"
+                size="lg"
+                onPress={handleOfflineLogin}
+                loading={loading}
+                disabled={loading}
+                className="border-slate-300 dark:border-slate-600"
+              >
+                <View className="flex-row items-center gap-2">
+                  <MaterialIcons name="cloud-off" size={18} color="#94a3b8" />
+                  <Text variant="muted" className="text-slate-500">
+                    Войти офлайн
+                  </Text>
+                </View>
+              </Button>
+            )}
           </View>
 
           {/* ── Footer ── */}

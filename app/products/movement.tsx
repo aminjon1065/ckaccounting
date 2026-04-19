@@ -140,6 +140,7 @@ export default function ProductMovementScreen() {
   const [movements, setMovements] = React.useState<ProductMovement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [isOffline, setIsOffline] = React.useState(false);
 
   const fetchMovements = React.useCallback(async () => {
     if (!token || !id) return;
@@ -148,8 +149,15 @@ export default function ProductMovementScreen() {
       const data = await api.products.movements(Number(id), token);
       setCurrentStock(data.current_stock);
       setMovements(data.movements);
-    } catch {
-      setError("Не удалось загрузить историю движения.");
+      setIsOffline(false);
+    } catch (e: any) {
+      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+      if (isOfflineError) {
+        setIsOffline(true);
+        setError("Нет сети. История движения недоступна офлайн.");
+      } else {
+        setError("Не удалось загрузить историю движения.");
+      }
     }
   }, [id, token]);
 

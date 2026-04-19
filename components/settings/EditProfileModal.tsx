@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Separator, Text } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
+import { queueSyncAction } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
@@ -46,20 +47,30 @@ export function EditProfileModal({
       return;
     }
     setSubmitting(true);
+    const payload: { name: string; current_password?: string; password?: string } = {
+      name: name.trim(),
+    };
+    if (newPassword) {
+      payload.current_password = currentPassword;
+      payload.password = newPassword;
+    }
     try {
-      const payload: { name: string; current_password?: string; password?: string } = {
-        name: name.trim(),
-      };
-      if (newPassword) {
-        payload.current_password = currentPassword;
-        payload.password = newPassword;
-      }
       const updated = await api.profile.update(payload, token);
       await updateUser(updated);
       showToast({ message: "Профиль обновлён", variant: "success" });
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Не удалось сохранить профиль.");
+      if (e instanceof ApiError && e.status === 0) {
+        await queueSyncAction("PATCH", "/profile", payload, {});
+        // Update local auth state optimistically
+        if (user) {
+          await updateUser({ ...user, name: name.trim() });
+        }
+        showToast({ message: "Нет сети. Профиль сохранён локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Не удалось сохранить профиль.");
+      }
     } finally {
       setSubmitting(false);
     }

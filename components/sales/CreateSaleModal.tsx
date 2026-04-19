@@ -10,8 +10,17 @@ import { ProductPicker } from "./ProductPicker";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
 import { defaultPriceMode, deriveProductPrice, fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
-import { getLocalProducts, queueSyncAction } from "@/lib/db";
+import { getLocalProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById } from "@/lib/db";
+import type { LocalSale } from "@/lib/db";
 import { useToast } from "@/store/toast";
+
+function generateUUID() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 export function CreateSaleModal({
   visible,
@@ -78,19 +87,29 @@ export function CreateSaleModal({
 
   React.useEffect(() => {
     if (visible && isSuperAdmin && shopId) {
+      setProducts([]);
       getLocalProducts(Number(shopId)).then(setProducts).catch(console.error);
     } else if (visible && isSuperAdmin && !shopId) {
       setProducts([]);
       setCart([]);
+    } else if (visible && !isSuperAdmin && user?.shop_id) {
+      setProducts([]);
+      getLocalProducts(user.shop_id).then(setProducts).catch(console.error);
     }
-  }, [visible, isSuperAdmin, shopId]);
+  }, [visible, isSuperAdmin, shopId, user?.shop_id]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
   function addToCart(p: Product) {
+    const availableQty = p.stock_quantity ?? 0;
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === p.id);
       if (existing) {
+        const newQty = existing.quantity + 1;
+        if (newQty > availableQty) {
+          showToast({ message: `Нет столько на складе (доступно: ${availableQty})`, variant: "warning" });
+          return prev;
+        }
         return prev.map((c) => {
           if (c.product.id !== p.id) {
             return c;
@@ -106,6 +125,11 @@ export function CreateSaleModal({
               : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
           };
         });
+      }
+
+      if (availableQty < 1) {
+        showToast({ message: `Нет в наличии`, variant: "warning" });
+        return prev;
       }
 
       const priceMode = defaultPriceMode(p);
@@ -135,6 +159,13 @@ export function CreateSaleModal({
           }
 
           const quantity = c.quantity + delta;
+          if (quantity <= 0) return c;
+
+          const availableQty = c.product.stock_quantity ?? 0;
+          if (quantity > availableQty) {
+            showToast({ message: `Нет столько на складе (доступно: ${availableQty})`, variant: "warning" });
+            return { ...c, quantity: availableQty };
+          }
 
           return {
             ...c,
@@ -260,13 +291,93 @@ export function CreateSaleModal({
     const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
     try {
       const created = await api.sales.create(payload, token, idempotencyKey);
+      // Check low stock for sold products (online case)
+      if (saleType === "product") {
+        for (const c of cart) {
+          const prod = await api.products.get(c.product.id, token).catch(() => null);
+          if (prod && prod.low_stock_alert && prod.low_stock_alert > 0) {
+            if (prod.stock_quantity <= prod.low_stock_alert) {
+              const alreadySent = await hasLowStockAlertBeenSent(c.product.id, isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0));
+              if (!alreadySent) {
+                await insertNotification(
+                  "low_stock",
+                  `Мало товара: ${c.product.name}`,
+                  `Остаток ${prod.stock_quantity} ${c.product.unit ?? "шт"} при минимуме ${prod.low_stock_alert}`,
+                  { product_id: c.product.id, shop_id: isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0) }
+                );
+                await markLowStockAlertSent(c.product.id, isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0));
+              }
+            }
+          }
+        }
+      }
       onCreated(created);
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("POST", "/sales", payload, { "Idempotency-Key": idempotencyKey });
+        const localId = generateUUID();
+        const now = new Date().toISOString();
+        const shopIdForSale = isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0);
+        const localSale: Sale = {
+          id: -Date.now(),
+          type: saleType,
+          customer_name: customerName.trim() || null,
+          total,
+          discount: discountVal,
+          paid: paidVal,
+          debt,
+          payment_type: paymentType,
+          notes: notes.trim() || undefined,
+          items: saleType === "product"
+            ? cart.map((c) => ({
+                id: 0,
+                product_id: c.product.id,
+                name: null,
+                product_name: c.product.name,
+                unit: c.product.unit ?? undefined,
+                quantity: c.quantity,
+                price: c.price,
+                total: c.price * c.quantity,
+              }))
+            : serviceItems.map((s) => ({
+                id: 0,
+                product_id: null,
+                name: null,
+                product_name: null,
+                service_name: s.name.trim(),
+                unit: s.unit.trim() || undefined,
+                quantity: s.quantity,
+                price: parseFloat(s.price) || 0,
+                total: (parseFloat(s.price) || 0) * s.quantity,
+              })),
+          created_at: now,
+          updated_at: now,
+        };
+
+        // Save locally and decrement stock immediately
+        await insertOrUpdateSale(localSale, localId, shopIdForSale, user?.id);
+        for (const c of cart) {
+          await decrementLocalProductStock(c.product.id, c.quantity);
+          // Check low stock and notify
+          const updatedProduct = await getLocalProductById(c.product.id);
+          if (updatedProduct && updatedProduct.low_stock_alert && updatedProduct.low_stock_alert > 0) {
+            if (updatedProduct.stock_quantity <= updatedProduct.low_stock_alert) {
+              const alreadySent = await hasLowStockAlertBeenSent(c.product.id, shopIdForSale);
+              if (!alreadySent) {
+                await insertNotification(
+                  "low_stock",
+                  `Мало товара: ${c.product.name}`,
+                  `Остаток ${updatedProduct.stock_quantity} ${c.product.unit ?? "шт"} при минимуме ${updatedProduct.low_stock_alert}`,
+                  { product_id: c.product.id, shop_id: shopIdForSale }
+                );
+                await markLowStockAlertSent(c.product.id, shopIdForSale);
+              }
+            }
+          }
+        }
         await refreshPendingActions();
-        showToast({ message: "Нет сети. Продажа сохранена в очередь.", variant: "warning" });
+        showToast({ message: "Нет сети. Продажа сохранена локально.", variant: "warning" });
+        onCreated(localSale);
         onClose();
       } else {
         setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");

@@ -23,6 +23,9 @@ import {
   type Product,
   type Shop,
 } from "@/lib/api";
+import { useSync } from "@/lib/sync/SyncContext";
+import { getLocalShops, insertOrUpdateProduct } from "@/lib/db";
+import type { LocalProduct } from "@/lib/db";
 
 interface FormModalProps {
   visible: boolean;
@@ -46,6 +49,14 @@ function computeMarkupPrice(costPrice: string, markupPercent: string): string {
   return (parsedCost * (1 + parsedMarkup / 100)).toFixed(2);
 }
 
+function generateUUID() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function ProductFormModal({
   visible,
   editing,
@@ -56,6 +67,7 @@ export function ProductFormModal({
 }: FormModalProps) {
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
+  const { refreshPendingActions } = useSync();
 
   const [name, setName] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -81,12 +93,18 @@ export function ProductFormModal({
   const alertRef = React.useRef<RNTextInput>(null);
 
   React.useEffect(() => {
-    if (visible && isSuperAdmin) {
-      api.shops
-        .list(token)
-        .then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-        .catch(console.error);
-    }
+    if (!visible || !isSuperAdmin) return;
+
+    // Load local shops immediately so the picker works offline
+    getLocalShops().then(local => {
+      if (local.length > 0) setShops(local.map(s => ({ id: s.id, name: s.name } as Shop)));
+    }).catch(() => {});
+
+    // Refresh from server in background; update if we get a better list
+    api.shops.list(token).then((res: any) => {
+      const shopList: Shop[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      if (shopList.length > 0) setShops(shopList);
+    }).catch(() => {});
   }, [visible, isSuperAdmin, token]);
 
   React.useEffect(() => {
@@ -256,11 +274,46 @@ export function ProductFormModal({
       onSaved(saved, !!editing);
       onClose();
     } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? e.message
-          : "Что-то пошло не так. Попробуйте снова."
-      );
+      if (e instanceof ApiError && e.status === 0) {
+        // Offline: save locally, queue for sync
+        const localId = generateUUID();
+        const now = new Date().toISOString();
+        const productPayload = {
+          id: -Date.now(),
+          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : null,
+          name: name.trim(),
+          code: code.trim() || null,
+          unit: unit.trim() || null,
+          cost_price: parseFloat(costPrice),
+          sale_price: pricingMode === "markup" ? parseFloat(computedMarkupPrice) : parseFloat(salePrice),
+          pricing_mode: pricingMode as Product["pricing_mode"],
+          markup_percent: pricingMode === "markup" && markupPercent ? parseFloat(markupPercent) : null,
+          bulk_price: bulkPrice.trim() ? parseFloat(bulkPrice) : null,
+          bulk_threshold: bulkThreshold.trim() ? parseInt(bulkThreshold, 10) : null,
+          stock_quantity: parseFloat(stock),
+          low_stock_alert: lowAlert.trim() ? parseFloat(lowAlert) : null,
+          photo_url: photoUri && !photoUri.startsWith("http") ? photoUri : null,
+          created_at: now,
+          updated_at: now,
+        } as Product;
+
+        await insertOrUpdateProduct(productPayload, localId, editing ? "update" : "create");
+        const optimisticProduct: LocalProduct = {
+          ...productPayload,
+          local_id: localId,
+          status: "pending",
+          sync_action: editing ? "update" : "create",
+        } as LocalProduct;
+
+        onSaved(optimisticProduct as Product, !!editing);
+        onClose();
+      } else {
+        setError(
+          e instanceof ApiError
+            ? e.message
+            : "Что-то пошло не так. Попробуйте снова."
+        );
+      }
     } finally {
       setSubmitting(false);
     }

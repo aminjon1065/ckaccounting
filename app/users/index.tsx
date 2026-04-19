@@ -23,9 +23,11 @@ import {
   Text,
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type CreateUserPayload, type Shop } from "@/lib/api";
+import { queueSyncAction } from "@/lib/db";
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
+import { useUsers } from "@/hooks/useUsers";
 
 // ─── User card ────────────────────────────────────────────────────────────────
 
@@ -117,12 +119,16 @@ function CreateUserModal({
   onCreated,
   token,
   isSuperAdmin,
+  showToast,
+  currentShopId,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (u: AppUser) => void;
   token: string;
   isSuperAdmin: boolean;
+  showToast: ReturnType<typeof useToast>["showToast"];
+  currentShopId?: number;
 }) {
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -168,19 +174,34 @@ function CreateUserModal({
       setSubmitting(false);
       return;
     }
+    const payload: CreateUserPayload = {
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      password,
+      role,
+    };
+    if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
     try {
-      const payload: CreateUserPayload = {
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        password,
-        role,
-      };
-      if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
       const created = await api.users.create(payload, token);
       onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        await queueSyncAction("POST", "/users", payload, {});
+        const localUser: AppUser = {
+          id: -Date.now(),
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          role,
+          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : (currentShopId ?? 0),
+          created_at: new Date().toISOString(),
+        };
+        onCreated(localUser);
+        showToast({ message: "Нет сети. Сотрудник сохранён локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -290,6 +311,7 @@ function EditUserModal({
   onSaved,
   token,
   isSuperAdmin,
+  showToast,
 }: {
   visible: boolean;
   editingUser: AppUser | null;
@@ -297,6 +319,7 @@ function EditUserModal({
   onSaved: (u: AppUser) => void;
   token: string;
   isSuperAdmin: boolean;
+  showToast: ReturnType<typeof useToast>["showToast"];
 }) {
   const [name, setName] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -339,15 +362,28 @@ function EditUserModal({
       setSubmitting(false);
       return;
     }
+    const payload: Partial<CreateUserPayload> = { name: name.trim(), role };
+    if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
+    if (password) payload.password = password;
     try {
-      const payload: Partial<CreateUserPayload> = { name: name.trim(), role };
-      if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
-      if (password) payload.password = password;
       const updated = await api.users.update(editingUser!.id, payload, token);
       onSaved(updated);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        await queueSyncAction("PATCH", `/users/${editingUser!.id}`, payload, {});
+        const updatedUser: AppUser = {
+          ...editingUser!,
+          name: name.trim(),
+          role,
+          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : editingUser!.shop_id,
+        };
+        onSaved(updatedUser);
+        showToast({ message: "Нет сети. Изменения сохранены локально.", variant: "warning" });
+        onClose();
+      } else {
+        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -444,34 +480,22 @@ export default function UsersScreen() {
   const { showToast } = useToast();
   const router = useRouter();
 
-  const [users, setUsers] = React.useState<AppUser[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
+  const {
+    users,
+    setUsers,
+    loading,
+    refreshing,
+    error,
+    isOffline,
+    handleRefresh,
+    retryFetch,
+  } = useUsers({ token });
+
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingUser, setEditingUser] = React.useState<AppUser | null>(null);
 
   const hasAccess = can(user?.role, "users:view");
-
-  React.useEffect(() => {
-    if (!hasAccess || !token) {
-      setLoading(false);
-      return;
-    }
-    api.users
-      .list(token)
-      .then((res: any) => setUsers(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-      .catch((e) => console.error("Users fetch error:", e))
-      .finally(() => setLoading(false));
-  }, [token, hasAccess]);
-
-  function fetchUsers() {
-    if (!token) return Promise.resolve();
-    return api.users
-      .list(token)
-      .then((res: any) => setUsers(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []))
-      .catch((e) => console.error("Users fetch error:", e));
-  }
 
   if (!hasAccess) {
     return (
@@ -499,8 +523,14 @@ export default function UsersScreen() {
               await api.users.delete(id, token!);
               setUsers((prev) => prev.filter((u) => u.id !== id));
               showToast({ message: "Сотрудник удалён", variant: "success" });
-            } catch {
-              showToast({ message: "Не удалось удалить сотрудника.", variant: "error" });
+            } catch (e) {
+              if (e instanceof ApiError && e.status === 0) {
+                await queueSyncAction("DELETE", `/users/${id}`, {}, {});
+                setUsers((prev) => prev.filter((u) => u.id !== id));
+                showToast({ message: "Нет сети. Удаление сохранено в очередь.", variant: "warning" });
+              } else {
+                showToast({ message: "Не удалось удалить сотрудника.", variant: "error" });
+              }
             }
           },
         },
@@ -535,10 +565,7 @@ export default function UsersScreen() {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            fetchUsers().finally(() => setRefreshing(false));
-          }}
+          onRefresh={handleRefresh}
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
               <MaterialIcons name="group" size={48} color="#94a3b8" />
@@ -576,10 +603,11 @@ export default function UsersScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(u) => {
           setUsers((prev) => [u, ...prev]);
-          showToast({ message: "Сотрудник создан", variant: "success" });
         }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
+        showToast={showToast}
+        currentShopId={user?.shop_id}
       />
 
       <EditUserModal
@@ -588,10 +616,10 @@ export default function UsersScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setUsers((prev) => prev.map((u) => u.id === updated.id ? updated : u));
-          showToast({ message: "Сотрудник обновлён", variant: "success" });
         }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
+        showToast={showToast}
       />
     </SafeAreaView>
   );

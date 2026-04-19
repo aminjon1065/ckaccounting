@@ -35,13 +35,14 @@ export default function ProductsScreen() {
     loadingMore,
     search,
     error,
+    isOffline,
     handleRefresh,
     handleLoadMore,
     handleSearchChange,
     handleDelete,
     handleSaved,
     retryFetch,
-  } = useProducts({ token });
+  } = useProducts({ token, shopId: user?.shop_id });
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
