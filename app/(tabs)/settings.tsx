@@ -17,6 +17,7 @@ import { SettingsRow } from "@/components/settings/SettingsRow";
 import { ShopSettingsModal } from "@/components/settings/ShopSettingsModal";
 import { EditProfileModal } from "@/components/settings/EditProfileModal";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useSync } from "@/lib/sync/SyncContext";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ export default function SettingsScreen() {
   const [shopSettingsVisible, setShopSettingsVisible] = React.useState(false);
   const [editProfileVisible, setEditProfileVisible] = React.useState(false);
   const { colorScheme, toggleColorScheme } = useColorScheme();
+  const { failedActionsCount } = useSync();
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -127,6 +129,22 @@ export default function SettingsScreen() {
               label="Уведомления"
               description="Мало товара и другое"
               onPress={() => router.push("/notifications")}
+            />
+            <Separator className="ml-16" />
+            <SettingsRow
+              icon="sync-problem"
+              label="Ошибки синхронизации"
+              description={
+                failedActionsCount > 0
+                  ? `${failedActionsCount} неудачных`
+                  : "Нет ошибок"
+              }
+              onPress={() => router.push("/sync-errors")}
+              rightText={
+                failedActionsCount > 0
+                  ? `${failedActionsCount}`
+                  : undefined
+              }
             />
           </CardContent>
         </Card>

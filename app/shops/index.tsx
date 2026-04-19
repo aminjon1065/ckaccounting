@@ -406,12 +406,30 @@ export default function ShopsScreen() {
           text: confirmWord,
           style: shop.is_active ? "destructive" : "default",
           onPress: async () => {
+            const actionWord = shop.is_active ? "deactivate" : "activate";
+            const now = new Date().toISOString();
+            const localId = (shop as LocalShop)?.local_id ?? String(shop.id);
+            // Optimistic update
+            setShops((prev) => prev.map((s) =>
+              s.id === shop.id ? { ...s, is_active: !s.is_active } : s
+            ));
             try {
               const updated = await api.shops.update(shop.id, { is_active: !shop.is_active }, token!);
               setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
               showToast({ message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`, variant: "success" });
-            } catch {
-              showToast({ message: "Не удалось изменить статус.", variant: "error" });
+            } catch (e) {
+              if (e instanceof ApiError && e.status === 0) {
+                // Offline: save locally, queue sync action
+                await insertOrUpdateLocalShop({ ...shop, is_active: !shop.is_active }, localId, "update");
+                await queueSyncAction("PATCH", `/shops/${shop.id}`, { is_active: !shop.is_active }, { "Idempotency-Key": `local-shop-${localId}-${Date.now()}` });
+                showToast({ message: "Нет сети. Изменение сохранено локально.", variant: "warning" });
+              } else {
+                // Revert optimistic update on non-offline error
+                setShops((prev) => prev.map((s) =>
+                  s.id === shop.id ? { ...s, is_active: shop.is_active } : s
+                ));
+                showToast({ message: "Не удалось изменить статус.", variant: "error" });
+              }
             }
           },
         },

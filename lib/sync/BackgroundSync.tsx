@@ -1,49 +1,72 @@
 import React, { useEffect, useRef } from "react";
 import { AppState, AppStateStatus } from "react-native";
+import * as BackgroundFetch from "expo-background-fetch";
 import * as TaskManager from "expo-task-manager";
-import { triggerSync } from "@/lib/sync/SyncContext";
+import { useSync } from "./SyncContext";
 
 // ─── Background Task Definitions ───────────────────────────────────────────────
 
 const BACKGROUND_SYNC_TASK = "ck-background-sync";
 
-TaskManager.defineBackgroundTask(BACKGROUND_SYNC_TASK, async () => {
+// Module-level ref for triggerSync so background task can call it
+let backgroundTriggerSync: (() => Promise<void>) | null = null;
+
+TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
   // This runs when the OS triggers the background task
+  // The app's SyncProvider setInterval handles actual sync — this just signals work may be pending
   try {
-    await triggerSync();
+    if (backgroundTriggerSync) {
+      await backgroundTriggerSync();
+    }
   } catch (e) {
     console.error("Background sync failed:", e);
   }
-  return null;
+  return BackgroundFetch.BackgroundFetchResult.NewData;
 });
+
+export async function registerBackgroundSync(): Promise<boolean> {
+  try {
+    const status = await BackgroundFetch.getStatusAsync();
+    if (status === BackgroundFetch.BackgroundFetchStatus.Restricted || status === BackgroundFetch.BackgroundFetchStatus.Denied) {
+      console.warn("Background fetch is restricted or denied");
+      return false;
+    }
+
+    await BackgroundFetch.registerTaskAsync(BACKGROUND_SYNC_TASK, {
+      minimumInterval: 15 * 60, // 15 minutes — OS minimum on iOS
+      stopOnTerminate: false,
+      startOnBoot: true,
+    });
+    return true;
+  } catch (e) {
+    console.error("Failed to register background sync:", e);
+    return false;
+  }
+}
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useBackgroundSync(enabled: boolean) {
+  const { triggerSync } = useSync();
   const appState = useRef(AppState.currentState);
+
+  // Register background trigger function
+  useEffect(() => {
+    backgroundTriggerSync = triggerSync;
+    return () => {
+      if (backgroundTriggerSync === triggerSync) {
+        backgroundTriggerSync = null;
+      }
+    };
+  }, [triggerSync]);
 
   useEffect(() => {
     if (!enabled) return;
 
-    // Register the background task
-    TaskManager.registerTaskAsync(BACKGROUND_SYNC_TASK, {
-      canBeExecutedInBackground: true,
-    }).catch(console.error);
+    // Register background task
+    registerBackgroundSync().catch(console.error);
 
-    // Schedule the task to run periodically
-    const scheduleBackgroundSync = async () => {
-      await TaskManager.scheduleTaskAsync(BACKGROUND_SYNC_TASK, {
-        type: TaskManager.TaskType.BACKGROUND,
-        timeout: 30_000, // 30 second timeout for each run
-        periodic: {
-          delay: 60_000, // Repeat every minute (minimum)
-        },
-      });
-    };
-
-    scheduleBackgroundSync().catch(console.error);
-
-    // Also sync when app returns to foreground
+    // Sync when app returns to foreground
     const subscription = AppState.addEventListener(
       "change",
       (nextAppState: AppStateStatus) => {
@@ -59,12 +82,12 @@ export function useBackgroundSync(enabled: boolean) {
 
     return () => {
       subscription.remove();
-      TaskManager.cancelTaskAsync(BACKGROUND_SYNC_TASK).catch(() => {});
+      BackgroundFetch.unregisterTaskAsync(BACKGROUND_SYNC_TASK).catch(() => {});
     };
-  }, [enabled]);
+  }, [enabled, triggerSync]);
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Component ───────────────────────────────────────────────────────────────
 
 export function BackgroundSync({ children }: { children: React.ReactNode }) {
   useBackgroundSync(true);

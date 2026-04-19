@@ -267,6 +267,11 @@ export function ProductFormModal({
 
       const isNewPhoto = photoUri && !photoUri.startsWith("http");
 
+      // Include version for optimistic locking (detect concurrent edits)
+      if (editing) {
+        payload.version = (editing as Product).version ?? 1;
+      }
+
       const saved = editing
         ? await api.products.update(editing.id, payload, token, isNewPhoto ? photoUri : undefined)
         : await api.products.create(payload, token, photoUri ?? undefined);

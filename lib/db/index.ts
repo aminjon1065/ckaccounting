@@ -1,28 +1,101 @@
 import { getDb, initDb, clearLocalData } from "./schema";
+export { getDb } from "./schema";
 
 // Product Queries
 import { Product, Debt, DebtTransaction, Sale, SaleItem, Expense, Purchase, PurchaseItem, Shop } from "@/lib/api";
 
 export async function insertOrUpdateProducts(products: Product[], shopId?: number) {
   const db = getDb();
+
+  // Lazy-load conflict utilities to avoid circular imports
+  let detectConflict: (localId: string, entityType: "product", localData: Record<string, unknown>, serverData: Record<string, unknown>) => ReturnType<typeof import("../sync/ConflictContext").detectConflict>;
+  let queueExternalConflict: (conflict: Exclude<ReturnType<typeof detectConflict>, null>) => void;
+
+  try {
+    const mod = await import("../sync/ConflictContext");
+    detectConflict = mod.detectConflict;
+    queueExternalConflict = mod.queueExternalConflict;
+  } catch {
+    // ConflictContext not available — skip conflict detection
+    detectConflict = () => null;
+    queueExternalConflict = () => {};
+  }
+
   await db.withTransactionAsync(async () => {
     for (const p of products) {
       // Skip products with pending local changes — don't overwrite un-synced edits
-      const existing = await db.getFirstAsync<{ sync_action: string }>(
-        "SELECT sync_action FROM products WHERE id = ? OR local_id = ?",
+      const existing = await db.getFirstAsync<{ sync_action: string; stock_quantity: number; pending_stock_delta: number }>(
+        "SELECT sync_action, stock_quantity, pending_stock_delta FROM products WHERE id = ? OR local_id = ?",
         [p.id, p.local_id ?? ""]
       );
-      if (existing && existing.sync_action && existing.sync_action !== "none") {
+      // If product has pending stock delta, merge server stock + local delta
+      if (existing && existing.pending_stock_delta !== 0) {
+        const mergedStock = p.stock_quantity + existing.pending_stock_delta;
+        await db.runAsync(
+          `INSERT OR REPLACE INTO products (
+            id, local_id, shop_id, name, code, unit, cost_price, sale_price,
+            pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          [
+            p.id, null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
+            p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null,
+            mergedStock,  // MERGED: server stock + local pending delta
+            p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
+            (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced"
+          ]
+        );
+        // Clear low-stock alert if stock is now above threshold
+        if (p.stock_quantity > (p.low_stock_alert ?? 0)) {
+          await db.runAsync(
+            "DELETE FROM low_stock_alerts_sent WHERE product_id = ? AND shop_id = ?",
+            [p.id, shopId ?? p.shop_id]
+          );
+        }
         continue;
+      }
+      if (existing && existing.sync_action && existing.sync_action !== "none") {
+        // Pending local change conflicts with server version — detect and surface
+        const localRow = await db.getFirstAsync<Record<string, unknown>>(
+          "SELECT * FROM products WHERE id = ? OR local_id = ?",
+          [p.id, p.local_id ?? ""]
+        );
+        if (localRow) {
+          const localData: Record<string, unknown> = { ...localRow };
+          const serverData: Record<string, unknown> = {
+            name: p.name, code: p.code, unit: p.unit,
+            cost_price: p.cost_price, sale_price: p.sale_price,
+            pricing_mode: p.pricing_mode, markup_percent: p.markup_percent,
+            bulk_price: p.bulk_price, bulk_threshold: p.bulk_threshold,
+            stock_quantity: p.stock_quantity, low_stock_alert: p.low_stock_alert,
+            photo_url: p.photo_url ?? p.image_url,
+            version: (p as any).version,
+          };
+          const conflict = detectConflict(
+            String(localRow.local_id ?? localRow.id),
+            "product",
+            localData,
+            serverData
+          );
+          if (conflict) queueExternalConflict(conflict);
+        }
+        continue;
+      }
+      // Clear low-stock alert if stock is now above threshold (normal server sync)
+      if (p.stock_quantity > (p.low_stock_alert ?? 0)) {
+        await db.runAsync(
+          "DELETE FROM low_stock_alerts_sent WHERE product_id = ? AND shop_id = ?",
+          [p.id, shopId ?? p.shop_id]
+        );
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO products (
           id, local_id, shop_id, name, code, unit, cost_price, sale_price,
-          pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, updated_at, last_synced_at, sync_action, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         [
           p.id, null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
-          p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null, p.updated_at, new Date().toISOString(), "none", "synced"
+          p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
+          (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced"
         ]
       );
     }
@@ -92,12 +165,95 @@ export async function getLocalProductById(id: number): Promise<Product | null> {
 
 export async function decrementLocalProductStock(id: number, quantity: number) {
   const db = getDb();
-  await db.runAsync("UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?) WHERE id = ?", [quantity, id]);
+  // Decrement stock optimistically AND track delta for sync
+  // pending_stock_delta accumulates (multiple offline sales accumulate)
+  await db.runAsync(
+    "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?), pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
+    [quantity, quantity, id]
+  );
 }
 
 export async function incrementLocalProductStock(id: number, quantity: number) {
   const db = getDb();
   await db.runAsync("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?", [quantity, id]);
+}
+
+// ─── Pending Stock Delta ───────────────────────────────────────────────────────
+//
+// Two parallel offline sales both decrement stock:
+//   Sale A: pending_stock_delta = -3
+//   Sale B: pending_stock_delta = -5
+// When Sale A syncs, we must NOT hard-reset to 0 (Sale B's delta would be lost).
+// Instead we incrementally cancel: pending_stock_delta += 3 (net: -2)
+//
+// Failure path (cancelPendingStockDelta): server rejected the sale.
+// We must restore stock_quantity so inventory is accurate for next retry.
+//
+
+export async function onSaleSyncSuccess(productId: number, quantity: number): Promise<void> {
+  // Incrementally cancel the delta — safe for parallel offline sales
+  const db = getDb();
+  await db.runAsync(
+    "UPDATE products SET pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+    [quantity, productId]
+  );
+}
+
+export async function cancelPendingStockDelta(productId: number, quantity: number): Promise<void> {
+  // Server rejected / sale failed — restore stock_quantity AND cancel delta
+  const db = getDb();
+  await db.runAsync(
+    "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+    [quantity, quantity, productId]
+  );
+}
+
+export async function getProductsLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'products_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setProductsLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('products_last_synced_at', ?)",
+    [timestamp]
+  );
+}
+
+export async function getDebtsLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'debts_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setDebtsLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('debts_last_synced_at', ?)",
+    [timestamp]
+  );
+}
+
+export async function getSalesLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'sales_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setSalesLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('sales_last_synced_at', ?)",
+    [timestamp]
+  );
 }
 
 // LocalProduct extends Product with offline-first sync metadata
@@ -116,8 +272,9 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
       `INSERT OR REPLACE INTO products (
         id, local_id, shop_id, name, code, unit, cost_price, sale_price,
         pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity,
-        low_stock_alert, photo_url, updated_at, last_synced_at, sync_action, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status,
+        pending_stock_delta
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [
         product.id, localId ?? null, product.shop_id, product.name, product.code,
         product.unit, product.cost_price, product.sale_price,
@@ -125,6 +282,7 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
         product.markup_percent ?? null, product.bulk_price ?? null,
         product.bulk_threshold ?? null, product.stock_quantity,
         product.low_stock_alert ?? null, product.photo_url ?? product.image_url ?? null,
+        (product as any).version ?? 1,
         product.updated_at ?? new Date().toISOString(),
         new Date().toISOString(),
         syncAction,
@@ -150,6 +308,7 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
           low_stock_alert: product.low_stock_alert,
           shop_id: product.shop_id,
           photo_url: product.photo_url,
+          version: (product as any).version ?? 1,
           _local_id: localId,
         },
         { "Idempotency-Key": `local-prod-${localId}` }
@@ -311,9 +470,12 @@ export interface SyncAction {
   path: string;
   payload: string;
   headers: string | null;
-  status: "pending" | "processing" | "failed" | "dead";
+  status: "pending" | "processing" | "failed" | "completed" | "dead";
   retries: number;
   created_at: string;
+  last_error?: string | null;
+  batch_id?: string | null;
+  idempotency_key?: string | null;
 }
 
 export async function queueSyncAction(method: string, path: string, payload: any, headers?: Record<string, string>) {
@@ -327,6 +489,30 @@ export async function queueSyncAction(method: string, path: string, payload: any
       headers ? JSON.stringify(headers) : null,
       new Date().toISOString()
     ]
+  );
+}
+
+export async function claimPendingSyncActions(batchSize = 10): Promise<SyncAction[]> {
+  const db = getDb();
+  const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  // Atomic claim: mark rows as 'processing' with batch_id atomically
+  await db.runAsync(
+    `UPDATE sync_queue
+     SET status = 'processing', batch_id = ?
+     WHERE id IN (
+       SELECT id FROM sync_queue
+       WHERE status IN ('pending', 'failed') AND retries < 5
+       ORDER BY id ASC
+       LIMIT ?
+     )`,
+    [batchId, batchSize]
+  );
+
+  // Fetch all actions with this batch_id (only the ones we just claimed)
+  return db.getAllAsync<SyncAction>(
+    "SELECT * FROM sync_queue WHERE batch_id = ? ORDER BY id ASC",
+    [batchId]
   );
 }
 
@@ -355,23 +541,25 @@ export async function getDeadSyncActionsCount(): Promise<number> {
   return Number(result?.count ?? 0);
 }
 
-export async function markSyncActionStatus(id: number, status: "pending" | "processing" | "failed" | "completed" | "dead", incrementRetry = false) {
+export async function markSyncActionStatus(id: number, status: "pending" | "processing" | "failed" | "completed" | "dead", incrementRetry = false, lastError?: string) {
   const db = getDb();
   if (status === "completed") {
     await db.runAsync("DELETE FROM sync_queue WHERE id = ?", [id]);
   } else if (status === "dead") {
-    await db.runAsync("UPDATE sync_queue SET status = 'dead' WHERE id = ?", [id]);
+    await db.runAsync("UPDATE sync_queue SET status = 'dead', last_error = ? WHERE id = ?", [lastError ?? null, id]);
+  } else if (incrementRetry) {
+    const args: (string | number)[] = lastError !== undefined
+      ? [status, lastError, id]
+      : [status, id];
+    await db.runAsync(
+      `UPDATE sync_queue SET status = CASE WHEN retries >= 4 THEN 'dead' ELSE ? END, retries = retries + 1${lastError !== undefined ? ", last_error = ?" : ""} WHERE id = ?`,
+      args
+    );
   } else {
-    let query = "UPDATE sync_queue SET status = ?";
-    if (incrementRetry) {
-      query += ", retries = retries + 1";
-      // Move to dead after 5 retries
-      query = `UPDATE sync_queue SET status = CASE WHEN retries >= 4 THEN 'dead' ELSE ? END, retries = retries + 1 WHERE id = ?`;
-      await db.runAsync(query, [status, id]);
-      return;
-    }
-    query += " WHERE id = ?";
-    await db.runAsync(query, [status, id]);
+    const args: (string | number)[] = lastError !== undefined
+      ? [status, lastError, id]
+      : [status, id];
+    await db.runAsync(`UPDATE sync_queue SET status = ?${lastError !== undefined ? ", last_error = ?" : ""} WHERE id = ?`, args);
   }
 }
 
@@ -407,11 +595,29 @@ export interface LocalSale extends Sale {
   last_synced_at?: string | null;
 }
 
-function mapRowToSale(r: SaleRow): Sale {
-  let items: SaleItem[] = [];
-  try {
-    items = JSON.parse(r.items || "[]");
-  } catch {}
+async function getSaleItemsForLocalId(localId: string): Promise<SaleItem[]> {
+  if (!localId) return [];
+  const db = getDb();
+  const rows = await db.getAllAsync<{
+    id: number; product_id: number | null; product_name: string | null;
+    unit: string | null; quantity: number; unit_price: number; total: number;
+  }>(
+    "SELECT id, product_id, product_name, unit, quantity, unit_price, total FROM sale_items WHERE sale_local_id = ?",
+    [localId]
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    product_id: row.product_id,
+    product_name: row.product_name,
+    unit: row.unit ?? undefined,
+    quantity: row.quantity,
+    price: row.unit_price,
+    total: row.total,
+  }));
+}
+
+async function mapRowToSale(r: SaleRow): Promise<Sale> {
+  const items = await getSaleItemsForLocalId(r.local_id);
   return {
     id: r.id,
     type: r.type as Sale["type"],
@@ -428,8 +634,8 @@ function mapRowToSale(r: SaleRow): Sale {
   };
 }
 
-function mapRowToLocalSale(r: SaleRow): LocalSale {
-  const base = mapRowToSale(r);
+async function mapRowToLocalSale(r: SaleRow): Promise<LocalSale> {
+  const base = await mapRowToSale(r);
   return {
     ...base,
     local_id: r.local_id,
@@ -471,6 +677,25 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
       ]
     );
 
+    // Write sale items to normalized sale_items table for queryability
+    await db.runAsync("DELETE FROM sale_items WHERE sale_local_id = ?", [localId]);
+    const now = new Date().toISOString();
+    for (const item of sale.items ?? []) {
+      await db.runAsync(
+        `INSERT INTO sale_items (sale_local_id, product_id, product_name, quantity, unit_price, total, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          localId,
+          item.product_id ?? null,
+          item.product_name ?? item.name ?? "",
+          item.quantity,
+          item.price,
+          item.total,
+          now,
+        ]
+      );
+    }
+
     // Queue for sync — the sync_queue loop handles HTTP replay with FIFO ordering
     await queueSyncAction(
       "POST",
@@ -490,13 +715,65 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
       },
       { "Idempotency-Key": `local-${localId}` }
     );
+
+    // Invalidate dashboard cache so next load fetches fresh data
+    await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
 
-export async function getLocalSales(): Promise<LocalSale[]> {
+export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number): Promise<void> {
   const db = getDb();
-  const results = await db.getAllAsync<SaleRow>("SELECT * FROM sales ORDER BY created_at DESC");
-  return results.map(mapRowToLocalSale);
+  await db.withTransactionAsync(async () => {
+    for (const sale of sales) {
+      // INSERT OR IGNORE: never overwrite a locally pending sale (sync_action != 'none')
+      const existing = await db.getFirstAsync<{ sync_action: string }>(
+        "SELECT sync_action FROM sales WHERE id = ? OR local_id = ?",
+        [sale.id, String(sale.id)]
+      );
+      if (existing && existing.sync_action !== "none") {
+        continue; // skip — local changes pending, will sync separately
+      }
+      await db.runAsync(
+        `INSERT OR REPLACE INTO sales (
+          id, local_id, shop_id, user_id, customer_name, type, total, discount, paid, debt,
+          payment_type, notes, items, status, sync_action, created_at, updated_at, last_synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          sale.id,
+          null, // local_id — this is a server record
+          shopId ?? null,
+          null,
+          sale.customer_name,
+          sale.type ?? null,
+          sale.total,
+          sale.discount,
+          sale.paid,
+          sale.debt,
+          sale.payment_type,
+          sale.notes ?? null,
+          JSON.stringify(sale.items),
+          "synced",
+          "none",
+          sale.created_at ?? new Date().toISOString(),
+          sale.updated_at ?? new Date().toISOString(),
+          new Date().toISOString(),
+        ]
+      );
+    }
+  });
+}
+
+export async function getLocalSales(shopId?: number): Promise<LocalSale[]> {
+  const db = getDb();
+  let query = "SELECT * FROM sales";
+  const params: any[] = [];
+  if (shopId !== undefined) {
+    query += " WHERE shop_id = ?";
+    params.push(shopId);
+  }
+  query += " ORDER BY created_at DESC";
+  const results = await db.getAllAsync<SaleRow>(query, params);
+  return Promise.all(results.map(mapRowToLocalSale));
 }
 
 export async function getLocalSaleById(localIdOrNegId: string): Promise<LocalSale | null> {
@@ -507,7 +784,7 @@ export async function getLocalSaleById(localIdOrNegId: string): Promise<LocalSal
     [localIdOrNegId, localIdOrNegId]
   );
   if (!r) return null;
-  return mapRowToLocalSale(r);
+  return await mapRowToLocalSale(r);
 }
 
 export async function updateSaleStatus(
@@ -539,7 +816,7 @@ export async function getPendingSyncSales(): Promise<LocalSale[]> {
   const results = await db.getAllAsync<SaleRow>(
     "SELECT * FROM sales WHERE sync_action != 'none' ORDER BY created_at ASC"
   );
-  return results.map(mapRowToLocalSale);
+  return Promise.all(results.map(mapRowToLocalSale));
 }
 
 // ─── Expenses ──────────────────────────────────────────────────────────────────
@@ -636,6 +913,9 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
       },
       { "Idempotency-Key": `local-exp-${localId}` }
     );
+
+    // Invalidate dashboard cache so next load fetches fresh data
+    await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
 
@@ -784,6 +1064,9 @@ export async function insertOrUpdatePurchase(purchase: Purchase, localId: string
       },
       { "Idempotency-Key": `local-pur-${localId}` }
     );
+
+    // Invalidate dashboard cache so next load fetches fresh data
+    await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
 
@@ -1059,6 +1342,42 @@ export async function markNotificationsRead(ids: number[]): Promise<void> {
 }
 
 // ─── Low Stock Alerts ────────────────────────────────────────────────────────────
+
+// ─── Low Stock Notifications ───────────────────────────────────────────────────
+
+export async function checkAndNotifyLowStock(shopId: number): Promise<void> {
+  const db = getDb();
+  const rows = await db.getAllAsync<any>(
+    `SELECT id, name, code, unit, stock_quantity, low_stock_alert
+     FROM products
+     WHERE shop_id = ?
+       AND low_stock_alert IS NOT NULL
+       AND low_stock_alert > 0
+       AND stock_quantity <= low_stock_alert`,
+    [shopId]
+  );
+
+  for (const p of rows) {
+    const alreadySent = await hasLowStockAlertBeenSent(p.id, shopId);
+    if (!alreadySent) {
+      const title = `Мало товара: ${p.name}`;
+      const body = `Остаток ${p.stock_quantity} ${p.unit ?? "шт"} при минимуме ${p.low_stock_alert}`;
+      await insertNotification(
+        "low_stock",
+        title,
+        body,
+        { product_id: p.id, shop_id: shopId }
+      );
+      await markLowStockAlertSent(p.id, shopId);
+
+      // Show push notification on mobile
+      try {
+        const { showLocalNotification } = await import("@/lib/notifications");
+        await showLocalNotification(title, body, { product_id: p.id, shop_id: shopId });
+      } catch {}
+    }
+  }
+}
 
 export async function hasLowStockAlertBeenSent(productId: number, shopId: number): Promise<boolean> {
   const db = getDb();

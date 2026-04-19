@@ -216,7 +216,7 @@ export function CreatePurchaseModal({
     };
     if (supplierName.trim()) payload.supplier_name = supplierName.trim();
     try {
-      const created = await api.purchases.create(payload, token);
+      const created = await api.purchases.create(payload, token, idempotencyKey);
       onCreated(created);
       onClose();
     } catch (e) {

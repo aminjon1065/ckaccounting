@@ -2,6 +2,9 @@ import { Platform } from "react-native";
 import * as React from "react";
 import * as SecureStore from "expo-secure-store";
 import * as Crypto from "expo-crypto";
+import { pbkdf2 } from "@noble/hashes/pbkdf2.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { api, type LoginPayload, type User } from "@/lib/api";
 import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
@@ -50,7 +53,9 @@ async function hashPin(pin: string, salt: string): Promise<string> {
 }
 
 async function hashPassword(password: string, salt: string): Promise<string> {
-  return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, password + salt);
+  // PBKDF2-SHA256, 100k iterations — ~200ms on device, decades to brute-force
+  const key = pbkdf2(sha256, password, salt, { c: 100_000, dkLen: 32 });
+  return bytesToHex(key);
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -68,10 +73,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
 
   // Register the suspension handler so api.ts can signal when 403 is received
+  // On suspension: clear sensitive local data to prevent data leak on rooted devices
   React.useEffect(() => {
-    registerSuspensionHandler(() =>
-      setState((prev) => ({ ...prev, shopSuspended: true }))
-    );
+    registerSuspensionHandler(async () => {
+      // Clear sensitive tables from local SQLite
+      try {
+        const db = (await import("@/lib/db")).getDb();
+        await db.runAsync("DELETE FROM products");
+        await db.runAsync("DELETE FROM sales");
+        await db.runAsync("DELETE FROM debts");
+        await db.runAsync("DELETE FROM debt_transactions");
+        await db.runAsync("DELETE FROM dashboard_cache");
+      } catch {}
+      setState((prev) => ({ ...prev, shopSuspended: true }));
+    });
   }, []);
 
   // Load persisted session on mount

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 
 export type ConflictEntity = "product" | "sale" | "expense" | "purchase" | "debt";
 
@@ -25,28 +25,73 @@ export interface Conflict {
 interface ConflictContextValue {
   conflicts: Conflict[];
   addConflict: (conflict: Conflict) => void;
-  resolveConflict: (conflictId: string, choice: "local" | "server") => void;
+  resolveConflict: (conflictId: string, choice: "local" | "server") => Promise<void>;
   dismissConflict: (conflictId: string) => void;
   hasConflicts: boolean;
 }
 
 const ConflictContext = React.createContext<ConflictContextValue | null>(null);
 
+// Module-level registry so non-React sync code can queue conflicts
+let _externalAddConflict: ((conflict: Conflict) => void) | null = null;
+
 export function ConflictProvider({ children }: { children: React.ReactNode }) {
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
 
+  // Register external queue callback when provider mounts
+  useEffect(() => {
+    _externalAddConflict = (conflict: Conflict) => {
+      setConflicts((prev) => {
+        if (prev.some((c) => c.id === conflict.id)) return prev;
+        return [...prev, conflict];
+      });
+    };
+    return () => { _externalAddConflict = null; };
+  }, []);
+
   const addConflict = useCallback((conflict: Conflict) => {
     setConflicts((prev) => {
-      // Avoid duplicates
       if (prev.some((c) => c.id === conflict.id)) return prev;
       return [...prev, conflict];
     });
+    _externalAddConflict?.(conflict);
   }, []);
 
-  const resolveConflict = useCallback((conflictId: string, choice: "local" | "server") => {
+  const resolveConflict = useCallback(async (conflictId: string, choice: "local" | "server") => {
+    const conflict = conflicts.find((c) => c.id === conflictId);
+    if (!conflict) {
+      setConflicts((prev) => prev.filter((c) => c.id !== conflictId));
+      return;
+    }
+
+    try {
+      const { getDb } = await import("@/lib/db");
+      const db = getDb();
+      const chosenData = choice === "local" ? conflict.localData : conflict.serverData;
+      const table = entityTableForType(conflict.entityType);
+
+      if (table && conflict.localId) {
+        const sets = Object.keys(chosenData)
+          .filter((k) => !CONFLICT_IGNORED_FIELDS.has(k))
+          .map((k) => `${k} = ?`)
+          .join(", ");
+        const values = Object.keys(chosenData)
+          .filter((k) => !CONFLICT_IGNORED_FIELDS.has(k))
+          .map((k) => chosenData[k]);
+
+        if (sets) {
+          await db.runAsync(
+            `UPDATE ${table} SET ${sets}, sync_action = 'none' WHERE local_id = ? OR id = ?`,
+            [...(values as any[]), conflict.localId, conflict.localId]
+          );
+        }
+      }
+    } catch (e) {
+      console.error("Failed to apply conflict resolution", e);
+    }
+
     setConflicts((prev) => prev.filter((c) => c.id !== conflictId));
-    // The caller should handle applying the chosen data
-  }, []);
+  }, [conflicts]);
 
   const dismissConflict = useCallback((conflictId: string) => {
     setConflicts((prev) => prev.filter((c) => c.id !== conflictId));
@@ -101,6 +146,17 @@ const CONFLICT_IGNORED_FIELDS = new Set([
   "local_id",
 ]);
 
+function entityTableForType(type: ConflictEntity): string {
+  const map: Record<ConflictEntity, string> = {
+    product: "products",
+    sale: "sales",
+    expense: "expenses",
+    purchase: "purchases",
+    debt: "debts",
+  };
+  return map[type] ?? "products";
+}
+
 export function detectConflict<T extends Record<string, unknown>>(
   localId: string,
   entityType: ConflictEntity,
@@ -138,4 +194,12 @@ export function detectConflict<T extends Record<string, unknown>>(
     conflicts,
     detectedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Queue a conflict from outside React (e.g. sync processor).
+ * Must be called after ConflictProvider has mounted.
+ */
+export function queueExternalConflict(conflict: Conflict): void {
+  _externalAddConflict?.(conflict);
 }

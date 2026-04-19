@@ -42,4 +42,6 @@ export const PAGINATION = {
 export const TIMEOUTS = {
   /** Default fetch timeout in ms */
   request: 15_000,
+  /** Timeout for photo uploads (larger payloads over slow connections) */
+  upload: 120_000,
 } as const;

@@ -78,6 +78,7 @@ export interface Product {
   image_url?: string | null;
   created_at: string;
   updated_at: string;
+  version?: number;
 }
 
 export interface CreateProductPayload {
@@ -93,6 +94,7 @@ export interface CreateProductPayload {
   stock_quantity: number;
   low_stock_alert?: number;
   shop_id?: number;
+  version?: number;
 }
 
 // ─── Expenses ─────────────────────────────────────────────────────────────────
@@ -386,6 +388,15 @@ export class ApiError extends Error {
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
 
+// Transient errors that should be retried vs permanent errors (4xx) that should not
+function isRetryableStatus(status: number): boolean {
+  return status === 0       // network error / no connection
+    || status === 429       // rate limited
+    || status === 502       // bad gateway
+    || status === 503       // service unavailable
+    || status === 504;      // gateway timeout
+}
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   method: string,
@@ -396,12 +407,12 @@ async function withRetry<T>(
       return await fn();
     } catch (err) {
       if (err instanceof ApiError && attempt < retries) {
-        const isWrite = ["POST", "PATCH", "PUT", "DELETE"].includes(method.toUpperCase());
-        const shouldRetry = err.status === 0 || (!isWrite && err.status >= 500);
-        if (shouldRetry) {
-          await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY * Math.pow(2, attempt)));
-          continue;
+        // Don't retry 4xx errors — they are permanent failures (validation error, etc.)
+        if (!isRetryableStatus(err.status)) {
+          throw err;
         }
+        await new Promise((r) => setTimeout(r, Math.min(RETRY_BASE_DELAY * Math.pow(2, attempt), 30_000)));
+        continue;
       }
       throw err;
     }
@@ -434,7 +445,10 @@ async function request<T>(
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUTS.request);
+    // Use longer timeout for photo uploads (FormData) vs regular JSON requests
+    const isUpload = rest.body instanceof FormData;
+    const timeout = isUpload ? TIMEOUTS.upload : TIMEOUTS.request;
+    const timer = setTimeout(() => controller.abort(), timeout);
 
     let res: Response;
     try {
@@ -560,10 +574,10 @@ export const api = {
   products: {
     list: (
       token: string,
-      params: { page?: number; limit?: number; search?: string; shop_id?: number } = {}
+      params: { page?: number; limit?: number; search?: string; shop_id?: number; after_id?: number; updated_since?: string } = {}
     ) =>
       request<Paginated<Product>>(
-        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id })}`,
+        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id, after_id: params.after_id, updated_since: params.updated_since })}`,
         { token }
       ),
 
@@ -630,9 +644,12 @@ export const api = {
 
   // ── Debts ─────────────────────────────────────────────────────────────────
   debts: {
-    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+    list: (
+      token: string,
+      params: { page?: number; limit?: number; after_id?: number; updated_since?: string } = {}
+    ) =>
       request<Paginated<Debt>>(
-        `/debts${qs({ page: params.page, limit: params.limit ?? 20 })}`,
+        `/debts${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since })}`,
         { token }
       ),
 
@@ -669,19 +686,23 @@ export const api = {
     get: (id: number, token: string) =>
       request<Purchase>(`/purchases/${id}`, { token }),
 
-    create: (payload: CreatePurchasePayload, token: string) =>
+    create: (payload: CreatePurchasePayload, token: string, idempotencyKey?: string) =>
       request<Purchase>("/purchases", {
         method: "POST",
         body: JSON.stringify(payload),
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
         token,
       }),
   },
 
   // ── Sales ─────────────────────────────────────────────────────────────────
   sales: {
-    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+    list: (
+      token: string,
+      params: { page?: number; limit?: number; after_id?: number; updated_since?: string } = {}
+    ) =>
       request<Paginated<Sale>>(
-        `/sales${qs({ page: params.page, limit: params.limit ?? 20 })}`,
+        `/sales${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since })}`,
         { token }
       ),
 

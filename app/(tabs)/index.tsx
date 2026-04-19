@@ -11,6 +11,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Avatar, Select, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
+import { useSync } from "@/lib/sync/SyncContext";
 
 import { useDashboard } from "@/hooks/useDashboard";
 import { getGreeting, formatDate } from "@/lib/formatters";
@@ -32,6 +33,7 @@ import { CustomPeriodModal } from "@/components/dashboard/CustomPeriodModal";
 export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
+  const { refreshProducts } = useSync();
   const isSuperAdmin = user?.role === "super_admin";
   const [isDataHidden, setIsDataHidden] = React.useState(false);
 
@@ -64,7 +66,10 @@ export default function DashboardScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => fetchDashboard(true)}
+            onRefresh={async () => {
+              await fetchDashboard(true);
+              await refreshProducts(true);
+            }}
             tintColor="#0a7ea4"
             colors={["#0a7ea4"]}
           />

@@ -16,7 +16,7 @@ import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
 export default function LoginScreen() {
-  const { signIn, signInOffline, hasCredentials, setPin, hasPin } = useAuth();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin } = useAuth();
   const router = useRouter();
 
   const [email, setEmail] = React.useState("");
@@ -28,6 +28,8 @@ export default function LoginScreen() {
   const [pinValue, setPinValue] = React.useState("");
   const [pinConfirm, setPinConfirm] = React.useState("");
   const [pinError, setPinError] = React.useState("");
+  const [showPinVerify, setShowPinVerify] = React.useState(false);
+  const [pinVerifyValue, setPinVerifyValue] = React.useState("");
   const [pendingCredentials, setPendingCredentials] = React.useState<{
     email: string;
     password: string;
@@ -86,8 +88,24 @@ export default function LoginScreen() {
   async function handleOfflineLogin() {
     setLoading(true);
     setError("");
+    // PIN is required to use offline login — prevents unauthorized access to cached session
+    setShowPinVerify(true);
+    setLoading(false);
+  }
+
+  async function handlePinVerifySubmit() {
+    if (!pinVerifyValue) return;
+    const valid = await verifyPin(pinVerifyValue);
+    if (!valid) {
+      setError("Неверный PIN. Попробуйте снова.");
+      setPinVerifyValue("");
+      return;
+    }
+    setError("");
     const success = await signInOffline();
     if (success) {
+      setShowPinVerify(false);
+      setPinVerifyValue("");
       const pinSet = await hasPin();
       if (!pinSet) {
         setShowPinSetup(true);
@@ -97,7 +115,6 @@ export default function LoginScreen() {
     } else {
       setError("Не удалось войти офлайн. Проверьте подключение.");
     }
-    setLoading(false);
   }
 
   async function handlePinSubmit() {
@@ -116,6 +133,73 @@ export default function LoginScreen() {
     } catch {
       setPinError("Не удалось сохранить PIN. Попробуйте снова.");
     }
+  }
+
+  // ── PIN Verify Screen (before offline login) ─────────────────────────────────
+  if (showPinVerify) {
+    return (
+      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          className="flex-1"
+        >
+          <ScrollView
+            className="flex-1"
+            contentContainerStyle={{
+              flexGrow: 1,
+              justifyContent: "center",
+              paddingHorizontal: 24,
+              paddingVertical: 48,
+            }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View className="items-center mb-8">
+              <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-4">
+                <MaterialIcons name="lock-outline" size={28} color="#fff" />
+              </View>
+              <Text variant="h2" className="text-center">
+                Введите PIN
+              </Text>
+              <Text variant="muted" className="text-center mt-2 text-center">
+                Для входа офлайн введите PIN-код.
+              </Text>
+            </View>
+
+            {!!error && (
+              <Alert
+                variant="destructive"
+                title="Ошибка"
+                description={error}
+                className="mb-4"
+              />
+            )}
+
+            <View className="gap-4">
+              <TextInput
+                className="border border-gray-300 dark:border-zinc-700 rounded-xl px-4 py-3 text-base bg-white dark:bg-zinc-900 text-gray-900 dark:text-white text-center tracking-widest"
+                placeholder="****"
+                placeholderTextColor="gray"
+                keyboardType="number-pad"
+                maxLength={6}
+                secureTextEntry
+                value={pinVerifyValue}
+                onChangeText={setPinVerifyValue}
+              />
+              <Button onPress={handlePinVerifySubmit}>
+                Войти
+              </Button>
+              <Button
+                variant="ghost"
+                onPress={() => { setShowPinVerify(false); setPinVerifyValue(""); setError(""); }}
+              >
+                Назад
+              </Button>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
   }
 
   // ── PIN Setup Screen ─────────────────────────────────────────────────────────
