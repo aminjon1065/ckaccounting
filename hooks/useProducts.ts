@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Alert } from "react-native";
 import { api, type Product } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalProducts } from "@/lib/db";
+import { getLocalProducts, markProductDeletedLocally } from "@/lib/db";
 import type { LocalProduct } from "@/lib/db";
 
 export function useProducts({ token, shopId }: { token: string | null; shopId?: number }) {
@@ -91,19 +91,25 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
         style: "destructive",
         onPress: async () => {
           try {
-            await api.products.delete(id, token!);
+            const product = products.find((p) => p.id === id);
+            const localId = product?.local_id ?? String(id);
+            await api.products.delete(id, token!, `local-prod-delete-${localId}`);
             setProducts((prev) => prev.filter((p) => p.id !== id));
             showToast({ message: "Товар удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              // Offline: mark for deletion in local DB, queue sync
-              const { updateProductStatus } = await import("@/lib/db");
-              // Find local product by id
+              // Offline: find the product to get its local_id and server id
+              const product = products.find((p) => p.id === id);
+              if (!product) return;
+
+              // markProductDeletedLocally handles both server-synced (id > 0) and
+              // local-only (id < 0) products correctly, including the local_id=NULL case.
+              await markProductDeletedLocally(id, product.local_id);
+
               setProducts((prev) => {
                 const idx = prev.findIndex((p) => p.id === id);
                 if (idx >= 0) {
                   const next = [...prev];
-                  // Mark as pending delete locally — will be removed after sync
                   next[idx] = { ...next[idx], sync_action: "delete", status: "pending" };
                   return next;
                 }

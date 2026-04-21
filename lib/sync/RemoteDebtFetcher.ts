@@ -1,4 +1,4 @@
-import { api, Debt } from "../api";
+import { api, getLastServerTime, Debt } from "../api";
 import {
   getDebtsLastSyncedAt,
   insertOrUpdateDebts,
@@ -9,6 +9,10 @@ export interface DebtFetcherDeps {
   token: string;
 }
 
+function encodeCursor(updatedAt: string, id: number): string {
+  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
+}
+
 export class RemoteDebtFetcher {
   constructor(private deps: () => DebtFetcherDeps) {}
 
@@ -17,28 +21,38 @@ export class RemoteDebtFetcher {
     if (!token) return;
 
     try {
+      let cursor: string | null = null;
       const lastSyncedAt = forceFullSync ? null : await getDebtsLastSyncedAt();
-      let afterId: number | null = null;
+      // Capture server_time from the FIRST response as the sync cycle's upper bound.
+      let syncUntil: string | null = null;
       let hasMore = true;
 
       while (hasMore) {
         const response = await api.debts.list(token, {
           limit: 100,
-          updated_since: lastSyncedAt ?? undefined,
-          after_id: afterId ?? undefined,
+          cursor: cursor ?? undefined,
+          updated_since: cursor === null ? (lastSyncedAt ?? undefined) : undefined,
+          updated_before: syncUntil ?? undefined,
         });
+
+        // Capture server_time from the very first response as the high-water mark.
+        if (syncUntil === null) {
+          syncUntil = getLastServerTime() ?? null;
+        }
 
         if (response.data.length > 0) {
           await insertOrUpdateDebts(response.data);
-          afterId = response.data[response.data.length - 1].id;
+          const lastItem = response.data[response.data.length - 1];
+          cursor = encodeCursor(lastItem.updated_at, lastItem.id);
           hasMore = response.data.length === 100;
         } else {
           hasMore = false;
         }
       }
 
-      if (afterId !== null || forceFullSync) {
-        await setDebtsLastSyncedAt(new Date().toISOString());
+      if (cursor !== null || forceFullSync) {
+        const serverTime = getLastServerTime();
+        await setDebtsLastSyncedAt(serverTime ?? new Date().toISOString());
       }
     } catch (error) {
       console.error("Failed to fetch remote debts:", error);

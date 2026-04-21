@@ -1,5 +1,7 @@
 import { API_URL, AUTH_ENDPOINTS, TIMEOUTS } from "@/constants/config";
 import { triggerSuspension } from "@/store/suspension";
+import { triggerTokenExpiry } from "@/lib/sync/TokenExpiryBridge";
+import { attemptTokenRefresh } from "@/lib/sync/TokenRefreshBridge";
 
 const BASE_URL = API_URL;
 
@@ -51,6 +53,8 @@ export interface Shop {
   is_active: boolean;
   owner_id?: number | null;
   created_at: string;
+  updated_at?: string;
+  deleted_at?: string | null;
 }
 
 export interface CreateShopPayload {
@@ -78,6 +82,7 @@ export interface Product {
   image_url?: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
   version?: number;
 }
 
@@ -108,6 +113,8 @@ export interface Expense {
   note: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
+  version?: number;
 }
 
 export interface CreateExpensePayload {
@@ -137,10 +144,13 @@ export interface Debt {
   transactions?: DebtTransaction[];
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
+  version?: number;
 }
 
 export interface CreateDebtPayload {
   person_name: string;
+  direction?: "receivable" | "payable";
   opening_balance?: number;
 }
 
@@ -168,6 +178,7 @@ export interface Purchase {
   items: PurchaseItem[];
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 export interface CreatePurchasePayload {
@@ -205,6 +216,8 @@ export interface Sale {
   items: SaleItem[];
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
+  version?: number;
 }
 
 // Item shapes for the two sale types
@@ -347,6 +360,33 @@ export interface RecentSaleItem {
   actor_name?: string;
 }
 
+// Recent expense item on the dashboard
+export interface RecentExpenseItem {
+  id: number;
+  name: string;
+  total: number;
+  created_at: string;
+}
+
+// Recent debt transaction on the dashboard
+export interface RecentDebtTransactionItem {
+  id: number;
+  debt_id: number;
+  person_name: string;
+  amount: number;
+  type: "give" | "take" | "repay";
+  created_at: string;
+}
+
+// Unpaid/overdue debt summary item
+export interface UnpaidDebtItem {
+  id: number;
+  person_name: string;
+  balance: number;
+  direction: "receivable" | "payable";
+  created_at: string;
+}
+
 export interface DashboardSummary {
   period: DashboardPeriod;
   date_from: string;
@@ -364,10 +404,10 @@ export interface DashboardSummary {
   stock_total_sales_value: number;
   low_stock_count: number;
   recent_sales: RecentSaleItem[];
-  recent_expenses: any[];
-  recent_debt_transactions: any[];
+  recent_expenses: RecentExpenseItem[];
+  recent_debt_transactions: RecentDebtTransactionItem[];
   low_stock_products: LowStockItem[];
-  unpaid_debts: any[];
+  unpaid_debts: UnpaidDebtItem[];
 }
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -400,13 +440,32 @@ function isRetryableStatus(status: number): boolean {
 async function withRetry<T>(
   fn: () => Promise<T>,
   method: string,
-  retries = MAX_RETRIES
+  retries = MAX_RETRIES,
+  tokenRef?: { current: string | undefined }
 ): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await fn();
     } catch (err) {
       if (err instanceof ApiError && attempt < retries) {
+        // On 401: attempt token refresh once, then retry with the new token
+        if (err.status === 401 && tokenRef?.current && attempt === 0) {
+          const newToken = await attemptTokenRefresh(tokenRef!.current);
+          if (newToken) {
+            // Update the shared token ref; fn() re-reads options.token each time
+            tokenRef.current = newToken;
+            try {
+              return await fn();
+            } catch (retryErr) {
+              if (retryErr instanceof ApiError && isRetryableStatus(retryErr.status)) {
+                await new Promise((r) => setTimeout(r, Math.min(RETRY_BASE_DELAY * Math.pow(2, attempt), 30_000)));
+                continue;
+              }
+              throw retryErr;
+            }
+          }
+          // Refresh failed — fall through to normal error handling
+        }
         // Don't retry 4xx errors — they are permanent failures (validation error, etc.)
         if (!isRetryableStatus(err.status)) {
           throw err;
@@ -422,14 +481,24 @@ async function withRetry<T>(
 
 // ─── Core fetch ───────────────────────────────────────────────────────────────
 
+let lastServerTime: string | null = null;
+
+export function getLastServerTime(): string | null {
+  return lastServerTime;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & { token?: string } = {}
 ): Promise<T> {
+  // Use a holder object so withRetry can update the token after refresh.
+  // The closure (fn) reads options.token each time, which will pick up the
+  // updated holder.current after a token refresh.
+  const tokenHolder = { current: options.token ?? undefined };
   const method = options.method ?? "GET";
 
   return withRetry(async () => {
-    const { token, headers: extraHeaders, ...rest } = options;
+    const { token: _token, headers: extraHeaders, ...rest } = options;
 
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -442,7 +511,8 @@ async function request<T>(
       headers["Content-Type"] = "application/json";
     }
 
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+    // Read from holder so retries after token refresh pick up the new token.
+    if (tokenHolder.current) headers["Authorization"] = `Bearer ${tokenHolder.current}`;
 
     const controller = new AbortController();
     // Use longer timeout for photo uploads (FormData) vs regular JSON requests
@@ -472,6 +542,10 @@ async function request<T>(
       if (res.status === 403) {
         triggerSuspension();
       }
+      // Signal token expiry — sync should stop and user should re-authenticate
+      if (res.status === 401) {
+        triggerTokenExpiry();
+      }
       throw new ApiError(
         body.message ?? `Request failed with status ${res.status}`,
         res.status,
@@ -486,6 +560,11 @@ async function request<T>(
       json = await res.json();
     } catch {
       throw new ApiError("Некорректный ответ сервера.", res.status);
+    }
+
+    // Capture server_time for sync high-water mark persistence
+    if (json !== null && typeof json === "object" && "server_time" in json) {
+      lastServerTime = (json as any).server_time as string;
     }
 
     // Auto-unwrap Laravel envelope: { success, message, data, [meta, links] }
@@ -508,7 +587,7 @@ async function request<T>(
     }
 
     return json as T;
-  }, method);
+  }, method, MAX_RETRIES, tokenHolder);
 }
 
 // ─── Query builder ────────────────────────────────────────────────────────────
@@ -574,10 +653,10 @@ export const api = {
   products: {
     list: (
       token: string,
-      params: { page?: number; limit?: number; search?: string; shop_id?: number; after_id?: number; updated_since?: string } = {}
+      params: { page?: number; limit?: number; search?: string; shop_id?: number; after_id?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
     ) =>
       request<Paginated<Product>>(
-        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id, after_id: params.after_id, updated_since: params.updated_since })}`,
+        `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
       ),
 
@@ -602,8 +681,12 @@ export const api = {
         token,
       }),
 
-    delete: (id: number, token: string) =>
-      request<void>(`/products/${id}`, { method: "DELETE", token }),
+    delete: (id: number, token: string, idempotencyKey?: string) =>
+      request<void>(`/products/${id}`, {
+        method: "DELETE",
+        token,
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      }),
 
     movements: (id: number, token: string) =>
       request<ProductMovementsResponse>(`/products/${id}/movements`, { token }),
@@ -646,10 +729,10 @@ export const api = {
   debts: {
     list: (
       token: string,
-      params: { page?: number; limit?: number; after_id?: number; updated_since?: string } = {}
+      params: { page?: number; limit?: number; after_id?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
     ) =>
       request<Paginated<Debt>>(
-        `/debts${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since })}`,
+        `/debts${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
       ),
 
@@ -699,10 +782,10 @@ export const api = {
   sales: {
     list: (
       token: string,
-      params: { page?: number; limit?: number; after_id?: number; updated_since?: string } = {}
+      params: { page?: number; limit?: number; after_id?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
     ) =>
       request<Paginated<Sale>>(
-        `/sales${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since })}`,
+        `/sales${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
       ),
 

@@ -1,12 +1,13 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
-import { Alert, FlatList, RefreshControl, TouchableOpacity, View } from "react-native";
+import { Alert, FlatList, RefreshControl, Share, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Card, CardContent, Text } from "@/components/ui";
-import { getDb } from "@/lib/db";
+import { archiveSyncAction, archiveSyncActions, getDb } from "@/lib/db";
 import { useSync } from "@/lib/sync/SyncContext";
 import type { SyncAction } from "@/lib/db";
+import { SaleRecoveryModal } from "@/components/sales/SaleRecoveryModal";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ function getPathLabel(path: string): string {
 export default function SyncErrorsScreen() {
   const { failedActions, triggerSync, refreshPendingActions } = useSync();
   const [refreshing, setRefreshing] = React.useState(false);
+  const [recoveryAction, setRecoveryAction] = React.useState<SyncAction | null>(null);
 
   async function handleRetry(action: SyncAction): Promise<void> {
     await getDb().runAsync(
@@ -56,6 +58,22 @@ export default function SyncErrorsScreen() {
     );
     await refreshPendingActions();
     triggerSync().catch(console.error);
+  }
+
+  function handleRetryWithConfirm(action: SyncAction): void {
+    Alert.alert(
+      "Восстановить действие?",
+      "Это действие было помечено как мёртвое после нескольких неудачных попыток. Попытка снова может снова завершиться ошибкой.",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Восстановить",
+          onPress: async () => {
+            await handleRetry(action);
+          },
+        },
+      ]
+    );
   }
 
   function handleDiscard(action: SyncAction): void {
@@ -68,7 +86,7 @@ export default function SyncErrorsScreen() {
           text: "Удалить",
           style: "destructive",
           onPress: async () => {
-            await getDb().runAsync("DELETE FROM sync_queue WHERE id = ?", [action.id]);
+            await archiveSyncAction(action.id);
             await refreshPendingActions();
           },
         },
@@ -87,9 +105,7 @@ export default function SyncErrorsScreen() {
           text: "Удалить все",
           style: "destructive",
           onPress: async () => {
-            await getDb().runAsync(
-              "DELETE FROM sync_queue WHERE status IN ('failed', 'dead')"
-            );
+            await archiveSyncActions("'failed', 'dead'");
             await refreshPendingActions();
           },
         },
@@ -105,6 +121,30 @@ export default function SyncErrorsScreen() {
     } finally {
       setRefreshing(false);
     }
+  }
+
+  async function handleExport(): Promise<void> {
+    if (failedActions.length === 0) return;
+    const lines: string[] = [
+      `Ошибки синхронизации — ${new Date().toLocaleString("ru-RU")}`,
+      `${failedActions.length} действий с ошибками\n`,
+    ];
+    for (const action of failedActions) {
+      lines.push(
+        `[${action.status?.toUpperCase() ?? "UNKNOWN"}] ${action.method} ${action.path}`,
+        `Создано: ${new Date(action.created_at).toLocaleString("ru-RU")}`,
+        `Попыток: ${action.retries ?? 0}`,
+        action.last_error ? `Ошибка: ${action.last_error}` : "",
+        action.payload ? `Payload: ${action.payload}` : "",
+        "---"
+      );
+    }
+    try {
+      await Share.share({
+        message: lines.join("\n"),
+        title: "Ошибки синхронизации",
+      });
+    } catch {}
   }
 
   function renderItem({ item }: { item: SyncAction }) {
@@ -162,13 +202,25 @@ export default function SyncErrorsScreen() {
 
           {/* Actions */}
           <View className="flex-row gap-2 pt-1">
-            {!isDead && (
+            {isDead && item.method === "POST" && item.path === "/sales" ? (
               <TouchableOpacity
-                onPress={() => handleRetry(item)}
+                onPress={() => setRecoveryAction(item)}
+                className="flex-1 flex-row items-center justify-center gap-1.5 py-2 bg-amber-50 dark:bg-amber-900/30 rounded-lg"
+              >
+                <MaterialIcons name="edit" size={16} color="#d97706" />
+                <Text className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                  Исправить
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                onPress={() => isDead ? handleRetryWithConfirm(item) : handleRetry(item)}
                 className="flex-1 flex-row items-center justify-center gap-1.5 py-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg"
               >
                 <MaterialIcons name="refresh" size={16} color="#0a7ea4" />
-                <Text className="text-sm font-medium text-primary-500">Повторить</Text>
+                <Text className="text-sm font-medium text-primary-500">
+                  {isDead ? "Восстановить" : "Повторить"}
+                </Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity
@@ -198,9 +250,14 @@ export default function SyncErrorsScreen() {
             </Text>
           </View>
           {failedActions.length > 0 && (
-            <TouchableOpacity onPress={handleDiscardAll} hitSlop={8}>
-              <Text className="text-sm text-red-500 font-medium">Очистить все</Text>
-            </TouchableOpacity>
+            <View className="flex-row items-center gap-3">
+              <TouchableOpacity onPress={handleExport} hitSlop={8}>
+                <Text className="text-sm text-primary-500 font-medium">Экспорт</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleDiscardAll} hitSlop={8}>
+                <Text className="text-sm text-red-500 font-medium">Очистить все</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
@@ -221,6 +278,8 @@ export default function SyncErrorsScreen() {
           }
         />
       )}
+
+      <SaleRecoveryModal action={recoveryAction} onClose={() => setRecoveryAction(null)} />
     </SafeAreaView>
   );
 }

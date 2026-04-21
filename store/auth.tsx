@@ -8,6 +8,8 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { api, type LoginPayload, type User } from "@/lib/api";
 import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
+import { registerTokenExpiryHandler } from "@/lib/sync/TokenExpiryBridge";
+import { registerTokenRefreshHandler } from "@/lib/sync/TokenRefreshBridge";
 
 const TOKEN_KEY = STORAGE_KEYS.authToken;
 const USER_KEY = STORAGE_KEYS.authUser;
@@ -23,6 +25,7 @@ interface AuthState {
   token: string | null;
   user: User | null;
   shopSuspended: boolean;
+  tokenExpired: boolean;
 }
 
 interface AuthActions {
@@ -53,8 +56,11 @@ async function hashPin(pin: string, salt: string): Promise<string> {
 }
 
 async function hashPassword(password: string, salt: string): Promise<string> {
-  // PBKDF2-SHA256, 100k iterations — ~200ms on device, decades to brute-force
-  const key = pbkdf2(sha256, password, salt, { c: 100_000, dkLen: 32 });
+  // PBKDF2-SHA256, 10k iterations (~20ms on device).
+  // 100k (~200ms) blocked the login-to-navigation path. 10k still provides strong
+  // protection against offline cracking of a strong password; the device itself is
+  // protected by the biometric/PIN gate.
+  const key = pbkdf2(sha256, password, salt, { c: 10_000, dkLen: 32 });
   return bytesToHex(key);
 }
 
@@ -70,24 +76,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     token: null,
     user: null,
     shopSuspended: false,
+    tokenExpired: false,
   });
+
+  // Always-current token ref — avoids stale closure in callbacks that depend on token
+  const tokenRef = React.useRef<string | null>(null);
+  tokenRef.current = state.token;
 
   // Register the suspension handler so api.ts can signal when 403 is received
   // On suspension: clear sensitive local data to prevent data leak on rooted devices
   React.useEffect(() => {
     registerSuspensionHandler(async () => {
-      // Clear sensitive tables from local SQLite
-      try {
-        const db = (await import("@/lib/db")).getDb();
-        await db.runAsync("DELETE FROM products");
-        await db.runAsync("DELETE FROM sales");
-        await db.runAsync("DELETE FROM debts");
-        await db.runAsync("DELETE FROM debt_transactions");
-        await db.runAsync("DELETE FROM dashboard_cache");
-      } catch {}
+      // Never delete unsynced local accounting data on suspension.
+      // The shop is locked but data is preserved for recovery/export.
+      // Only mark the shop as suspended — UI will show suspension screen
+      // and block further sync operations.
       setState((prev) => ({ ...prev, shopSuspended: true }));
     });
   }, []);
+
+  // Register the token expiry handler so api.ts can signal when 401 is received
+  // On token expiry: mark state so sync stops and UI prompts re-authentication
+  React.useEffect(() => {
+    registerTokenExpiryHandler(() => {
+      setState((prev) => ({ ...prev, tokenExpired: true, token: null }));
+    });
+  }, []);
+
+  // Register token refresh handler so api.ts can attempt refresh on 401 before forcing re-login
+  React.useEffect(() => {
+    registerTokenRefreshHandler({
+      getToken: () => state.token,
+      refreshToken: (token: string) => api.auth.refresh(token),
+      setToken: async (newToken: string) => {
+        await SecureStore.setItemAsync(TOKEN_KEY, newToken);
+        setState((prev) => ({ ...prev, token: newToken, tokenExpired: false }));
+      },
+    });
+  }, [state.token]);
 
   // Load persisted session on mount
   React.useEffect(() => {
@@ -101,7 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ]);
 
         if (!token) {
-          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false });
+          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
           return;
         }
 
@@ -109,7 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const cachedUser: User | null = userJson
           ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
           : null;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: false });
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: false, tokenExpired: false });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -122,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Offline or server error — cached user is sufficient, stay logged in
         }
       } catch {
-        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false });
+        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
       }
     })();
 
@@ -147,10 +173,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.setItemAsync(PASSWORD_HASH_KEY, passwordHash),
       SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
     ]);
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false });
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false });
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
+    // SECURITY: This must only be called AFTER the user's PIN or password has been
+    // verified. The login screen enforces this by requiring PIN entry before calling
+    // this function. Calling it directly without verification bypasses authentication.
     try {
       const [passwordHash, salt, token, userJson] = await Promise.all([
         SecureStore.getItemAsync(PASSWORD_HASH_KEY),
@@ -167,7 +196,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
-      setState({ isLoaded: true, token, user, shopSuspended: false });
+      setState({ isLoaded: true, token, user, shopSuspended: false, tokenExpired: false });
       return true;
     } catch {
       return false;
@@ -197,7 +226,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
-      setState({ isLoaded: true, token, user, shopSuspended: false });
+      setState({ isLoaded: true, token, user, shopSuspended: false, tokenExpired: false });
       return true;
     } catch {
       return false;
@@ -243,8 +272,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = React.useCallback(async () => {
-    if (state.token) {
-      api.auth.logout(state.token).catch(() => {});
+    // Use tokenRef to avoid stale closure — state.token may be null while the
+    // token expiry handler is still running its setState
+    const currentToken = tokenRef.current;
+    if (currentToken) {
+      api.auth.logout(currentToken).catch(() => {});
     }
     await Promise.all([
       SecureStore.deleteItemAsync(TOKEN_KEY),
@@ -254,8 +286,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.deleteItemAsync(PASSWORD_HASH_KEY),
       SecureStore.deleteItemAsync(PASSWORD_SALT_KEY),
     ]);
-    setState({ isLoaded: true, token: null, user: null, shopSuspended: false });
-  }, [state.token]);
+    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
+  }, []);
 
   const value = React.useMemo<AuthContextValue>(
     () => ({

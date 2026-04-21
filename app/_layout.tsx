@@ -1,7 +1,6 @@
 import "../global.css";
 
 import * as SplashScreen from "expo-splash-screen";
-import * as Notifications from "expo-notifications";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -20,42 +19,23 @@ import { ToastProvider } from "@/store/toast";
 import { requestNotificationPermissions } from "@/lib/notifications";
 import { initDb } from "@/lib/db";
 
-LogBox.ignoreLogs(["SafeAreaView has been deprecated"]);
+LogBox.ignoreLogs([
+  "SafeAreaView has been deprecated",
+  "expo-notifications: Android Push notifications",
+  "`expo-notifications` functionality is not fully supported in Expo Go",
+]);
 
 SplashScreen.preventAutoHideAsync();
-
-// Configure notification handler
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
 
 // Removed SyncGuard in favor of SyncProvider and Background syncing.
 
 function AuthGuard() {
-  const { isLoaded, token, shopSuspended } = useAuth();
+  const { isLoaded, token, shopSuspended, tokenExpired } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const [isDbReady, setIsDbReady] = useState(false);
 
-  // Initialize the database before hiding the splash screen
   useEffect(() => {
     if (!isLoaded) return;
-    initDb()
-      .then(() => setIsDbReady(true))
-      .catch((e) => {
-        console.error("Failed to init DB:", e);
-        setIsDbReady(true); // Still proceed — SyncProvider will retry
-      });
-  }, [isLoaded]);
-
-  useEffect(() => {
-    if (!isLoaded || !isDbReady) return;
     SplashScreen.hideAsync();
 
     // Shop suspended takes priority
@@ -67,22 +47,43 @@ function AuthGuard() {
     const inAuthGroup = segments[0] === "(auth)";
     const inSuspendedScreen = segments[0] === "suspended";
 
+    // Token expired — force re-login
+    if (tokenExpired && !inAuthGroup) {
+      router.replace("/(auth)/login?reason=expired");
+      return;
+    }
+
     if (!token && !inAuthGroup) router.replace("/(auth)/login");
     else if (token && inAuthGroup) router.replace("/(tabs)");
     else if (!token && inSuspendedScreen) router.replace("/(auth)/login");
     else if (token && !shopSuspended && inSuspendedScreen) router.replace("/(tabs)");
-  }, [isLoaded, isDbReady, token, shopSuspended, segments, router]);
+  }, [isLoaded, token, shopSuspended, tokenExpired, segments, router]);
 
   return null;
 }
 
 export default function RootLayout() {
   const { colorScheme } = useColorScheme();
+  const [isDbReady, setIsDbReady] = useState(false);
 
   // Request notification permissions on app start
   useEffect(() => {
     requestNotificationPermissions();
   }, []);
+
+  // Initialize DB before rendering any providers that depend on it
+  useEffect(() => {
+    initDb()
+      .then(() => setIsDbReady(true))
+      .catch((e) => {
+        console.error("Failed to init DB:", e);
+        setIsDbReady(true); // Still proceed — SyncProvider will retry
+      });
+  }, []);
+
+  if (!isDbReady) {
+    return null; // or a splash/loading view
+  }
 
   return (
     <SafeAreaProvider>

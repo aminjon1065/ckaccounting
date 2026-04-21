@@ -22,12 +22,22 @@ function safeQty(value: unknown): number | null {
 }
 
 function entityTableForPath(path: string): string | null {
+  // Check more-specific paths before general ones to avoid misrouting.
+  // /debts/{id}/transactions must match before /debts/{id}.
+  if (/\/debts\/[^/]+\/transactions/.test(path)) return "debt_transactions";
   if (path.includes("/sales")) return "sales";
   if (path.includes("/products")) return "products";
   if (path.includes("/expenses")) return "expenses";
   if (path.includes("/purchases")) return "purchases";
   if (path.includes("/shops")) return "shops";
+  if (path.includes("/debts")) return "debts";
   return null;
+}
+
+function stripClientMeta(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key]) => !key.startsWith("_"))
+  );
 }
 
 // ─── OutboxProcessor ───────────────────────────────────────────────────────────
@@ -55,6 +65,11 @@ export class OutboxProcessor {
         if (action.headers) customHeaders = JSON.parse(action.headers);
       } catch {}
 
+      // Use idempotency key from dedicated column if available, otherwise fall back to header
+      if (action.idempotency_key && !customHeaders["Idempotency-Key"]) {
+        customHeaders["Idempotency-Key"] = action.idempotency_key;
+      }
+
       const requestUrl = action.path.startsWith("http")
         ? action.path
         : `${API_URL}${action.path.startsWith("/") ? action.path : `/${action.path}`}`;
@@ -64,19 +79,52 @@ export class OutboxProcessor {
         headers: { ...baseHeaders, ...customHeaders },
       };
 
+      let requestPayload: Record<string, unknown> = {};
       try {
-        const reqPayload = action.payload ? JSON.parse(action.payload) : {};
-        if (reqPayload.photo_uri) {
+        requestPayload = action.payload ? JSON.parse(action.payload) : {};
+      } catch {}
+
+      if (action.method === "POST" && action.path === "/debts") {
+        const openingBalance = Number(requestPayload.opening_balance ?? 0);
+        if (Number.isFinite(openingBalance) && openingBalance < 0) {
+          requestPayload.direction = "payable";
+          requestPayload.opening_balance = Math.abs(openingBalance);
+        }
+      }
+
+      if (action.method === "POST" && /\/debts\/[^/]+\/transactions$/.test(action.path)) {
+        try {
+          const debtId = Number(action.path.match(/\/debts\/([^/]+)\/transactions$/)?.[1]);
+          const debt = await getDb().getFirstAsync<{ direction: string | null; balance: number | null; balance_kopecks: number | null }>(
+            "SELECT direction, balance, balance_kopecks FROM debts WHERE id = ?",
+            [debtId]
+          );
+          const rawBalance = debt?.balance_kopecks != null
+            ? debt.balance_kopecks / 100
+            : Number(debt?.balance ?? 0);
+          const isPayable = debt?.direction === "payable" || rawBalance < 0;
+          if (isPayable && requestPayload.type === "take") {
+            requestPayload.type = "give";
+          }
+        } catch {}
+      }
+
+      const serverPayload = stripClientMeta(requestPayload);
+
+      try {
+        if (requestPayload.photo_uri) {
           const formData = new FormData();
           formData.append("photo", {
-            uri: reqPayload.photo_uri,
+            uri: requestPayload.photo_uri,
             type: "image/jpeg",
             name: "photo.jpg",
           } as any);
           fetchOptions.body = formData as any;
           delete (fetchOptions.headers as Record<string, string>)["Content-Type"];
         } else {
-          fetchOptions.body = action.payload;
+          fetchOptions.body = Object.keys(serverPayload).length > 0
+            ? JSON.stringify(serverPayload)
+            : action.payload;
         }
       } catch {
         fetchOptions.body = action.payload;
@@ -105,16 +153,36 @@ export class OutboxProcessor {
           const responseData = await response.json().catch(() => ({}));
           const realId = responseData?.data?.id ?? responseData?.id;
           const reqPayload = JSON.parse(action.payload || "{}");
-          const localId = reqPayload._local_id;
+          const localId = reqPayload._local_id ?? (
+            reqPayload._temp_id != null ? String(reqPayload._temp_id) : undefined
+          );
           const now = new Date().toISOString();
 
           if (realId && localId) {
             const table = entityTableForPath(action.path);
             if (table) {
-              await getDb().runAsync(
-                `UPDATE ${table} SET id = ?, status = 'synced', sync_action = 'none', last_synced_at = ? WHERE local_id = ?`,
-                [realId, now, localId]
-              );
+              if (table === "debt_transactions") {
+                // FIX (transaction duplication): Update the transaction's local tempId to the
+                // real server id so subsequent remote pulls match by id and don't insert duplicates.
+                await getDb().runAsync(
+                  "UPDATE debt_transactions SET id = ?, sync_action = 'none' WHERE id = ? OR local_id = ?",
+                  [realId, Number(localId), localId]
+                );
+              } else if (table === "debts") {
+                await getDb().runAsync(
+                  "UPDATE debts SET id = ?, sync_action = 'none', last_synced_at = ?, updated_at = ? WHERE local_id = ? OR id = ?",
+                  [realId, now, now, localId, Number(localId)]
+                );
+                await getDb().runAsync(
+                  "UPDATE debt_transactions SET debt_id = ? WHERE debt_id = ?",
+                  [realId, Number(localId)]
+                );
+              } else {
+                await getDb().runAsync(
+                  `UPDATE ${table} SET id = ?, status = 'synced', sync_action = 'none', last_synced_at = ? WHERE local_id = ?`,
+                  [realId, now, localId]
+                );
+              }
             }
 
             if (table === "products" && action.method === "POST") {
@@ -166,9 +234,17 @@ export class OutboxProcessor {
           const responseData = await response.json().catch(() => ({}));
           const serverData = responseData?.server_data ?? responseData?.data ?? {};
           const reqPayload = JSON.parse(action.payload || "{}");
-          const localId = reqPayload._local_id;
+          const localId = reqPayload._local_id ?? (
+            reqPayload._temp_id != null ? String(reqPayload._temp_id) : undefined
+          );
           if (serverData && Object.keys(serverData).length > 0) {
-            const conflict = detectConflict(localId ?? String(serverData.id), "product", reqPayload, serverData);
+            const table = entityTableForPath(action.path);
+            const entityType = table === "sales" ? "sale"
+              : table === "expenses" ? "expense"
+              : table === "purchases" ? "purchase"
+              : table === "debts" ? "debt"
+              : "product";
+            const conflict = detectConflict(localId ?? String(serverData.id), entityType, reqPayload, serverData);
             if (conflict) {
               queueExternalConflict(conflict);
             }
@@ -206,33 +282,37 @@ export class OutboxProcessor {
    * Run the outbox: probe server, claim pending actions, process in batches.
    */
   async triggerSync(authToken: string, callbacks?: OutboxCallbacks): Promise<void> {
-    // Reachability check
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5_000);
-      const probeRes = await fetch(`${API_URL}/health`, {
-        method: "HEAD",
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      // Block on 3xx redirects (captive portal) or 5xx (server error); allow 2xx + 404
-      if (probeRes.status >= 300 && probeRes.status < 500 && probeRes.status !== 404) {
-        console.warn(`Server probe returned ${probeRes.status}, skipping sync`);
-        return;
-      }
-    } catch {
-      console.warn("Server unreachable, skipping sync");
-      return;
-    }
-
     const BATCH_SIZE = 5;
+    // FIX (Bug 3): Only resurrect debt actions that died from transient errors (5xx/network).
+    // Permanent 4xx failures (validation, auth) must NOT be retried — doing so creates an
+    // infinite loop: dead → pending → 4xx → dead → pending → … every 60 seconds.
+    // Also cap total resets so a stuck action can't run forever.
+    await getDb().runAsync(
+      `UPDATE sync_queue
+       SET status = 'pending', batch_id = NULL
+       WHERE archived_at IS NULL
+         AND status = 'dead'
+         AND (last_error IS NULL OR last_error NOT LIKE 'HTTP 4%')
+         AND retries < 10`
+    );
     const pending = await claimPendingSyncActions(50);
 
+    // Process actions sequentially to preserve FIFO ordering. Actions within a batch
+    // are claimed atomically by claimPendingSyncActions, but concurrent dispatch would
+    // violate causal ordering (e.g. a product photo PATCH racing before the product
+    // POST that assigns the real server ID). Serial processing ensures each action
+    // completes and its ID-mapping side-effects are visible before the next starts.
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
       const batch = pending.slice(i, i + BATCH_SIZE);
-      await Promise.allSettled(
-        batch.map((action) => this.processAction(action, authToken))
-      );
+      for (const action of batch) {
+        const freshAction = await getDb().getFirstAsync<SyncAction>(
+          "SELECT * FROM sync_queue WHERE id = ?",
+          [action.id]
+        );
+        if (freshAction) {
+          await this.processAction(freshAction, authToken);
+        }
+      }
     }
 
     callbacks?.onComplete?.();

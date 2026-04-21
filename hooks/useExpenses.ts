@@ -81,7 +81,7 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
                 }
                 return prev;
               });
-              await queueSyncAction("DELETE", `/expenses/${id}`, {}, {});
+              await queueSyncAction("DELETE", `/expenses/${id}`, {}, undefined, `local-exp-delete-${id}`);
               showToast({ message: "Удалено локально. Будет удалено после синхронизации.", variant: "warning" });
             } else {
               showToast({ message: "Не удалось удалить расход.", variant: "error" });

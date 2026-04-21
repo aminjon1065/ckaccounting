@@ -13,8 +13,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 
 import { Card, CardContent, Skeleton, Text } from "@/components/ui";
-import {
-  api,
+import { api,
   type ExpensesReport,
   type ProfitReport,
   type SalesReport,
@@ -22,6 +21,13 @@ import {
 } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useSync } from "@/lib/sync/SyncContext";
+import {
+  computeLocalSalesReport,
+  computeLocalExpensesReport,
+  computeLocalProfitReport,
+  computeLocalStockReport,
+} from "@/lib/sync/usecases/OfflineReportsUseCase";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -216,6 +222,7 @@ function StockReportView({ data }: { data: StockReport }) {
 
 export default function ReportsScreen() {
   const { token, user } = useAuth();
+  const { isOnline } = useSync();
   const router = useRouter();
 
   const [activeTab, setActiveTab] = React.useState<ReportTab>("sales");
@@ -384,35 +391,89 @@ export default function ReportsScreen() {
     setLoading(true);
     setError("");
     const params = { date_from: dateFrom, date_to: dateTo };
+    const range = { dateFrom: dateFrom, dateTo: dateTo };
+
     try {
-      switch (activeTab) {
-        case "sales": {
-          const data = await api.reports.sales(token, params);
-          setSalesReport(data);
-          break;
+      if (isOnline) {
+        switch (activeTab) {
+          case "sales": {
+            const data = await api.reports.sales(token, params);
+            setSalesReport(data);
+            break;
+          }
+          case "expenses": {
+            const data = await api.reports.expenses(token, params);
+            setExpensesReport(data);
+            break;
+          }
+          case "profit": {
+            const data = await api.reports.profit(token, params);
+            setProfitReport(data);
+            break;
+          }
+          case "stock": {
+            const data = await api.reports.stock(token, params);
+            setStockReport(data);
+            break;
+          }
         }
-        case "expenses": {
-          const data = await api.reports.expenses(token, params);
-          setExpensesReport(data);
-          break;
-        }
-        case "profit": {
-          const data = await api.reports.profit(token, params);
-          setProfitReport(data);
-          break;
-        }
-        case "stock": {
-          const data = await api.reports.stock(token, params);
-          setStockReport(data);
-          break;
+      } else {
+        // Offline: compute from local SQLite
+        switch (activeTab) {
+          case "sales": {
+            const data = await computeLocalSalesReport(range, user?.shop_id);
+            setSalesReport(data);
+            break;
+          }
+          case "expenses": {
+            const data = await computeLocalExpensesReport(range, user?.shop_id);
+            setExpensesReport(data);
+            break;
+          }
+          case "profit": {
+            const data = await computeLocalProfitReport(range, user?.shop_id);
+            setProfitReport(data);
+            break;
+          }
+          case "stock": {
+            const data = await computeLocalStockReport(user?.shop_id);
+            setStockReport(data);
+            break;
+          }
         }
       }
     } catch (e: any) {
-      setError(e.message ?? "Не удалось загрузить отчёт.");
+      // Offline fallback: try local computation even if online but API call failed
+      try {
+        switch (activeTab) {
+          case "sales": {
+            const data = await computeLocalSalesReport(range, user?.shop_id);
+            setSalesReport(data);
+            break;
+          }
+          case "expenses": {
+            const data = await computeLocalExpensesReport(range, user?.shop_id);
+            setExpensesReport(data);
+            break;
+          }
+          case "profit": {
+            const data = await computeLocalProfitReport(range, user?.shop_id);
+            setProfitReport(data);
+            break;
+          }
+          case "stock": {
+            const data = await computeLocalStockReport(user?.shop_id);
+            setStockReport(data);
+            break;
+          }
+        }
+      } catch {
+        setError(e.message ?? "Не удалось загрузить отчёт.");
+      }
     } finally {
       setLoading(false);
     }
-  }, [activeTab, dateFrom, dateTo, token]);
+  }, [activeTab, dateFrom, dateTo, token, isOnline, user?.shop_id]);
 
   React.useEffect(() => {
     loadReport();

@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Skeleton, Text } from "@/components/ui";
-import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
+import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { getLocalDebts, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
@@ -28,39 +28,84 @@ function fmt(n: number) {
 
 function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
   const isPositive = item.balance >= 0;
+  const accentColor = isPositive ? "#16a34a" : "#ef4444";
+  const statusLabel = isPositive ? "Нам должны" : "Мы должны";
 
   return (
     <TouchableOpacity
       onPress={onPress}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80 flex-row items-center"
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
-      <View className="w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center mr-3">
-        <MaterialIcons name="person" size={20} color="#0a7ea4" />
-      </View>
-      <View className="flex-1">
-        <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
-          {item.person_name}
-        </Text>
-        <Text variant="small">Нач. баланс: {fmt(item.opening_balance)}</Text>
-      </View>
-      <View className="items-end">
-        <Text
-          className={`text-base font-bold ${
-            isPositive ? "text-green-600" : "text-red-500"
-          }`}
+      <View className="flex-row items-start">
+        <View
+          className="w-11 h-11 rounded-full items-center justify-center mr-3"
+          style={{ backgroundColor: `${accentColor}18` }}
         >
-          {isPositive ? "+" : "в€’"}
-          {fmt(item.balance)}
-        </Text>
-        <Text variant="small">{isPositive ? "Должны нам" : "Мы должны"}</Text>
+          <MaterialIcons name={isPositive ? "call-made" : "call-received"} size={20} color={accentColor} />
+        </View>
+        <View className="flex-1 min-w-0">
+          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50" numberOfLines={1}>
+            {item.person_name}
+          </Text>
+          <View className="flex-row items-center mt-1">
+            <View
+              className="px-2 py-1 rounded-full"
+              style={{ backgroundColor: `${accentColor}14` }}
+            >
+              <Text className="text-xs font-semibold" style={{ color: accentColor }}>
+                {statusLabel}
+              </Text>
+            </View>
+            <Text variant="small" className="ml-2">
+              старт {fmt(item.opening_balance)}
+            </Text>
+          </View>
+        </View>
+        <View className="items-end ml-3">
+          <Text className="text-lg font-bold" style={{ color: accentColor }}>
+            {isPositive ? "+" : "-"}{fmt(item.balance)}
+          </Text>
+          <MaterialIcons name="chevron-right" size={20} color="#94a3b8" />
+        </View>
       </View>
-      <MaterialIcons
-        name="chevron-right"
-        size={18}
-        color="#94a3b8"
-        className="ml-2"
-      />
     </TouchableOpacity>
+  );
+}
+
+function DebtSummary({ debts }: { debts: Debt[] }) {
+  const receivable = debts.reduce((sum, d) => sum + Math.max(0, d.balance), 0);
+  const payable = debts.reduce((sum, d) => sum + Math.abs(Math.min(0, d.balance)), 0);
+  const net = receivable - payable;
+
+  return (
+    <View className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-4 border border-slate-100 dark:border-zinc-800">
+      <View className="flex-row items-center justify-between mb-3">
+        <View>
+          <Text variant="small">Итоговый баланс</Text>
+          <Text
+            className={`text-2xl font-bold ${
+              net >= 0 ? "text-green-600" : "text-red-500"
+            }`}
+          >
+            {net >= 0 ? "+" : "-"}{fmt(net)}
+          </Text>
+        </View>
+        <View className="w-11 h-11 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
+          <MaterialIcons name="account-balance-wallet" size={22} color="#0a7ea4" />
+        </View>
+      </View>
+
+      <View className="flex-row gap-3">
+        <View className="flex-1 rounded-xl bg-green-50 dark:bg-green-900/20 p-3">
+          <Text variant="small">Нам должны</Text>
+          <Text className="text-base font-semibold text-green-600">{fmt(receivable)}</Text>
+        </View>
+        <View className="flex-1 rounded-xl bg-red-50 dark:bg-red-900/20 p-3">
+          <Text variant="small">Мы должны</Text>
+          <Text className="text-base font-semibold text-red-500">{fmt(payable)}</Text>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -68,14 +113,13 @@ function CreateDebtModal({
   visible,
   onClose,
   onCreated,
-  token,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (d: Debt) => void;
-  token: string;
 }) {
   const [personName, setPersonName] = React.useState("");
+  const [direction, setDirection] = React.useState<"receivable" | "payable">("receivable");
   const [openingBalance, setOpeningBalance] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
@@ -86,6 +130,7 @@ function CreateDebtModal({
   React.useEffect(() => {
     if (visible) {
       setPersonName("");
+      setDirection("receivable");
       setOpeningBalance("");
       setError("");
     }
@@ -99,25 +144,45 @@ function CreateDebtModal({
     }
     setSubmitting(true);
     try {
-      const payload: CreateDebtPayload & { _temp_id?: number } = { person_name: personName.trim() };
-      if (openingBalance && !isNaN(Number(openingBalance))) {
-        payload.opening_balance = parseFloat(openingBalance);
+      const amount = openingBalance ? Number(openingBalance.replace(",", ".")) : 0;
+      if (openingBalance && (isNaN(amount) || amount < 0)) {
+        setError("Введите сумму без минуса.");
+        return;
+      }
+      const signedOpeningBalance = direction === "receivable" ? amount : -amount;
+      const tempId = -Date.now();
+      const localId = String(tempId);
+      const payload: CreateDebtPayload & { _local_id?: string; _temp_id?: number } = {
+        person_name: personName.trim(),
+        direction,
+        _local_id: localId,
+      };
+      if (amount > 0) {
+        payload.opening_balance = amount;
       }
       
-      const tempId = -Date.now();
       payload._temp_id = tempId;
 
-      const newDebt: Debt = {
+      const newDebt: Debt & { local_id: string; sync_action: "create" } = {
         id: tempId,
+        local_id: localId,
         person_name: payload.person_name,
-        opening_balance: payload.opening_balance ?? 0,
-        balance: payload.opening_balance ?? 0,
+        opening_balance: signedOpeningBalance,
+        balance: signedOpeningBalance,
+        direction,
+        sync_action: "create",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
 
       await insertOrUpdateDebts([newDebt], user?.shop_id);
-      await queueSyncAction("POST", "/debts", payload);
+      await queueSyncAction(
+        "POST",
+        "/debts",
+        payload,
+        { "Idempotency-Key": `local-debt-${localId}` },
+        `local-debt-${localId}`
+      );
       await refreshPendingActions();
       
       onCreated(newDebt);
@@ -167,17 +232,45 @@ function CreateDebtModal({
 
             <View className="gap-4">
               <Input
-                label="РРјСЏ"
+                label="Контрагент"
                 required
-                placeholder="РЅР°РїСЂ. РРІР°РЅ РРІР°РЅРѕРІ"
+                placeholder="Напр. Иван Иванов"
                 value={personName}
                 onChangeText={setPersonName}
                 returnKeyType="next"
               />
+              <View>
+                <Text className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
+                  Направление
+                </Text>
+                <View className="flex-row gap-2">
+                  {([
+                    ["receivable", "Нам должны", "call-made", "#16a34a"],
+                    ["payable", "Мы должны", "call-received", "#ef4444"],
+                  ] as const).map(([value, label, icon, color]) => {
+                    const active = direction === value;
+                    return (
+                      <TouchableOpacity
+                        key={value}
+                        onPress={() => setDirection(value)}
+                        className={`flex-1 flex-row items-center justify-center gap-2 h-12 rounded-xl border ${
+                          active ? "border-transparent" : "border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                        }`}
+                        style={active ? { backgroundColor: color } : undefined}
+                      >
+                        <MaterialIcons name={icon} size={17} color={active ? "#fff" : color} />
+                        <Text className={`text-sm font-semibold ${active ? "text-white" : "text-slate-700 dark:text-slate-200"}`}>
+                          {label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
               <Input
-                label="Нач. баланс"
+                label="Начальная сумма"
                 placeholder="0 (необязательно)"
-                hint="Положительный — должны вам, отрицательный — вы должны"
+                hint="Введите сумму без минуса, направление выберите выше"
                 value={openingBalance}
                 onChangeText={setOpeningBalance}
                 keyboardType="numeric"
@@ -203,8 +296,9 @@ function CreateDebtModal({
 }
 
 export default function DebtsScreen() {
-  const { token, user } = useAuth();
+  const { user } = useAuth();
   const { showToast } = useToast();
+  const { lastSyncedAt } = useSync();
   const router = useRouter();
 
   const [debts, setDebts] = React.useState<Debt[]>([]);
@@ -234,6 +328,14 @@ export default function DebtsScreen() {
     fetchDebts(true).finally(() => setLoading(false));
   }, [fetchDebts]);
 
+  // FIX: re-fetch whenever a sync cycle completes so that synced debts (with
+  // updated real server ids) replace stale tempId records in the list.
+  React.useEffect(() => {
+    if (lastSyncedAt) {
+      fetchDebts(false).catch(console.error);
+    }
+  }, [lastSyncedAt]);
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
@@ -241,9 +343,9 @@ export default function DebtsScreen() {
           <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
         </TouchableOpacity>
         <View className="flex-1">
-          <Text variant="h4">Долги</Text>
+          <Text variant="h4">Взаиморасчеты</Text>
           <Text variant="muted" className="mt-0.5">
-            Учёт долгов
+            Кто кому должен
           </Text>
         </View>
       </View>
@@ -281,6 +383,7 @@ export default function DebtsScreen() {
           data={debts}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          ListHeaderComponent={debts.length ? <DebtSummary debts={debts} /> : null}
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true);
@@ -295,8 +398,11 @@ export default function DebtsScreen() {
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
               <MaterialIcons name="people" size={48} color="#94a3b8" />
+              <Text variant="h5" className="mt-4 text-center">
+                Пока нет записей
+              </Text>
               <Text variant="muted" className="mt-3 text-center">
-                Долгов нет.{"\n"}Нажмите + для добавления.
+                Добавьте человека или поставщика, чтобы видеть баланс и историю операций.
               </Text>
             </View>
           }
@@ -324,9 +430,8 @@ export default function DebtsScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(d) => {
           setDebts((prev) => [d, ...prev]);
-          showToast({ message: "Долг добавлен", variant: "success" });
+          showToast({ message: "Запись добавлена", variant: "success" });
         }}
-        token={token!}
       />
     </SafeAreaView>
   );

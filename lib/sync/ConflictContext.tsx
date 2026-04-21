@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { useContext, useEffect, useState, useCallback } from "react";
 
 export type ConflictEntity = "product" | "sale" | "expense" | "purchase" | "debt";
 
@@ -50,10 +50,8 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addConflict = useCallback((conflict: Conflict) => {
-    setConflicts((prev) => {
-      if (prev.some((c) => c.id === conflict.id)) return prev;
-      return [...prev, conflict];
-    });
+    // Only notify the external handler — it deduplicates and updates state.
+    // Do NOT call setConflicts here to avoid double-updating state.
     _externalAddConflict?.(conflict);
   }, []);
 
@@ -65,25 +63,44 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      const { getDb } = await import("@/lib/db");
+      const { getDb, queueSyncAction } = await import("@/lib/db");
       const db = getDb();
       const chosenData = choice === "local" ? conflict.localData : conflict.serverData;
       const table = entityTableForType(conflict.entityType);
 
       if (table && conflict.localId) {
-        const sets = Object.keys(chosenData)
-          .filter((k) => !CONFLICT_IGNORED_FIELDS.has(k))
-          .map((k) => `${k} = ?`)
-          .join(", ");
-        const values = Object.keys(chosenData)
-          .filter((k) => !CONFLICT_IGNORED_FIELDS.has(k))
-          .map((k) => chosenData[k]);
+        const sanitized = sanitizeSets(conflict.entityType, chosenData);
+        if (sanitized) {
+          if (choice === "server") {
+            // Server wins: overwrite local row and mark as clean
+            await db.runAsync(
+              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'none' WHERE local_id = ? OR id = ?`,
+              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId, conflict.localId]
+            );
+          } else {
+            // Local wins: keep local data, mark as dirty, re-queue PATCH to server
+            await db.runAsync(
+              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'update' WHERE local_id = ? OR id = ?`,
+              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId, conflict.localId]
+            );
 
-        if (sets) {
-          await db.runAsync(
-            `UPDATE ${table} SET ${sets}, sync_action = 'none' WHERE local_id = ? OR id = ?`,
-            [...(values as any[]), conflict.localId, conflict.localId]
-          );
+            // Re-queue PATCH so the local version gets pushed to the server.
+            // Use the server's real ID if available, otherwise fall back to localId.
+            const serverId = conflict.serverData.id ?? conflict.localId;
+            const entityPath = entityPathForType(conflict.entityType);
+            const patchPayload = {
+              ...sanitizePatchPayload(conflict.entityType, conflict.localData, conflict.serverData),
+              _local_id: conflict.localId,
+            };
+            const idempotencyKey = `conflict-resolve-local-${conflict.id}`;
+            await queueSyncAction(
+              "PATCH",
+              `${entityPath}/${serverId}`,
+              patchPayload,
+              undefined,
+              idempotencyKey
+            );
+          }
         }
       }
     } catch (e) {
@@ -146,6 +163,44 @@ const CONFLICT_IGNORED_FIELDS = new Set([
   "local_id",
 ]);
 
+// Valid updatable columns per entity — anything not in this set is rejected
+const VALID_COLUMNS: Record<ConflictEntity, Set<string>> = {
+  product: new Set([
+    "name", "code", "unit", "cost_price", "sale_price", "pricing_mode",
+    "markup_percent", "bulk_price", "bulk_threshold", "stock_quantity",
+    "low_stock_alert", "photo_url", "version",
+  ]),
+  sale: new Set([
+    "customer_name", "type", "total", "discount", "paid", "debt",
+    "payment_type", "notes", "items",
+  ]),
+  expense: new Set([
+    "name", "quantity", "price", "total", "note",
+  ]),
+  purchase: new Set([
+    "supplier_name", "total", "items",
+  ]),
+  debt: new Set([
+    "person_name", "opening_balance", "balance", "direction",
+  ]),
+};
+
+function sanitizeSets(entityType: ConflictEntity, data: Record<string, unknown>): { sets: string; values: unknown[] } | null {
+  const valid = VALID_COLUMNS[entityType];
+  if (!valid) return null;
+
+  const entries = Object.keys(data)
+    .filter((k) => !CONFLICT_IGNORED_FIELDS.has(k) && valid.has(k))
+    .map((k) => ({ k, v: data[k] }));
+
+  if (entries.length === 0) return null;
+
+  return {
+    sets: entries.map(({ k }) => `${k} = ?`).join(", "),
+    values: entries.map(({ v }) => v),
+  };
+}
+
 function entityTableForType(type: ConflictEntity): string {
   const map: Record<ConflictEntity, string> = {
     product: "products",
@@ -155,6 +210,38 @@ function entityTableForType(type: ConflictEntity): string {
     debt: "debts",
   };
   return map[type] ?? "products";
+}
+
+function entityPathForType(type: ConflictEntity): string {
+  const map: Record<ConflictEntity, string> = {
+    product: "/products",
+    sale: "/sales",
+    expense: "/expenses",
+    purchase: "/purchases",
+    debt: "/debts",
+  };
+  return map[type] ?? "/products";
+}
+
+/** Build a safe PATCH payload from local data using only the valid columns for this entity.
+ *  Also include the server's version so the PATCH is accepted (server accepts if client
+ *  version matches its own, then increments — this prevents a repeat 409 on re-submit).
+ */
+function sanitizePatchPayload(
+  entityType: ConflictEntity,
+  data: Record<string, unknown>,
+  serverData: Record<string, unknown>
+): Record<string, unknown> {
+  const valid = VALID_COLUMNS[entityType];
+  if (!valid) return {};
+  const base = Object.fromEntries(
+    Object.entries(data).filter(([k]) => valid.has(k))
+  );
+  // Include server version so server accepts the PATCH without a second 409.
+  if (serverData && typeof serverData === "object" && "version" in serverData) {
+    base.version = serverData.version;
+  }
+  return base;
 }
 
 export function detectConflict<T extends Record<string, unknown>>(

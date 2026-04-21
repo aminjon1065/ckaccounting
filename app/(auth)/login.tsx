@@ -1,7 +1,8 @@
 import { Alert, Button, Input, Text } from "@/components/ui";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
+import { Alert as RNAlertDialog } from "react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -18,6 +19,8 @@ import { useAuth } from "@/store/auth";
 export default function LoginScreen() {
   const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin } = useAuth();
   const router = useRouter();
+  const searchParams = useLocalSearchParams();
+  const tokenExpiredReason = searchParams?.reason === "expired";
 
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -42,6 +45,17 @@ export default function LoginScreen() {
   React.useEffect(() => {
     hasCredentials().then(setHasOfflineCreds);
   }, []);
+
+  // Show session expired message when redirected from token expiry
+  React.useEffect(() => {
+    if (tokenExpiredReason) {
+      RNAlertDialog.alert(
+        "Сессия истекла",
+        "Ваша сессия истекла. Пожалуйста, войдите снова.",
+        [{ text: "OK" }]
+      );
+    }
+  }, [tokenExpiredReason]);
 
   async function handleLogin() {
     const trimmedEmail = email.trim();
