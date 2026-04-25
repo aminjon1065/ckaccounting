@@ -114,7 +114,9 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: resolvePromptMessage(caps.supportedTypes),
         fallbackLabel: "Use Passcode",
-        disableDeviceFallback: false, // allow PIN/passcode fallback
+        // Note: On Android, disableDeviceFallback: true completely disables Face Recognition
+        // because it requires Class 3 biometrics. We only enforce disable on iOS.
+        disableDeviceFallback: Platform.OS === "ios",
         cancelLabel: "Cancel",
       });
 
@@ -123,9 +125,9 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
       } else {
         handleAuthError(result.error ?? "unknown");
       }
-    } catch {
+    } catch (err: any) {
       setStatus("failed");
-      setErrorMessage("Authentication failed. Please try again.");
+      setErrorMessage(`Auth exception: ${err?.message || err}`);
     }
   }, []);
 
@@ -135,26 +137,19 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
 
   function handleAuthError(error: string) {
     switch (error) {
-      // User deliberately dismissed the prompt.
       case "user_cancel":
       case "system_cancel":
         setStatus("cancelled");
         setErrorMessage(null);
         break;
-
-      // Temporary lockout after repeated failures.
       case "lockout":
         setStatus("failed");
         setErrorMessage("Too many failed attempts. Use your device passcode to unlock.");
         break;
-
-      // Permanent lockout — biometrics disabled until user re-enrols.
       case "lockout_permanent":
         setStatus("failed");
         setErrorMessage("Biometrics have been disabled. Use your device passcode.");
         break;
-
-      // Hardware became unavailable mid-session (edge case).
       case "not_enrolled":
       case "not_available":
       case "no_hardware":
@@ -162,10 +157,9 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
         setCapabilities(null);
         setStatus("unavailable");
         break;
-
       default:
         setStatus("failed");
-        setErrorMessage("Authentication failed. Please try again.");
+        setErrorMessage(`Authentication failed (${error}). Please try again.`);
     }
   }
 }

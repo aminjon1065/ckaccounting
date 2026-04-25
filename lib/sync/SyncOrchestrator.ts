@@ -58,14 +58,24 @@ export class SyncOrchestrator {
    * Pull all remote entities.
    */
   async refreshAll(forceFullSync = false): Promise<void> {
-    await Promise.allSettled([
-      this.productFetcher.fetch(forceFullSync),
-      this.debtFetcher.fetch(forceFullSync),
-      this.shopFetcher.fetch(),
-      this.saleFetcher.fetch(forceFullSync),
-      this.expenseFetcher.fetch(forceFullSync),
-      this.purchaseFetcher.fetch(forceFullSync),
-    ]);
+    // Run sequentially to completely avoid "cannot start a transaction within a transaction"
+    // SQLite locking crashes when overlapping async operations trigger withTransactionAsync
+    const fetchTasks = [
+      { name: "products", task: () => this.productFetcher.fetch(forceFullSync) },
+      { name: "debts", task: () => this.debtFetcher.fetch(forceFullSync) },
+      { name: "shops", task: () => this.shopFetcher.fetch() },
+      { name: "sales", task: () => this.saleFetcher.fetch(forceFullSync) },
+      { name: "expenses", task: () => this.expenseFetcher.fetch(forceFullSync) },
+      { name: "purchases", task: () => this.purchaseFetcher.fetch(forceFullSync) },
+    ];
+
+    for (const { name, task } of fetchTasks) {
+      try {
+        await task();
+      } catch (error) {
+        console.error(`Failed to fetch remote ${name}:`, error);
+      }
+    }
   }
 
   /**

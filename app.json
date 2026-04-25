@@ -9,7 +9,11 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Разрешите использовать биометрию для безопасного входа в приложение."
+      },
+      "bundleIdentifier": "com.aminjon1065.ckaccounting"
     },
     "android": {
       "adaptiveIcon": {
@@ -23,8 +27,8 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.CAMERA"
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ],
       "package": "com.aminjon1065.ckaccounting"
     },
@@ -47,6 +51,12 @@
         }
       ],
       "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Разрешите использовать биометрию для безопасного входа в приложение."
+        }
+      ],
       [
         "expo-image-picker",
         {
