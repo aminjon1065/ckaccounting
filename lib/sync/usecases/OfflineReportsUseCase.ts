@@ -194,10 +194,10 @@ export async function computeLocalProfitReport(
 
   for (const sale of filteredSales) {
     if (sale.type === "product") {
-      // Try to get sale items to compute cost
+      const saleLocalId = sale.local_id ?? String(sale.id);
       const items = await db.getAllAsync<any>(
         "SELECT * FROM sale_items WHERE sale_local_id = ?",
-        [sale.local_id]
+        [saleLocalId]
       );
       for (const item of items) {
         // cost = unit_price - (unit_price * markup / 100) approximation

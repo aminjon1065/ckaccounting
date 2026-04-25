@@ -696,10 +696,10 @@ export const api = {
   expenses: {
     list: (
       token: string,
-      params: { page?: number; limit?: number } = {}
+      params: { page?: number; limit?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
     ) =>
       request<Paginated<Expense>>(
-        `/expenses${qs({ page: params.page, limit: params.limit ?? 20 })}`,
+        `/expenses${qs({ page: params.page, limit: params.limit ?? 20, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
       ),
 
@@ -760,9 +760,12 @@ export const api = {
 
   // ── Purchases ─────────────────────────────────────────────────────────────
   purchases: {
-    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+    list: (
+      token: string,
+      params: { page?: number; limit?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
+    ) =>
       request<Paginated<Purchase>>(
-        `/purchases${qs({ page: params.page, limit: params.limit ?? 20 })}`,
+        `/purchases${qs({ page: params.page, limit: params.limit ?? 20, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
       ),
 

@@ -100,7 +100,7 @@ export function ExpenseFormModal({
           created_at: now,
           updated_at: now,
         };
-        await insertOrUpdateExpense(localExpense, localId, user?.shop_id, user?.id);
+        await insertOrUpdateExpense(localExpense, localId, user?.shop_id, user?.id, editing ? "update" : "create");
         onSaved({ ...localExpense, local_id: localId, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
         showToast({ message: "Нет сети. Расход сохранен локально.", variant: "warning" });
         onClose();

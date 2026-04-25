@@ -57,8 +57,8 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
 
       // Skip products with pending local changes — don't overwrite un-synced edits
       const existingLocalId = (p as any).local_id ?? "";
-      const existing = await db.getFirstAsync<{ sync_action: string; stock_quantity: number; pending_stock_delta: number }>(
-        "SELECT sync_action, stock_quantity, pending_stock_delta FROM products WHERE id = ? OR local_id = ?",
+      const existing = await db.getFirstAsync<{ sync_action: string; stock_quantity: number; pending_stock_delta: number; local_id: string | null }>(
+        "SELECT sync_action, stock_quantity, pending_stock_delta, local_id FROM products WHERE id = ? OR local_id = ?",
         [p.id, existingLocalId]
       );
       // If product has pending stock delta, merge server stock + local delta
@@ -85,7 +85,7 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
             pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            p.id, null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
+            p.id, existing?.local_id ?? null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
             p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null,
             mergedStock,
             p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
@@ -143,7 +143,7 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
           cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         [
-          p.id, null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
+          p.id, existing?.local_id ?? null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
           p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
           (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced",
           toKopecks(p.cost_price), toKopecks(p.sale_price), toKopecks(p.bulk_price),
@@ -227,7 +227,11 @@ export async function decrementLocalProductStock(id: number, quantity: number) {
 
 export async function incrementLocalProductStock(id: number, quantity: number) {
   const db = getDb();
-  await db.runAsync("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?", [quantity, id]);
+  // Increment stock optimistically AND track delta for sync
+  await db.runAsync(
+    "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+    [quantity, quantity, id]
+  );
 }
 
 // ─── Pending Stock Delta ───────────────────────────────────────────────────────
@@ -256,6 +260,21 @@ export async function cancelPendingStockDelta(productId: number, quantity: numbe
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+    [quantity, quantity, productId]
+  );
+}
+
+/**
+ * Restore stock for a recovered (retried) sale.
+ * Unlike cancelPendingStockDelta, this is called on user-initiated retry after a failed
+ * sale whose stock was already restored by cancelPendingStockDelta. It re-applies the
+ * pending delta for the corrected quantities so the new sale's sync success will
+ * correctly cancel it.
+ */
+export async function applyRecoveryStockDelta(productId: number, quantity: number): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "UPDATE products SET stock_quantity = stock_quantity - ?, pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
     [quantity, quantity, productId]
   );
 }
@@ -308,6 +327,38 @@ export async function setSalesLastSyncedAt(timestamp: string): Promise<void> {
   );
 }
 
+export async function getExpensesLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'expenses_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setExpensesLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('expenses_last_synced_at', ?)",
+    [timestamp]
+  );
+}
+
+export async function getPurchasesLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'purchases_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setPurchasesLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('purchases_last_synced_at', ?)",
+    [timestamp]
+  );
+}
+
 // LocalProduct extends Product with offline-first sync metadata
 export interface LocalProduct extends Product {
   local_id?: string;
@@ -325,8 +376,9 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
         id, local_id, shop_id, name, code, unit, cost_price, sale_price,
         pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity,
         low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status,
-        pending_stock_delta
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        pending_stock_delta,
+        cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       [
         product.id, localId ?? null, product.shop_id, product.name, product.code,
         product.unit, product.cost_price, product.sale_price,
@@ -339,6 +391,9 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
         new Date().toISOString(),
         syncAction,
         syncAction === "none" ? "synced" : "pending",
+        toKopecks(product.cost_price),
+        toKopecks(product.sale_price),
+        toKopecks(product.bulk_price),
       ]
     );
 
@@ -416,12 +471,76 @@ export async function markProductDeletedLocally(productId: number, localId?: str
       idempKey
     );
   } else {
-    // Local-only product — cancel pending CREATE from sync_queue, then delete locally
+    // Local-only product — cancel pending CREATE from sync_queue, then delete locally.
+    // The sync_queue entry uses path='/products' and idempotency_key='local-prod-{localId}'.
+    // Delete by idempotency key to avoid cancelling other products' pending creates.
+    if (localId) {
+      await db.runAsync(
+        "DELETE FROM sync_queue WHERE idempotency_key = ?",
+        [`local-prod-${localId}`]
+      );
+    }
+    // Also clean up by payload local_id as fallback (handles edge case where idempotency
+    // key column is NULL but payload contains _local_id).
     await db.runAsync(
-      "DELETE FROM sync_queue WHERE path = ? AND method = 'POST'",
-      [`/products/${productId}`]
+      `DELETE FROM sync_queue
+       WHERE method = 'POST' AND path = '/products'
+         AND payload LIKE ? AND idempotency_key IS NULL`,
+      [`%\"_local_id\":\"${localId ?? String(productId)}\"%`]
     );
     await db.runAsync("DELETE FROM products WHERE id = ?", [productId]);
+  }
+}
+
+/**
+ * Marks an expense as deleted locally and queues a DELETE sync action.
+ *
+ * - Server-synced expense (id > 0): updates sync_action='delete', queues DELETE /expenses/{id}.
+ *   Uses local_id fallback when available.
+ * - Local-only expense (id < 0): cancels the pending CREATE from sync_queue and physically
+ *   deletes the local row.
+ */
+export async function markExpenseDeletedLocally(expenseId: number, localId?: string | null): Promise<void> {
+  const db = getDb();
+
+  if (expenseId > 0) {
+    // Server expense — mark dirty and queue DELETE
+    if (localId) {
+      await db.runAsync(
+        "UPDATE expenses SET status = 'pending', sync_action = 'delete' WHERE local_id = ?",
+        [localId]
+      );
+    } else {
+      // local_id is NULL for server-synced rows; fall back to id
+      await db.runAsync(
+        "UPDATE expenses SET status = 'pending', sync_action = 'delete' WHERE id = ?",
+        [expenseId]
+      );
+    }
+    const idempKey = `local-exp-delete-${localId ?? expenseId}`;
+    await queueSyncAction(
+      "DELETE",
+      `/expenses/${expenseId}`,
+      {},
+      { "Idempotency-Key": idempKey },
+      idempKey
+    );
+  } else {
+    // Local-only expense — cancel pending CREATE from sync_queue, then delete locally.
+    // Clean up by idempotency key and by payload local_id as fallback.
+    if (localId) {
+      await db.runAsync(
+        "DELETE FROM sync_queue WHERE idempotency_key = ?",
+        [`local-exp-${localId}`]
+      );
+    }
+    await db.runAsync(
+      `DELETE FROM sync_queue
+       WHERE method = 'POST' AND path = '/expenses'
+         AND (payload LIKE ? OR idempotency_key = ?)`,
+      [`%"local_id":"${localId ?? String(expenseId)}"%`, `local-exp-${localId ?? expenseId}`]
+    );
+    await db.runAsync("DELETE FROM expenses WHERE id = ?", [expenseId]);
   }
 }
 
@@ -656,13 +775,16 @@ export async function claimPendingSyncActions(batchSize = 10): Promise<SyncActio
   const db = getDb();
   const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Atomic claim: mark rows as 'processing' with batch_id atomically
+  // Atomic claim: mark rows as 'processing' with batch_id atomically.
+  // Only claim non-archived rows.
   await db.runAsync(
     `UPDATE sync_queue
      SET status = 'processing', batch_id = ?
      WHERE id IN (
        SELECT id FROM sync_queue
-       WHERE status IN ('pending', 'failed') AND retries < 5
+       WHERE archived_at IS NULL
+         AND status IN ('pending', 'failed')
+         AND retries < 5
        ORDER BY id ASC
        LIMIT ?
      )`,
@@ -704,7 +826,11 @@ export async function getDeadSyncActionsCount(): Promise<number> {
 export async function markSyncActionStatus(id: number, status: "pending" | "processing" | "failed" | "completed" | "dead", incrementRetry = false, lastError?: string) {
   const db = getDb();
   if (status === "completed") {
-    await db.runAsync("DELETE FROM sync_queue WHERE id = ?", [id]);
+    // Soft-delete: mark archived so the row remains for idempotency audit and crash reconciliation.
+    await db.runAsync(
+      "UPDATE sync_queue SET status = 'completed', archived_at = ? WHERE id = ?",
+      [new Date().toISOString(), id]
+    );
   } else if (status === "dead") {
     await db.runAsync("UPDATE sync_queue SET status = 'dead', last_error = ? WHERE id = ?", [lastError ?? null, id]);
   } else if (incrementRetry) {
@@ -729,6 +855,20 @@ export async function archiveSyncAction(id: number): Promise<void> {
   await db.runAsync(
     "UPDATE sync_queue SET archived_at = ? WHERE id = ?",
     [new Date().toISOString(), id]
+  );
+}
+
+/**
+ * Prune archived completed rows older than the specified number of days.
+ * Keeps the audit trail bounded while preserving recent completed rows for
+ * crash-recovery idempotency reasoning. Dead/failed rows are not pruned.
+ */
+export async function pruneArchivedSyncActions(olderThanDays = 30): Promise<void> {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  await db.runAsync(
+    "DELETE FROM sync_queue WHERE archived_at IS NOT NULL AND archived_at < ? AND status = 'completed'",
+    [cutoff]
   );
 }
 
@@ -1165,9 +1305,13 @@ function mapRowToLocalExpense(r: ExpenseRow): LocalExpense {
   };
 }
 
-export async function insertOrUpdateExpense(expense: Expense, localId: string, shopId?: number, userId?: number) {
+export async function insertOrUpdateExpense(expense: Expense, localId: string, shopId?: number, userId?: number, syncAction: "create" | "update" | "none" = "create") {
   const db = getDb();
+  const now = new Date().toISOString();
   await db.withTransactionAsync(async () => {
+    // For updates: preserve the existing server id in the row so PATCH /expenses/{id} routes correctly.
+    // For creates: use expense.id (may be negative for offline-created).
+    const rowId = syncAction === "update" ? expense.id : expense.id;
     await db.runAsync(
       `INSERT OR REPLACE INTO expenses (
         id, local_id, shop_id, user_id, name, quantity, price, total, note,
@@ -1175,7 +1319,7 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         price_kopecks, total_kopecks
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        expense.id,
+        rowId,
         localId,
         shopId ?? null,
         userId ?? null,
@@ -1185,28 +1329,49 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         expense.total,
         expense.note ?? null,
         "pending",
-        "create",
-        expense.created_at ?? new Date().toISOString(),
-        expense.updated_at ?? new Date().toISOString(),
+        syncAction,
+        expense.created_at ?? now,
+        expense.updated_at ?? now,
         null,
         toKopecks(expense.price), toKopecks(expense.total),
       ]
     );
 
-    await queueSyncAction(
-      "POST",
-      "/expenses",
-      {
+    if (syncAction === "create") {
+      await queueSyncAction(
+        "POST",
+        "/expenses",
+        {
+          name: expense.name,
+          quantity: expense.quantity,
+          price: expense.price,
+          note: expense.note,
+          shop_id: shopId,
+          _local_id: localId,
+        },
+        { "Idempotency-Key": `local-exp-${localId}` },
+        `local-exp-${localId}`
+      );
+    } else if (syncAction === "update") {
+      const patchPayload: Record<string, unknown> = {
         name: expense.name,
         quantity: expense.quantity,
         price: expense.price,
         note: expense.note,
         shop_id: shopId,
         _local_id: localId,
-      },
-      { "Idempotency-Key": `local-exp-${localId}` },
-      `local-exp-${localId}`
-    );
+      };
+      if ((expense as any).version !== undefined) {
+        patchPayload.version = (expense as any).version;
+      }
+      await queueSyncAction(
+        "PATCH",
+        `/expenses/${expense.id}`,
+        patchPayload,
+        undefined,
+        `local-exp-update-${localId}`
+      );
+    }
 
     // Invalidate dashboard cache so next load fetches fresh data
     await db.runAsync("DELETE FROM dashboard_cache");
@@ -1258,6 +1423,15 @@ export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: numbe
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const e of expenses) {
+      // Server tombstone: delete local record if deleted_at is set
+      if ((e as any).deleted_at) {
+        await db.runAsync(
+          "DELETE FROM expenses WHERE id = ? OR local_id = ?",
+          [e.id, (e as any).local_id ?? ""]
+        );
+        continue;
+      }
+
       // Skip if a local pending expense (never synced to server) already exists.
       const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
         "SELECT sync_action, local_id FROM expenses WHERE id = ? OR local_id = ?",
@@ -1276,6 +1450,44 @@ export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: numbe
           e.id, existing?.local_id ?? null, shopId ?? null, null, e.name, e.quantity, e.price, e.total,
           e.note ?? null, "synced", "none", e.created_at, e.updated_at, new Date().toISOString(),
           toKopecks(e.price), toKopecks(e.total),
+        ]
+      );
+    }
+  });
+}
+
+export async function insertOrUpdatePurchases(purchases: Purchase[], shopId?: number) {
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    for (const p of purchases) {
+      // Server tombstone: delete local record if deleted_at is set
+      if ((p as any).deleted_at) {
+        await db.runAsync(
+          "DELETE FROM purchases WHERE id = ? OR local_id = ?",
+          [p.id, (p as any).local_id ?? ""]
+        );
+        continue;
+      }
+
+      // Skip if a local pending purchase (never synced to server) already exists.
+      const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
+        "SELECT sync_action, local_id FROM purchases WHERE id = ? OR local_id = ?",
+        [p.id, (p as any).local_id ?? ""]
+      );
+      if (existing && existing.sync_action && existing.sync_action !== "none") {
+        continue; // preserve local pending purchase
+      }
+      await db.runAsync(
+        `INSERT OR REPLACE INTO purchases (
+          id, local_id, shop_id, supplier_name, total, items,
+          status, sync_action, created_at, updated_at, last_synced_at,
+          total_kopecks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          p.id, existing?.local_id ?? null, shopId ?? null, p.supplier_name ?? null, p.total ?? 0,
+          JSON.stringify(p.items ?? []),
+          "synced", "none", p.created_at ?? "", p.updated_at ?? "", new Date().toISOString(),
+          toKopecks(p.total),
         ]
       );
     }
@@ -1373,6 +1585,15 @@ export async function insertOrUpdatePurchase(purchase: Purchase, localId: string
       { "Idempotency-Key": `local-pur-${localId}` },
       `local-pur-${localId}`
     );
+
+    // Increment local stock for each purchase item — tracks pending_stock_delta
+    // so remote product pulls don't overwrite unconfirmed purchase stock increments.
+    for (const item of purchase.items ?? []) {
+      await db.runAsync(
+        "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+        [item.quantity, item.quantity, item.product_id]
+      );
+    }
 
     // Invalidate dashboard cache so next load fetches fresh data
     await db.runAsync("DELETE FROM dashboard_cache");

@@ -34,6 +34,7 @@ const ConflictContext = React.createContext<ConflictContextValue | null>(null);
 
 // Module-level registry so non-React sync code can queue conflicts
 let _externalAddConflict: ((conflict: Conflict) => void) | null = null;
+let _pendingConflicts: Conflict[] = [];
 
 export function ConflictProvider({ children }: { children: React.ReactNode }) {
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
@@ -46,6 +47,9 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
         return [...prev, conflict];
       });
     };
+    // Drain pending conflicts buffered before this provider mounted
+    const pending = _pendingConflicts.splice(0);
+    for (const c of pending) _externalAddConflict!(c);
     return () => { _externalAddConflict = null; };
   }, []);
 
@@ -77,6 +81,12 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
               `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'none' WHERE local_id = ? OR id = ?`,
               [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId, conflict.localId]
             );
+            if (conflict.entityType === "product") {
+              await db.runAsync(
+                "UPDATE products SET pending_stock_delta = 0 WHERE local_id = ? OR id = ?",
+                [conflict.localId, conflict.localId]
+              );
+            }
           } else {
             // Local wins: keep local data, mark as dirty, re-queue PATCH to server
             await db.runAsync(
@@ -288,5 +298,9 @@ export function detectConflict<T extends Record<string, unknown>>(
  * Must be called after ConflictProvider has mounted.
  */
 export function queueExternalConflict(conflict: Conflict): void {
-  _externalAddConflict?.(conflict);
+  if (_externalAddConflict) {
+    _externalAddConflict(conflict);
+  } else {
+    _pendingConflicts.push(conflict);
+  }
 }

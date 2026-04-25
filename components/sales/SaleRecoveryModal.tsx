@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Crypto from "expo-crypto";
 import { Text, Button } from "@/components/ui";
-import { type SyncAction, decrementLocalProductStock, insertOrUpdateSale, archiveSyncAction } from "@/lib/db";
+import { type SyncAction, applyRecoveryStockDelta, insertOrUpdateSale, archiveSyncAction } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useSync } from "@/lib/sync/SyncContext";
 
@@ -97,10 +97,12 @@ export function SaleRecoveryModal({ action, onClose }: SaleRecoveryModalProps) {
       const newPaid = Math.min(parsedPayload.paid, newTotal);
       const newDebt = Math.max(0, newTotal - newPaid);
 
-      // Re-decrement stock for corrected quantities
+      // Re-apply the pending delta for corrected quantities.
+      // The old failed action already restored stock via cancelPendingStockDelta,
+      // so we re-decrement to restore the correct pending delta for the retry.
       for (const item of editedItems) {
         if (item.product_id != null && item.quantity > 0) {
-          await decrementLocalProductStock(item.product_id, item.quantity);
+          await applyRecoveryStockDelta(item.product_id, item.quantity);
         }
       }
 

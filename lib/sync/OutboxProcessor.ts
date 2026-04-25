@@ -133,9 +133,7 @@ export class OutboxProcessor {
       const response = await fetch(requestUrl, fetchOptions);
 
       if (response.ok) {
-        await markSyncActionStatus(action.id, "completed");
-
-        if (action.method === "POST" && action.path === "/sales") {
+        if (action.method === "POST" && (action.path === "/sales" || action.path === "/purchases")) {
           try {
             const reqPayload = JSON.parse(action.payload || "{}");
             if (reqPayload.items) {
@@ -162,8 +160,6 @@ export class OutboxProcessor {
             const table = entityTableForPath(action.path);
             if (table) {
               if (table === "debt_transactions") {
-                // FIX (transaction duplication): Update the transaction's local tempId to the
-                // real server id so subsequent remote pulls match by id and don't insert duplicates.
                 await getDb().runAsync(
                   "UPDATE debt_transactions SET id = ?, sync_action = 'none' WHERE id = ? OR local_id = ?",
                   [realId, Number(localId), localId]
@@ -226,8 +222,15 @@ export class OutboxProcessor {
             }
           }
         } catch (e) {
-          console.error("Failed to map real ID to local row", e);
+          console.error("Failed to apply local side effects after sync", e);
+          // Keep the action retryable — local side effects failed after server write succeeded.
+          // On next sync cycle it will see the server already has the record and handle it.
+          await markSyncActionStatus(action.id, "failed", true, "Local side effects failed after server write");
+          return;
         }
+
+        // All local side effects complete — now mark as completed and delete.
+        await markSyncActionStatus(action.id, "completed");
       } else if (response.status === 409) {
         // Conflict: server returned its version — detect per-field and escalate to UI
         try {
@@ -256,7 +259,7 @@ export class OutboxProcessor {
         const errorMsg = errBody?.message ?? `HTTP ${response.status}`;
         await markSyncActionStatus(action.id, "dead", false, errorMsg);
 
-        if (action.method === "POST" && action.path === "/sales") {
+        if (action.method === "POST" && (action.path === "/sales" || action.path === "/purchases")) {
           try {
             const reqPayload = JSON.parse(action.payload || "{}");
             if (reqPayload.items) {

@@ -10,6 +10,8 @@ import { RemoteProductFetcher } from "./RemoteProductFetcher";
 import { RemoteDebtFetcher } from "./RemoteDebtFetcher";
 import { RemoteShopFetcher } from "./RemoteShopFetcher";
 import { RemoteSaleFetcher } from "./RemoteSaleFetcher";
+import { RemoteExpenseFetcher } from "./RemoteExpenseFetcher";
+import { RemotePurchaseFetcher } from "./RemotePurchaseFetcher";
 
 // ─── SyncOrchestrator ──────────────────────────────────────────────────────────
 //
@@ -28,6 +30,8 @@ export class SyncOrchestrator {
   private debtFetcher: RemoteDebtFetcher;
   private shopFetcher: RemoteShopFetcher;
   private saleFetcher: RemoteSaleFetcher;
+  private expenseFetcher: RemoteExpenseFetcher;
+  private purchaseFetcher: RemotePurchaseFetcher;
 
   constructor(
     private getDeps: () => { token: string; shopId: number | undefined }
@@ -37,6 +41,8 @@ export class SyncOrchestrator {
     this.debtFetcher = new RemoteDebtFetcher(() => ({ token: getDeps().token }));
     this.shopFetcher = new RemoteShopFetcher(() => ({ token: getDeps().token }));
     this.saleFetcher = new RemoteSaleFetcher(getDeps);
+    this.expenseFetcher = new RemoteExpenseFetcher(() => ({ token: getDeps().token }));
+    this.purchaseFetcher = new RemotePurchaseFetcher(() => ({ token: getDeps().token }));
   }
 
   /**
@@ -49,7 +55,7 @@ export class SyncOrchestrator {
   }
 
   /**
-   * Pull all remote entities (products, debts, shops, sales).
+   * Pull all remote entities.
    */
   async refreshAll(forceFullSync = false): Promise<void> {
     await Promise.allSettled([
@@ -57,6 +63,8 @@ export class SyncOrchestrator {
       this.debtFetcher.fetch(forceFullSync),
       this.shopFetcher.fetch(),
       this.saleFetcher.fetch(forceFullSync),
+      this.expenseFetcher.fetch(forceFullSync),
+      this.purchaseFetcher.fetch(forceFullSync),
     ]);
   }
 

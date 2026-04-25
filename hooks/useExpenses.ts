@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert } from "react-native";
 import { api, type Expense } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalExpenses, insertOrUpdateExpenses, queueSyncAction, updateExpenseStatus } from "@/lib/db";
+import { getLocalExpenses, insertOrUpdateExpenses, markExpenseDeletedLocally, deleteLocalExpense, queueSyncAction, updateExpenseStatus } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
 
 export function useExpenses({ token, shopId }: { token: string | null; shopId?: number }) {
@@ -67,21 +67,21 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
         onPress: async () => {
           try {
             await api.expenses.delete(id, token!);
+            const expense = expenses.find((e) => e.id === id);
+            const localId = (expense as LocalExpense)?.local_id;
+            if (localId) {
+              await markExpenseDeletedLocally(id, localId);
+            } else {
+              await deleteLocalExpense(String(id));
+            }
             setExpenses((prev) => prev.filter((e) => e.id !== id));
             showToast({ message: "Расход удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              // Offline: mark for deletion locally
-              setExpenses((prev) => {
-                const idx = prev.findIndex((e) => e.id === id);
-                if (idx >= 0) {
-                  const next = [...prev];
-                  next[idx] = { ...next[idx], sync_action: "delete", status: "pending" };
-                  return next;
-                }
-                return prev;
-              });
-              await queueSyncAction("DELETE", `/expenses/${id}`, {}, undefined, `local-exp-delete-${id}`);
+              const expense = expenses.find((e) => e.id === id);
+              const localId = (expense as LocalExpense)?.local_id;
+              await markExpenseDeletedLocally(id, localId);
+              setExpenses((prev) => prev.filter((e) => e.id !== id));
               showToast({ message: "Удалено локально. Будет удалено после синхронизации.", variant: "warning" });
             } else {
               showToast({ message: "Не удалось удалить расход.", variant: "error" });
