@@ -88,17 +88,20 @@ export function ExpenseFormModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = generateUUID();
+        const localId = editing
+          ? ((editing as LocalExpense).local_id ?? `expense-${editing.id}`)
+          : generateUUID();
         const now = new Date().toISOString();
         const localExpense: Expense = {
-          id: -Date.now(),
+          id: editing ? editing.id : -Date.now(),
           name: name.trim(),
           quantity: parseFloat(quantity),
           price: parseFloat(price),
           total,
           note: note.trim() || null,
-          created_at: now,
+          created_at: editing?.created_at ?? now,
           updated_at: now,
+          version: (editing as Expense | null)?.version,
         };
         await insertOrUpdateExpense(localExpense, localId, user?.shop_id, user?.id, editing ? "update" : "create");
         onSaved({ ...localExpense, local_id: localId, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);

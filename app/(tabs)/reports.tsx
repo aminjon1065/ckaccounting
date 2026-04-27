@@ -1,14 +1,15 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import * as React from "react";
 import {
   ActivityIndicator,
+  Platform,
   ScrollView,
-  TextInput as RNTextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { File, Paths } from "expo-file-system";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 
@@ -46,6 +47,38 @@ function daysAgo(n: number) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
+}
+
+function dateFromValue(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return new Date();
+  return new Date(year, month - 1, day);
+}
+
+function dateToValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dateLabel(value: string) {
+  return dateFromValue(value).toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function reportFileName(tab: ReportTab, dateFrom: string, dateTo: string) {
+  const names: Record<ReportTab, string> = {
+    sales: "sales",
+    expenses: "expenses",
+    profit: "profit",
+    stock: "stock",
+  };
+  const period = tab === "stock" ? dateToValue(new Date()) : `${dateFrom}_${dateTo}`;
+  return `ck-report-${names[tab]}-${period}.pdf`;
 }
 
 // ─── Tab types ────────────────────────────────────────────────────────────────
@@ -223,11 +256,11 @@ function StockReportView({ data }: { data: StockReport }) {
 export default function ReportsScreen() {
   const { token, user } = useAuth();
   const { isOnline } = useSync();
-  const router = useRouter();
 
   const [activeTab, setActiveTab] = React.useState<ReportTab>("sales");
   const [dateFrom, setDateFrom] = React.useState(daysAgo(30));
   const [dateTo, setDateTo] = React.useState(today());
+  const [pickerTarget, setPickerTarget] = React.useState<"from" | "to" | null>(null);
 
   const [loading, setLoading] = React.useState(false);
   const [salesReport, setSalesReport] = React.useState<SalesReport | null>(null);
@@ -236,6 +269,29 @@ export default function ReportsScreen() {
   const [stockReport, setStockReport] = React.useState<StockReport | null>(null);
   const [error, setError] = React.useState("");
   const [generatingPDF, setGeneratingPDF] = React.useState(false);
+
+  const handleDatePickerChange = React.useCallback((event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === "android") {
+      setPickerTarget(null);
+    }
+
+    if (event.type === "dismissed" || !selectedDate || !pickerTarget) {
+      return;
+    }
+
+    const nextValue = dateToValue(selectedDate);
+    if (pickerTarget === "from") {
+      setDateFrom(nextValue);
+      if (dateFromValue(nextValue) > dateFromValue(dateTo)) {
+        setDateTo(nextValue);
+      }
+    } else {
+      setDateTo(nextValue);
+      if (dateFromValue(nextValue) < dateFromValue(dateFrom)) {
+        setDateFrom(nextValue);
+      }
+    }
+  }, [dateFrom, dateTo, pickerTarget]);
 
   const generatePDF = React.useCallback(async () => {
     const currentData =
@@ -373,10 +429,23 @@ export default function ReportsScreen() {
       html += `</body></html>`;
 
       const { uri } = await Print.printToFileAsync({ html });
+      const fileName = reportFileName(activeTab, dateFrom, dateTo);
+      const generatedPdf = new File(uri);
+      const savedPdf = new File(Paths.document, fileName);
+
+      if (savedPdf.exists) {
+        savedPdf.delete();
+      }
+      generatedPdf.copy(savedPdf);
+
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+        await Sharing.shareAsync(savedPdf.uri, {
+          UTI: ".pdf",
+          mimeType: "application/pdf",
+          dialogTitle: fileName,
+        });
       } else {
-        setError("Поделиться недоступно на вашем устройстве");
+        setError(`PDF сохранён: ${fileName}`);
       }
     } catch (e) {
       console.error(e);
@@ -590,30 +659,31 @@ export default function ReportsScreen() {
       >
         {/* Apply button (if custom dates) */}
         {activeTab !== "stock" && (
-          <View className="flex-row items-center gap-3 mb-4">
+          <View className="mb-4">
+            <View className="flex-row items-center gap-3">
             <View className="flex-1">
               <Text variant="small" className="mb-1">С</Text>
-              <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5">
-                <RNTextInput
-                  value={dateFrom}
-                  onChangeText={setDateFrom}
-                  placeholder="YYYY-MM-DD"
-                  className="text-sm text-slate-900 dark:text-slate-50"
-                  placeholderTextColor="#94a3b8"
-                />
-              </View>
+              <TouchableOpacity
+                onPress={() => setPickerTarget("from")}
+                className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5"
+              >
+                <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
+                  {dateLabel(dateFrom)}
+                </Text>
+                <MaterialIcons name="calendar-today" size={16} color="#94a3b8" />
+              </TouchableOpacity>
             </View>
             <View className="flex-1">
               <Text variant="small" className="mb-1">По</Text>
-              <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5">
-                <RNTextInput
-                  value={dateTo}
-                  onChangeText={setDateTo}
-                  placeholder="YYYY-MM-DD"
-                  className="text-sm text-slate-900 dark:text-slate-50"
-                  placeholderTextColor="#94a3b8"
-                />
-              </View>
+              <TouchableOpacity
+                onPress={() => setPickerTarget("to")}
+                className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5"
+              >
+                <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
+                  {dateLabel(dateTo)}
+                </Text>
+                <MaterialIcons name="calendar-today" size={16} color="#94a3b8" />
+              </TouchableOpacity>
             </View>
             <TouchableOpacity
               onPress={loadReport}
@@ -621,6 +691,15 @@ export default function ReportsScreen() {
             >
               <Text className="text-xs font-semibold text-white">Применить</Text>
             </TouchableOpacity>
+            </View>
+            {pickerTarget && (
+              <DateTimePicker
+                value={dateFromValue(pickerTarget === "from" ? dateFrom : dateTo)}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                onChange={handleDatePickerChange}
+              />
+            )}
           </View>
         )}
 

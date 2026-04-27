@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Avatar, Select, Text } from "@/components/ui";
@@ -27,6 +28,7 @@ import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { ExpenseFormModal } from "@/components/expenses/ExpenseFormModal";
 import { CustomPeriodModal } from "@/components/dashboard/CustomPeriodModal";
+import { STORAGE_KEYS } from "@/constants/config";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -36,6 +38,30 @@ export default function DashboardScreen() {
   const { refreshProducts } = useSync();
   const isSuperAdmin = user?.role === "super_admin";
   const [isDataHidden, setIsDataHidden] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    SecureStore.getItemAsync(STORAGE_KEYS.dashboardHideAmounts)
+      .then((stored) => {
+        if (!cancelled) {
+          setIsDataHidden(stored === "true");
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleDataHidden = React.useCallback(() => {
+    setIsDataHidden((current) => {
+      const next = !current;
+      SecureStore.setItemAsync(STORAGE_KEYS.dashboardHideAmounts, String(next)).catch(() => {});
+      return next;
+    });
+  }, []);
 
   // Modals state
   const [saleModalVisible, setSaleModalVisible] = React.useState(false);
@@ -82,7 +108,7 @@ export default function DashboardScreen() {
             <Text variant="muted" className="mt-0.5">{formatDate()}</Text>
           </View>
           <View className="flex-row items-center gap-3">
-            <TouchableOpacity onPress={() => setIsDataHidden(!isDataHidden)} className="w-10 h-10 items-center justify-center rounded-full bg-slate-100 dark:bg-zinc-800">
+            <TouchableOpacity onPress={toggleDataHidden} className="w-10 h-10 items-center justify-center rounded-full bg-slate-100 dark:bg-zinc-800">
               <MaterialIcons name={isDataHidden ? "visibility-off" : "visibility"} size={22} color="#64748b" />
             </TouchableOpacity>
             <TouchableOpacity

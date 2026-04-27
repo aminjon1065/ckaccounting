@@ -40,7 +40,7 @@ export function usePurchases({ token }: { token: string | null }) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
       if (isOfflineError) {
         setIsOffline(true);
-        setPurchases(localPurchases as Purchase[]);
+        setPurchases(dedupePurchases(localPurchases as Purchase[]));
         setHasMore(false);
       } else {
         if (reset) setError("Не удалось загрузить закупки.");
@@ -110,8 +110,15 @@ function mergePurchases(local: Purchase[], server: Purchase[]): Purchase[] {
         result.push(l);
       }
     } else {
-      // Local with positive id — treat as server record
-      result.push(l);
+      // Local with positive id mirrors a server record. Prefer the fresh server
+      // copy when present and consume it so FlatList never receives duplicates.
+      const serverPurchase = serverMap.get(l.id);
+      if (serverPurchase) {
+        result.push(serverPurchase);
+        serverMap.delete(l.id);
+      } else {
+        result.push(l);
+      }
     }
   }
 
@@ -122,5 +129,36 @@ function mergePurchases(local: Purchase[], server: Purchase[]): Purchase[] {
 
   // Sort by created_at desc
   result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  return result;
+  return dedupePurchases(result);
+}
+
+function purchaseKey(purchase: Purchase): string {
+  const localId = (purchase as LocalPurchase).local_id;
+  if (purchase.id > 0) return `id:${purchase.id}`;
+  if (localId) return `local:${localId}`;
+  return `temp:${purchase.id}:${purchase.created_at}`;
+}
+
+function dedupePurchases(purchases: Purchase[]): Purchase[] {
+  const byKey = new Map<string, Purchase>();
+
+  for (const purchase of purchases) {
+    const key = purchaseKey(purchase);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, purchase);
+      continue;
+    }
+
+    const existingIsPending = (existing as LocalPurchase).sync_action &&
+      (existing as LocalPurchase).sync_action !== "none";
+    const currentIsPending = (purchase as LocalPurchase).sync_action &&
+      (purchase as LocalPurchase).sync_action !== "none";
+
+    if (existingIsPending && !currentIsPending) {
+      byKey.set(key, purchase);
+    }
+  }
+
+  return Array.from(byKey.values());
 }

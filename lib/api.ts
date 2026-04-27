@@ -1,4 +1,4 @@
-import { API_URL, AUTH_ENDPOINTS, TIMEOUTS } from "@/constants/config";
+import { API_URL, AUTH_ENDPOINTS, BACKEND_URL, TIMEOUTS } from "@/constants/config";
 import { triggerSuspension } from "@/store/suspension";
 import { triggerTokenExpiry } from "@/lib/sync/TokenExpiryBridge";
 import { attemptTokenRefresh } from "@/lib/sync/TokenRefreshBridge";
@@ -102,6 +102,55 @@ export interface CreateProductPayload {
   version?: number;
 }
 
+export function resolveBackendAssetUrl(url?: string | null): string | null {
+  if (!url) return null;
+
+  const base = BACKEND_URL.replace(/\/+$/, "");
+
+  if (/^(file:|content:|data:|blob:)/i.test(url)) {
+    return url;
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.pathname.startsWith("/storage/")) {
+        try {
+          const configuredBackend = new URL(base);
+          if (parsed.origin !== configuredBackend.origin) {
+            return `${base}${parsed.pathname}${parsed.search}`;
+          }
+        } catch {
+          return `${base}${parsed.pathname}${parsed.search}`;
+        }
+      }
+    } catch {
+      return url;
+    }
+
+    return url;
+  }
+
+  const path = url.startsWith("/") ? url : `/${url}`;
+  return `${base}${path}`;
+}
+
+function normalizeProductImageUrls(product: Product): Product {
+  const imageUrl = resolveBackendAssetUrl(product.photo_url ?? product.image_url ?? null);
+  return {
+    ...product,
+    photo_url: imageUrl,
+    image_url: imageUrl,
+  };
+}
+
+function normalizeProductsPage(page: Paginated<Product>): Paginated<Product> {
+  return {
+    ...page,
+    data: page.data.map(normalizeProductImageUrls),
+  };
+}
+
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 
 export interface Expense {
@@ -137,6 +186,7 @@ export interface DebtTransaction {
 
 export interface Debt {
   id: number;
+  shop_id?: number;
   person_name: string;
   opening_balance: number;
   balance: number;
@@ -150,6 +200,7 @@ export interface Debt {
 
 export interface CreateDebtPayload {
   person_name: string;
+  shop_id?: number;
   direction?: "receivable" | "payable";
   opening_balance?: number;
 }
@@ -183,6 +234,7 @@ export interface Purchase {
 
 export interface CreatePurchasePayload {
   supplier_name?: string;
+  shop_id?: number;
   items: { product_id: number; quantity: number; price: number; markup_percent?: number }[];
 }
 
@@ -313,6 +365,30 @@ export interface StockReport {
     sale_price: number;
     value: number;
   }[];
+}
+
+function normalizeStockReport(report: any): StockReport {
+  const totalProducts = Number(report?.total_products ?? report?.products_count ?? 0);
+  const totalValue = Number(report?.total_value ?? report?.stock_value_total ?? 0);
+  const lowStock = Number(report?.low_stock ?? report?.low_stock_products_count ?? 0);
+  const outOfStock = Number(report?.out_of_stock ?? report?.out_of_stock_products_count ?? 0);
+  const data = Array.isArray(report?.data)
+    ? report.data.map((item: any) => ({
+        id: Number(item?.id ?? 0),
+        name: String(item?.name ?? ""),
+        stock_quantity: Number(item?.stock_quantity ?? 0),
+        sale_price: Number(item?.sale_price ?? 0),
+        value: Number(item?.value ?? ((Number(item?.stock_quantity ?? 0)) * (Number(item?.sale_price ?? 0)))),
+      }))
+    : [];
+
+  return {
+    total_products: totalProducts,
+    total_value: totalValue,
+    low_stock: lowStock,
+    out_of_stock: outOfStock,
+    data,
+  };
 }
 
 // ─── Product Movement ─────────────────────────────────────────────────────────
@@ -609,7 +685,7 @@ function buildProductFormData(
   Object.entries(payload).forEach(([k, v]) => {
     if (v !== undefined && v !== null) fd.append(k, String(v));
   });
-  fd.append("photo", {
+  fd.append("image", {
     uri: photoUri,
     name: "product.jpg",
     type: "image/jpeg",
@@ -658,10 +734,10 @@ export const api = {
       request<Paginated<Product>>(
         `/products${qs({ page: params.page, limit: params.limit ?? 20, search: params.search, shop_id: params.shop_id, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
         { token }
-      ),
+      ).then(normalizeProductsPage),
 
     get: (id: number, token: string) =>
-      request<Product>(`/products/${id}`, { token }),
+      request<Product>(`/products/${id}`, { token }).then(normalizeProductImageUrls),
 
     create: (payload: CreateProductPayload, token: string, photoUri?: string) =>
       request<Product>("/products", {
@@ -670,7 +746,7 @@ export const api = {
           ? buildProductFormData(payload, photoUri)
           : JSON.stringify(payload),
         token,
-      }),
+      }).then(normalizeProductImageUrls),
 
     update: (id: number, payload: Partial<CreateProductPayload>, token: string, photoUri?: string) =>
       request<Product>(`/products/${id}`, {
@@ -679,7 +755,7 @@ export const api = {
           ? buildProductFormData(payload, photoUri)
           : JSON.stringify(payload),
         token,
-      }),
+      }).then(normalizeProductImageUrls),
 
     delete: (id: number, token: string, idempotencyKey?: string) =>
       request<void>(`/products/${id}`, {
@@ -751,7 +827,7 @@ export const api = {
       payload: CreateDebtTransactionPayload,
       token: string
     ) =>
-      request<DebtTransaction>(`/debts/${id}/transactions`, {
+      request<Debt>(`/debts/${id}/transactions`, {
         method: "POST",
         body: JSON.stringify(payload),
         token,
@@ -806,10 +882,11 @@ export const api = {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   settings: {
-    get: (token: string) => request<ShopSettings>("/settings", { token }),
+    get: (token: string, shopId?: number) =>
+      request<ShopSettings>(`/settings${qs({ shop_id: shopId })}`, { token }),
 
-    update: (payload: Partial<ShopSettings>, token: string) =>
-      request<ShopSettings>("/settings", {
+    update: (payload: Partial<ShopSettings>, token: string, shopId?: number) =>
+      request<ShopSettings>(`/settings${qs({ shop_id: shopId })}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
         token,
@@ -836,7 +913,7 @@ export const api = {
     stock: (
       token: string,
       params: { date_from?: string; date_to?: string } = {}
-    ) => request<StockReport>(`/reports/stock${qs(params)}`, { token }),
+    ) => request<any>(`/reports/stock${qs(params)}`, { token }).then(normalizeStockReport),
   },
 
   // ── Users ─────────────────────────────────────────────────────────────────

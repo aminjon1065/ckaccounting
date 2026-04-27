@@ -13,12 +13,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Skeleton, Text } from "@/components/ui";
+import { Button, Input, Select, Skeleton, Text } from "@/components/ui";
 import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
-import { getLocalDebts, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { getLocalDebts, getLocalShops, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
 import { useSync } from "@/lib/sync/SyncContext";
+import { can } from "@/lib/permissions";
 
 function fmt(n: number) {
   return Math.round(Math.abs(n))
@@ -113,33 +114,50 @@ function CreateDebtModal({
   visible,
   onClose,
   onCreated,
+  isSuperAdmin,
+  currentShopId,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (d: Debt) => void;
+  isSuperAdmin: boolean;
+  currentShopId?: number | null;
 }) {
+  const [shopId, setShopId] = React.useState("");
+  const [shops, setShops] = React.useState<{ id: number; name: string }[]>([]);
   const [personName, setPersonName] = React.useState("");
   const [direction, setDirection] = React.useState<"receivable" | "payable">("receivable");
   const [openingBalance, setOpeningBalance] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  const { user } = useAuth();
   const { refreshPendingActions, triggerSync } = useSync();
 
   React.useEffect(() => {
     if (visible) {
+      setShopId(currentShopId ? String(currentShopId) : "");
       setPersonName("");
       setDirection("receivable");
       setOpeningBalance("");
       setError("");
+
+      if (isSuperAdmin) {
+        getLocalShops()
+          .then((local) => setShops(local.map((shop) => ({ id: shop.id, name: shop.name }))))
+          .catch(() => {});
+      }
     }
-  }, [visible]);
+  }, [currentShopId, isSuperAdmin, visible]);
 
   async function handleSubmit() {
     setError("");
     if (!personName.trim()) {
       setError("Введите имя.");
+      return;
+    }
+    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
+    if (isSuperAdmin && !selectedShopId) {
+      setError("Выберите магазин.");
       return;
     }
     setSubmitting(true);
@@ -157,6 +175,9 @@ function CreateDebtModal({
         direction,
         _local_id: localId,
       };
+      if (selectedShopId) {
+        payload.shop_id = selectedShopId;
+      }
       if (amount > 0) {
         payload.opening_balance = amount;
       }
@@ -166,6 +187,7 @@ function CreateDebtModal({
       const newDebt: Debt & { local_id: string; sync_action: "create" } = {
         id: tempId,
         local_id: localId,
+        shop_id: selectedShopId,
         person_name: payload.person_name,
         opening_balance: signedOpeningBalance,
         balance: signedOpeningBalance,
@@ -175,7 +197,7 @@ function CreateDebtModal({
         updated_at: new Date().toISOString()
       };
 
-      await insertOrUpdateDebts([newDebt], user?.shop_id);
+      await insertOrUpdateDebts([newDebt], selectedShopId);
       await queueSyncAction(
         "POST",
         "/debts",
@@ -231,6 +253,16 @@ function CreateDebtModal({
             )}
 
             <View className="gap-4">
+              {isSuperAdmin && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map((shop) => ({ label: shop.name, value: String(shop.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              )}
               <Input
                 label="Контрагент"
                 required
@@ -308,6 +340,7 @@ export default function DebtsScreen() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
+  const canCreateDebt = can(user?.role, "debts:create");
 
   const fetchDebts = React.useCallback(
     async (reset = false) => {
@@ -334,7 +367,7 @@ export default function DebtsScreen() {
     if (lastSyncedAt) {
       fetchDebts(false).catch(console.error);
     }
-  }, [lastSyncedAt]);
+  }, [fetchDebts, lastSyncedAt]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -417,13 +450,15 @@ export default function DebtsScreen() {
         />
       )}
 
-      <TouchableOpacity
-        onPress={() => setCreateVisible(true)}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      {canCreateDebt && (
+        <TouchableOpacity
+          onPress={() => setCreateVisible(true)}
+          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
+          style={{ elevation: 6 }}
+        >
+          <MaterialIcons name="add" size={28} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       <CreateDebtModal
         visible={createVisible}
@@ -432,6 +467,8 @@ export default function DebtsScreen() {
           setDebts((prev) => [d, ...prev]);
           showToast({ message: "Запись добавлена", variant: "success" });
         }}
+        isSuperAdmin={user?.role === "super_admin"}
+        currentShopId={user?.shop_id}
       />
     </SafeAreaView>
   );

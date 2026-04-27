@@ -2,7 +2,7 @@ import { getDb, initDb, clearLocalData } from "./schema";
 export { getDb } from "./schema";
 
 // Product Queries
-import { Product, Debt, DebtTransaction, Sale, SaleItem, Expense, Purchase, PurchaseItem, Shop } from "@/lib/api";
+import { Product, Debt, DebtTransaction, Sale, SaleItem, Expense, Purchase, PurchaseItem, Shop, resolveBackendAssetUrl } from "@/lib/api";
 
 // ─── Money helpers ─────────────────────────────────────────────────────────────
 //
@@ -25,6 +25,13 @@ function fromKopecks(kopecks: number | null | undefined): number {
 function signedDebtAmount(amount: number, direction: string | null | undefined): number {
   const absolute = Math.abs(amount);
   return direction === "payable" ? -absolute : absolute;
+}
+
+function localDebtTransactionType(
+  type: DebtTransaction["type"],
+  direction: string | null | undefined
+): DebtTransaction["type"] {
+  return direction === "payable" && type === "give" ? "take" : type;
 }
 
 export async function insertOrUpdateProducts(products: Product[], shopId?: number) {
@@ -172,7 +179,10 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
   query += " ORDER BY name ASC";
 
   const results = await db.getAllAsync<any>(query, params);
-  return results.map(r => ({
+  return results.map(r => {
+    const photoUrl = resolveBackendAssetUrl(r.photo_url);
+
+    return {
     id: r.id,
     shop_id: r.shop_id,
     name: r.name,
@@ -187,21 +197,23 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
     low_stock_alert: r.low_stock_alert != null ? Number(r.low_stock_alert) : null,
-    photo_url: r.photo_url ?? null,
-    image_url: r.photo_url ?? null,
+    photo_url: photoUrl,
+    image_url: photoUrl,
     created_at: r.created_at ?? r.updated_at,
     updated_at: r.updated_at,
     local_id: r.local_id ?? undefined,
     status: (r.status as LocalProduct["status"]) ?? "synced",
     sync_action: (r.sync_action as LocalProduct["sync_action"]) ?? "none",
     last_synced_at: r.last_synced_at ?? undefined,
-  }));
+    };
+  });
 }
 
 export async function getLocalProductById(id: number): Promise<Product | null> {
   const db = getDb();
   const r = await db.getFirstAsync<any>("SELECT * FROM products WHERE id = ?", [id]);
   if (!r) return null;
+  const photoUrl = resolveBackendAssetUrl(r.photo_url);
   return {
     ...r,
     cost_price: r.cost_price_kopecks != null ? fromKopecks(r.cost_price_kopecks) : Number(r.cost_price),
@@ -212,6 +224,8 @@ export async function getLocalProductById(id: number): Promise<Product | null> {
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
     low_stock_alert: r.low_stock_alert != null ? Number(r.low_stock_alert) : null,
+    photo_url: photoUrl,
+    image_url: photoUrl,
   };
 }
 
@@ -255,11 +269,27 @@ export async function onSaleSyncSuccess(productId: number, quantity: number): Pr
   );
 }
 
+export async function onPurchaseSyncSuccess(productId: number, quantity: number): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "UPDATE products SET pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
+    [quantity, productId]
+  );
+}
+
 export async function cancelPendingStockDelta(productId: number, quantity: number): Promise<void> {
   // Server rejected / sale failed — restore stock_quantity AND cancel delta
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
+    [quantity, quantity, productId]
+  );
+}
+
+export async function cancelPendingPurchaseStockDelta(productId: number, quantity: number): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?), pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
     [quantity, quantity, productId]
   );
 }
@@ -549,7 +579,10 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
   const results = await db.getAllAsync<any>(
     "SELECT * FROM products WHERE sync_action != 'none' ORDER BY rowid ASC"
   );
-  return results.map(r => ({
+  return results.map(r => {
+    const photoUrl = resolveBackendAssetUrl(r.photo_url);
+
+    return {
     ...r,
     id: r.id,
     shop_id: r.shop_id,
@@ -564,15 +597,16 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
     low_stock_alert: r.low_stock_alert != null ? Number(r.low_stock_alert) : null,
-    photo_url: r.photo_url ?? null,
-    image_url: r.photo_url ?? null,
+    photo_url: photoUrl,
+    image_url: photoUrl,
     created_at: r.created_at ?? r.updated_at,
     updated_at: r.updated_at,
     local_id: r.local_id ?? undefined,
     status: (r.status as LocalProduct["status"]) ?? "pending",
     sync_action: (r.sync_action as LocalProduct["sync_action"]) ?? "none",
     last_synced_at: r.last_synced_at ?? undefined,
-  }));
+    };
+  });
 }
 
 export async function deleteLocalProduct(localId: string) {
@@ -609,15 +643,16 @@ export async function insertOrUpdateDebts(debts: Debt[], shopId?: number) {
       const incomingLocalId = (d as any).local_id ?? null;
       const existingLocalId = existing?.local_id ?? incomingLocalId;
       const incomingSyncAction = (d as any).sync_action ?? "none";
+      const openingBalance = d.opening_balance ?? 0;
       await db.runAsync(
         `INSERT OR REPLACE INTO debts (
           id, local_id, shop_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at,
           opening_balance_kopecks, balance_kopecks, sync_action
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          d.id, existingLocalId, shopId ?? null, d.person_name, d.opening_balance ?? 0, d.balance,
+          d.id, existingLocalId, shopId ?? d.shop_id ?? null, d.person_name, openingBalance, d.balance,
           d.direction ?? "receivable", d.updated_at, new Date().toISOString(),
-          toKopecks(d.opening_balance ?? 0), toKopecks(d.balance), incomingSyncAction,
+          toKopecks(openingBalance), toKopecks(d.balance), incomingSyncAction,
         ]
       );
       if (d.transactions) {
@@ -636,7 +671,17 @@ export async function insertOrUpdateDebts(debts: Debt[], shopId?: number) {
             `INSERT OR REPLACE INTO debt_transactions (
               id, local_id, debt_id, type, amount, note, created_at, amount_kopecks, sync_action
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [tx.id, txLocalId, tx.debt_id, tx.type, tx.amount, tx.note ?? null, tx.created_at, toKopecks(tx.amount), "none"]
+            [
+              tx.id,
+              txLocalId,
+              tx.debt_id ?? d.id,
+              localDebtTransactionType(tx.type, d.direction),
+              tx.amount,
+              tx.note ?? null,
+              tx.created_at,
+              toKopecks(tx.amount),
+              "none",
+            ]
           );
         }
       }
@@ -706,7 +751,7 @@ export async function getLocalDebtById(id: number): Promise<Debt | null> {
   );
   if (!r) return null;
   
-  const txs = await getLocalDebtTransactions(id);
+  const txs = await getLocalDebtTransactions(r.id);
   return {
     id: r.id,
     person_name: r.person_name,
@@ -1406,9 +1451,13 @@ export async function updateExpenseStatus(localId: string, status: string, syncA
   }
 }
 
-export async function deleteLocalExpense(localId: string) {
+export async function deleteLocalExpense(localIdOrId: string | number) {
   const db = getDb();
-  await db.runAsync("DELETE FROM expenses WHERE local_id = ?", [localId]);
+  const numericId = Number(localIdOrId);
+  await db.runAsync(
+    "DELETE FROM expenses WHERE local_id = ? OR id = ?",
+    [String(localIdOrId), Number.isFinite(numericId) ? numericId : -1]
+  );
 }
 
 export async function getPendingSyncExpenses(): Promise<LocalExpense[]> {

@@ -1,6 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Tabs } from "expo-router";
 import { Platform, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
@@ -42,6 +43,10 @@ function SalesTabIcon({ color }: { color: string }) {
 
 export default function TabLayout() {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === "android" ? insets.bottom : Math.max(insets.bottom, 20);
+  const tabBarPaddingBottom = Math.max(bottomInset, Platform.OS === "ios" ? 20 : 10);
+  const tabBarHeight = 56 + tabBarPaddingBottom;
 
   return (
     <Tabs
@@ -54,8 +59,8 @@ export default function TabLayout() {
           borderTopColor: "#e2e8f0",
           borderTopWidth: 1,
           elevation: 0,
-          height: Platform.OS === "ios" ? 88 : 64,
-          paddingBottom: Platform.OS === "ios" ? 28 : 10,
+          height: tabBarHeight,
+          paddingBottom: tabBarPaddingBottom,
           paddingTop: 8,
         },
         tabBarLabelStyle: {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert } from "react-native";
 import { api, type Expense } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalExpenses, insertOrUpdateExpenses, markExpenseDeletedLocally, deleteLocalExpense, queueSyncAction, updateExpenseStatus } from "@/lib/db";
+import { getLocalExpenses, markExpenseDeletedLocally, deleteLocalExpense } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
 
 export function useExpenses({ token, shopId }: { token: string | null; shopId?: number }) {
@@ -69,11 +69,7 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
             await api.expenses.delete(id, token!);
             const expense = expenses.find((e) => e.id === id);
             const localId = (expense as LocalExpense)?.local_id;
-            if (localId) {
-              await markExpenseDeletedLocally(id, localId);
-            } else {
-              await deleteLocalExpense(String(id));
-            }
+            await deleteLocalExpense(localId ?? id);
             setExpenses((prev) => prev.filter((e) => e.id !== id));
             showToast({ message: "Расход удалён", variant: "success" });
           } catch (e: any) {

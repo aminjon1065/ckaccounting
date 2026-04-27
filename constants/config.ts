@@ -24,6 +24,8 @@ export const STORAGE_KEYS = {
   authPinSalt: "ck_auth_pin_salt", // random salt for PIN hashing
   authPasswordHash: "ck_auth_password_hash", // hash of password for offline login
   authPasswordSalt: "ck_auth_password_salt", // random salt for password hashing
+  appTheme: "ck_app_theme",
+  dashboardHideAmounts: "ck_dashboard_hide_amounts",
 } as const;
 
 // ─── App ──────────────────────────────────────────────────────────────────────

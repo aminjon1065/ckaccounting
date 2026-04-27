@@ -3,7 +3,7 @@ import { Image } from "expo-image";
 import * as React from "react";
 import { Alert, TouchableOpacity, View } from "react-native";
 import { Badge, Text } from "@/components/ui";
-import { type Product } from "@/lib/api";
+import { resolveBackendAssetUrl, type Product } from "@/lib/api";
 
 function fmt(n: number) {
   return Math.round(n)
@@ -53,6 +53,12 @@ export function ProductCard({
   const isLow =
     item.low_stock_alert != null && item.stock_quantity <= item.low_stock_alert;
   const isOut = item.stock_quantity === 0;
+  const [imageFailed, setImageFailed] = React.useState(false);
+  const imageUri = resolveBackendAssetUrl(item.photo_url ?? item.image_url ?? null);
+
+  React.useEffect(() => {
+    setImageFailed(false);
+  }, [imageUri]);
 
   return (
     <TouchableOpacity
@@ -70,14 +76,16 @@ export function ProductCard({
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 shadow-sm border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-center gap-3 mb-2">
-        {item.photo_url ? (
+        {imageUri && !imageFailed ? (
           <Image
-            source={{ uri: item.photo_url }}
+            source={{ uri: imageUri }}
             style={{ width: 52, height: 52, borderRadius: 10 }}
             contentFit="cover"
+            transition={120}
+            onError={() => setImageFailed(true)}
           />
         ) : (
-          <View className="w-13 h-13 rounded-xl bg-slate-100 dark:bg-zinc-800 items-center justify-center">
+          <View className="rounded-xl bg-slate-100 dark:bg-zinc-800 items-center justify-center" style={{ width: 52, height: 52 }}>
             <MaterialIcons name="inventory-2" size={22} color="#94a3b8" />
           </View>
         )}

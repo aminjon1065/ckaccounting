@@ -220,6 +220,8 @@ export default function SettingsScreen() {
         visible={shopSettingsVisible}
         onClose={() => setShopSettingsVisible(false)}
         token={token!}
+        isSuperAdmin={user?.role === "super_admin"}
+        currentShopId={user?.shop_id}
       />
 
       {/* Edit profile modal */}

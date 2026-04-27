@@ -12,13 +12,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Text } from "@/components/ui";
+import { Button, Input, Text, Select } from "@/components/ui";
 import {
   api,
   ApiError,
   type CreatePurchasePayload,
   type Product,
   type Purchase,
+  type Shop,
 } from "@/lib/api";
 import { insertOrUpdatePurchase } from "@/lib/db";
 import { type LocalPurchase } from "@/lib/db";
@@ -147,15 +148,31 @@ export function CreatePurchaseModal({
   const [submitting, setSubmitting] = React.useState(false);
   const { showToast } = useToast();
   const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
 
   React.useEffect(() => {
     if (!visible) return;
     setCart([]); setSupplierName(""); setError("");
-    api.products
-      .list(token, { limit: 100 })
-      .then((res) => setProducts(res.data))
-      .catch(() => {});
-  }, [token, visible]);
+    setShopId("");
+    if (isSuperAdmin) {
+      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    }
+  }, [token, visible, isSuperAdmin]);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    if (isSuperAdmin && shopId) {
+      api.products.list(token, { limit: 100, shop_id: Number(shopId) })
+        .then((res) => setProducts(res.data))
+        .catch(() => {});
+    } else if (!isSuperAdmin) {
+      api.products.list(token, { limit: 100 })
+        .then((res) => setProducts(res.data))
+        .catch(() => {});
+    }
+  }, [token, visible, isSuperAdmin, shopId]);
 
   function addToCart(p: Product) {
     setCart((prev) => {
@@ -176,6 +193,19 @@ export function CreatePurchaseModal({
           c.product.id === productId ? { ...c, quantity: c.quantity + delta } : c
         )
         .filter((c) => c.quantity > 0)
+    );
+  }
+
+  function updateQtyValue(productId: number, value: string) {
+    const normalized = value.replace(",", ".");
+    const quantity = Number(normalized);
+
+    setCart((prev) =>
+      prev.map((c) =>
+        c.product.id === productId
+          ? { ...c, quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : c.quantity }
+          : c
+      )
     );
   }
 
@@ -215,6 +245,12 @@ export function CreatePurchaseModal({
       })),
     };
     if (supplierName.trim()) payload.supplier_name = supplierName.trim();
+    if (isSuperAdmin) {
+      if (!shopId) { setError("Выберите магазин."); setSubmitting(false); return; }
+      payload.shop_id = Number(shopId);
+    } else if (user?.shop_id) {
+      payload.shop_id = user.shop_id;
+    }
     try {
       const created = await api.purchases.create(payload, token, idempotencyKey);
       onCreated(created);
@@ -283,6 +319,20 @@ export function CreatePurchaseModal({
               </View>
             )}
 
+            {/* ── Shop Selector for SuperAdmin ── */}
+            {isSuperAdmin && (
+              <View className="mb-4">
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              </View>
+            )}
+
             <Input
               label="Поставщик"
               placeholder="Необязательно"
@@ -340,9 +390,14 @@ export function CreatePurchaseModal({
                         >
                           <MaterialIcons name="remove" size={14} color="#64748b" />
                         </TouchableOpacity>
-                        <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
-                          {c.quantity}
-                        </Text>
+                        <Input
+                          value={String(c.quantity)}
+                          onChangeText={(v) => updateQtyValue(c.product.id, v)}
+                          keyboardType="numeric"
+                          selectTextOnFocus
+                          containerClassName="w-20"
+                          className="text-center text-sm font-semibold"
+                        />
                         <TouchableOpacity
                           onPress={() => updateQty(c.product.id, 1)}
                           className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"

@@ -7,7 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import { api, type Product } from "@/lib/api";
+import { api, resolveBackendAssetUrl, type Product } from "@/lib/api";
 import { getLocalProductById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 
@@ -59,7 +59,12 @@ export default function ProductDetailScreen() {
   const [product, setProduct] = React.useState<Product | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
-  const [isOffline, setIsOffline] = React.useState(false);
+  const [imageFailed, setImageFailed] = React.useState(false);
+  const imageUri = resolveBackendAssetUrl(product?.photo_url ?? product?.image_url ?? null);
+
+  React.useEffect(() => {
+    setImageFailed(false);
+  }, [imageUri]);
 
   const fetchProduct = React.useCallback(async () => {
     if (!token || !id) return;
@@ -72,11 +77,9 @@ export default function ProductDetailScreen() {
     try {
       const p = await api.products.get(Number(id), token);
       setProduct(p);
-      setIsOffline(false);
     } catch (e: any) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
       if (isOfflineError) {
-        setIsOffline(true);
         if (!local) setError("Нет сети. Данные недоступны.");
       } else {
         if (!local) setError("Не удалось загрузить товар.");
@@ -140,11 +143,13 @@ export default function ProductDetailScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* Product photo */}
-          {product.photo_url && (
+          {imageUri && !imageFailed && (
             <Image
-              source={{ uri: product.photo_url }}
+              source={{ uri: imageUri }}
               style={{ width: "100%", aspectRatio: 1, borderRadius: 16 }}
               contentFit="cover"
+              transition={160}
+              onError={() => setImageFailed(true)}
             />
           )}
 

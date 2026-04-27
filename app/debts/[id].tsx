@@ -19,8 +19,10 @@ import {
   type Debt,
   type DebtTransaction,
 } from "@/lib/api";
-import { getLocalDebtById, insertOrUpdateDebtTransactions, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { getLocalDebtById, insertOrUpdateDebtTransactions, queueSyncAction } from "@/lib/db";
 import { useSync } from "@/lib/sync/SyncContext";
+import { can } from "@/lib/permissions";
+import { useAuth } from "@/store/auth";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -172,16 +174,31 @@ function AddTransactionModal({
 
       await insertOrUpdateDebtTransactions([tx]);
 
-      // FIX (balance update skipped): update balance directly instead of via
-      // insertOrUpdateDebts, which silently skips rows with sync_action != 'none'.
+      // Update the stored raw balance. Payable debts synced from the server are
+      // stored as a positive amount plus direction='payable', while old local
+      // rows may still be signed.
       const { getDb } = await import("@/lib/db");
       const db = getDb();
+      const row = await db.getFirstAsync<{
+        direction: string | null;
+        balance: number | null;
+        balance_kopecks: number | null;
+      }>(
+        "SELECT direction, balance, balance_kopecks FROM debts WHERE id = ? OR local_id = ?",
+        [debtId, String(debtId)]
+      );
+      const rawBalance = row?.balance_kopecks != null
+        ? row.balance_kopecks / 100
+        : Number(row?.balance ?? 0);
+      const rawDelta = row?.direction === "payable" && rawBalance >= 0
+        ? -delta
+        : delta;
       await db.runAsync(
         `UPDATE debts
          SET balance = balance + ?,
              balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100)) + ?
          WHERE id = ? OR local_id = ?`,
-        [delta, Math.round(delta * 100), debtId, String(debtId)]
+        [rawDelta, Math.round(rawDelta * 100), debtId, String(debtId)]
       );
 
       await queueSyncAction(
@@ -319,6 +336,8 @@ function AddTransactionModal({
 export default function DebtDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
+  const canAddTransaction = can(user?.role, "debts:addTransaction");
 
   const [debt, setDebt] = React.useState<Debt | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -380,12 +399,14 @@ export default function DebtDetailScreen() {
           <Text variant="h4" numberOfLines={1}>{debt.person_name}</Text>
           <Text variant="small">{isPositive ? "Нам должны" : "Мы должны"}</Text>
         </View>
-        <TouchableOpacity
-          onPress={() => setTxVisible(true)}
-          className="w-11 h-11 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center"
-        >
-          <MaterialIcons name="add" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+        {canAddTransaction && (
+          <TouchableOpacity
+            onPress={() => setTxVisible(true)}
+            className="w-11 h-11 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center"
+          >
+            <MaterialIcons name="add" size={22} color="#0a7ea4" />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Balance card */}
@@ -442,13 +463,15 @@ export default function DebtDetailScreen() {
       </View>
 
       {/* Add transaction modal */}
-      <AddTransactionModal
-        visible={txVisible}
-        debtId={debt.id}
-        currentBalance={debt.balance}
-        onClose={() => setTxVisible(false)}
-        onAdded={handleTxAdded}
-      />
+      {canAddTransaction && (
+        <AddTransactionModal
+          visible={txVisible}
+          debtId={debt.id}
+          currentBalance={debt.balance}
+          onClose={() => setTxVisible(false)}
+          onAdded={handleTxAdded}
+        />
+      )}
     </SafeAreaView>
   );
 }

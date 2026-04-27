@@ -10,8 +10,7 @@ import { ProductPicker } from "./ProductPicker";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
 import { defaultPriceMode, deriveProductPrice, fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
-import { getLocalProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById } from "@/lib/db";
-import type { LocalSale } from "@/lib/db";
+import { getLocalProducts, insertOrUpdateProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById } from "@/lib/db";
 import { useToast } from "@/store/toast";
 
 function generateUUID() {
@@ -44,6 +43,7 @@ export function CreateSaleModal({
 
   // Product sale state
   const [products, setProducts] = React.useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = React.useState(false);
   const [cart, setCart] = React.useState<CartItem[]>([]);
   const [pickerVisible, setPickerVisible] = React.useState(false);
 
@@ -68,7 +68,29 @@ export function CreateSaleModal({
     }
   }, [visible, isSuperAdmin, token]);
 
-  // Reset & load valid products
+  const loadProductsForSale = React.useCallback(async (selectedShopId?: number) => {
+    setProductsLoading(true);
+    const localProducts = await getLocalProducts(selectedShopId);
+    setProducts(localProducts);
+
+    try {
+      const remoteProducts = await api.products.list(token, {
+        limit: 100,
+        shop_id: selectedShopId,
+      });
+      await insertOrUpdateProducts(remoteProducts.data, selectedShopId);
+      const refreshedLocalProducts = await getLocalProducts(selectedShopId);
+      setProducts(refreshedLocalProducts.length > 0 ? refreshedLocalProducts : remoteProducts.data);
+    } catch (e) {
+      if (localProducts.length === 0) {
+        console.error("Failed to load products for sale:", e);
+      }
+    } finally {
+      setProductsLoading(false);
+    }
+  }, [token]);
+
+  // Reset form state
   React.useEffect(() => {
     if (!visible) return;
     setSaleType("product");
@@ -78,25 +100,20 @@ export function CreateSaleModal({
     setPaymentType("cash"); setError("");
     serviceIdRef.current = 0;
     setShopId("");
-    if (!isSuperAdmin) {
-      getLocalProducts(user?.shop_id).then(setProducts).catch(console.error);
-    } else {
-      setProducts([]);
-    }
   }, [visible, isSuperAdmin, token, user?.shop_id]);
 
   React.useEffect(() => {
     if (visible && isSuperAdmin && shopId) {
-      setProducts([]);
-      getLocalProducts(Number(shopId)).then(setProducts).catch(console.error);
+      loadProductsForSale(Number(shopId)).catch(console.error);
     } else if (visible && isSuperAdmin && !shopId) {
       setProducts([]);
       setCart([]);
     } else if (visible && !isSuperAdmin && user?.shop_id) {
-      setProducts([]);
-      getLocalProducts(user.shop_id).then(setProducts).catch(console.error);
+      loadProductsForSale(user.shop_id).catch(console.error);
+    } else if (visible && !isSuperAdmin) {
+      loadProductsForSale().catch(console.error);
     }
-  }, [visible, isSuperAdmin, shopId, user?.shop_id]);
+  }, [visible, isSuperAdmin, shopId, user?.shop_id, loadProductsForSale]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
@@ -516,7 +533,7 @@ export function CreateSaleModal({
                   <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
                     <MaterialIcons name="shopping-cart" size={32} color="#94a3b8" />
                     <Text variant="muted" className="mt-2 text-center text-sm">
-                      Нет товаров
+                      {productsLoading ? "Загрузка товаров..." : "Нет товаров"}
                     </Text>
                   </View>
                 ) : (

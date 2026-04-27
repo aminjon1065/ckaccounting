@@ -4,7 +4,9 @@ import {
   getDb,
   markSyncActionStatus,
   onSaleSyncSuccess,
+  onPurchaseSyncSuccess,
   cancelPendingStockDelta,
+  cancelPendingPurchaseStockDelta,
   queueSyncAction,
   getPendingSyncActionsCount,
   getDeadSyncActionsCount,
@@ -37,6 +39,86 @@ function entityTableForPath(path: string): string | null {
 function stripClientMeta(payload: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(payload).filter(([key]) => !key.startsWith("_"))
+  );
+}
+
+function sameMoney(left: unknown, right: unknown): boolean {
+  return Math.round(Number(left) * 100) === Math.round(Number(right) * 100);
+}
+
+function resolveDebtTransactionId(
+  responseData: any,
+  payload: Record<string, unknown>
+): number | null {
+  const transactions = Array.isArray(responseData?.data?.transactions)
+    ? responseData.data.transactions
+    : Array.isArray(responseData?.transactions)
+      ? responseData.transactions
+      : [];
+
+  if (transactions.length === 0) {
+    const directId = responseData?.transaction?.id ?? responseData?.data?.transaction?.id;
+    return directId != null ? Number(directId) : null;
+  }
+
+  const note = payload.note == null || payload.note === "" ? null : String(payload.note);
+  const candidates = transactions.filter((tx: any) => {
+    const txNote = tx?.note == null || tx.note === "" ? null : String(tx.note);
+    return tx?.type === payload.type &&
+      sameMoney(tx?.amount, payload.amount) &&
+      txNote === note;
+  });
+  const tx = candidates.length > 0
+    ? candidates[candidates.length - 1]
+    : transactions[transactions.length - 1];
+  const id = Number(tx?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+async function markDebtTransactionSynced(realId: number, localId: string): Promise<void> {
+  const db = getDb();
+  const localNumericId = Number(localId);
+  const localRow = await db.getFirstAsync<{ id: number; local_id: string | null }>(
+    "SELECT id, local_id FROM debt_transactions WHERE id = ? OR local_id = ?",
+    [Number.isFinite(localNumericId) ? localNumericId : -1, localId]
+  );
+
+  if (!localRow) {
+    await db.runAsync(
+      "UPDATE debt_transactions SET sync_action = 'none' WHERE id = ?",
+      [realId]
+    );
+    return;
+  }
+
+  if (localRow.id === realId) {
+    await db.runAsync(
+      "UPDATE debt_transactions SET sync_action = 'none' WHERE id = ? OR local_id = ?",
+      [realId, localId]
+    );
+    return;
+  }
+
+  const existingRealRow = await db.getFirstAsync<{ id: number }>(
+    "SELECT id FROM debt_transactions WHERE id = ?",
+    [realId]
+  );
+
+  if (existingRealRow) {
+    await db.runAsync(
+      "DELETE FROM debt_transactions WHERE id = ? OR local_id = ?",
+      [localRow.id, localId]
+    );
+    await db.runAsync(
+      "UPDATE debt_transactions SET sync_action = 'none' WHERE id = ?",
+      [realId]
+    );
+    return;
+  }
+
+  await db.runAsync(
+    "UPDATE debt_transactions SET id = ?, sync_action = 'none' WHERE id = ? OR local_id = ?",
+    [realId, localRow.id, localId]
   );
 }
 
@@ -114,7 +196,7 @@ export class OutboxProcessor {
       try {
         if (requestPayload.photo_uri) {
           const formData = new FormData();
-          formData.append("photo", {
+          formData.append("image", {
             uri: requestPayload.photo_uri,
             type: "image/jpeg",
             name: "photo.jpg",
@@ -140,7 +222,11 @@ export class OutboxProcessor {
               for (const item of reqPayload.items) {
                 const qty = safeQty(item.quantity);
                 if (item.product_id != null && qty !== null) {
-                  await onSaleSyncSuccess(item.product_id, qty);
+                  if (action.path === "/purchases") {
+                    await onPurchaseSyncSuccess(item.product_id, qty);
+                  } else {
+                    await onSaleSyncSuccess(item.product_id, qty);
+                  }
                 }
               }
             }
@@ -160,10 +246,11 @@ export class OutboxProcessor {
             const table = entityTableForPath(action.path);
             if (table) {
               if (table === "debt_transactions") {
-                await getDb().runAsync(
-                  "UPDATE debt_transactions SET id = ?, sync_action = 'none' WHERE id = ? OR local_id = ?",
-                  [realId, Number(localId), localId]
-                );
+                const transactionId = resolveDebtTransactionId(responseData, serverPayload);
+                if (!transactionId) {
+                  throw new Error("Synced debt transaction response did not include a transaction id");
+                }
+                await markDebtTransactionSynced(transactionId, localId);
               } else if (table === "debts") {
                 await getDb().runAsync(
                   "UPDATE debts SET id = ?, sync_action = 'none', last_synced_at = ?, updated_at = ? WHERE local_id = ? OR id = ?",
@@ -188,7 +275,7 @@ export class OutboxProcessor {
                 );
                 if (row?.photo_url?.startsWith("file://")) {
                   const formData = new FormData();
-                  formData.append("photo", {
+                  formData.append("image", {
                     uri: row.photo_url,
                     type: "image/jpeg",
                     name: "photo.jpg",
@@ -266,7 +353,11 @@ export class OutboxProcessor {
               for (const item of reqPayload.items) {
                 const qty = safeQty(item.quantity);
                 if (item.product_id != null && qty !== null) {
-                  await cancelPendingStockDelta(item.product_id, qty);
+                  if (action.path === "/purchases") {
+                    await cancelPendingPurchaseStockDelta(item.product_id, qty);
+                  } else {
+                    await cancelPendingStockDelta(item.product_id, qty);
+                  }
                 }
               }
             }

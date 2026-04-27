@@ -3,21 +3,27 @@ import * as React from "react";
 import { Modal, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Text } from "@/components/ui";
-import { api, ApiError, type ShopSettings } from "@/lib/api";
-import { queueSyncAction } from "@/lib/db";
+import { Button, Input, Select, Text } from "@/components/ui";
+import { api, ApiError, type Shop, type ShopSettings } from "@/lib/api";
+import { getLocalShops, queueSyncAction } from "@/lib/db";
 import { useToast } from "@/store/toast";
 
 export function ShopSettingsModal({
   visible,
   onClose,
   token,
+  isSuperAdmin,
+  currentShopId,
 }: {
   visible: boolean;
   onClose: () => void;
   token: string;
+  isSuperAdmin: boolean;
+  currentShopId?: number | null;
 }) {
   const { showToast } = useToast();
+  const [shopId, setShopId] = React.useState("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
   const [currency, setCurrency] = React.useState("");
   const [taxPercent, setTaxPercent] = React.useState("");
   const [loading, setLoading] = React.useState(false);
@@ -27,19 +33,55 @@ export function ShopSettingsModal({
   React.useEffect(() => {
     if (!visible) return;
     setError("");
+    setCurrency("");
+    setTaxPercent("");
+
+    if (isSuperAdmin) {
+      setShopId("");
+      getLocalShops()
+        .then((local) => {
+          if (local.length > 0) {
+            setShops(local.map((s) => ({ id: s.id, name: s.name, is_active: s.is_active } as Shop)));
+          }
+        })
+        .catch(() => {});
+
+      api.shops
+        .list(token)
+        .then((res) => {
+          const shopList = Array.isArray((res as any)?.data) ? (res as any).data : [];
+          setShops(shopList);
+        })
+        .catch(() => {});
+    } else {
+      setShopId(currentShopId ? String(currentShopId) : "");
+    }
+  }, [visible, token, isSuperAdmin, currentShopId]);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
+    if (isSuperAdmin && !selectedShopId) return;
+
+    setError("");
     setLoading(true);
     api.settings
-      .get(token)
+      .get(token, selectedShopId)
       .then((s: ShopSettings) => {
         setCurrency(s.default_currency ?? "");
         setTaxPercent(s.tax_percent != null ? String(s.tax_percent) : "0");
       })
       .catch(() => setError("Не удалось загрузить настройки."))
       .finally(() => setLoading(false));
-  }, [visible, token]);
+  }, [visible, token, isSuperAdmin, currentShopId, shopId]);
 
   async function handleSave() {
     setError("");
+    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
+    if (isSuperAdmin && !selectedShopId) {
+      setError("Выберите магазин.");
+      return;
+    }
     if (!currency.trim()) { setError("Введите код валюты."); return; }
     const tax = parseFloat(taxPercent);
     if (isNaN(tax) || tax < 0 || tax > 100) {
@@ -49,12 +91,12 @@ export function ShopSettingsModal({
     setSubmitting(true);
     const payload = { default_currency: currency.trim().toUpperCase(), tax_percent: tax };
     try {
-      await api.settings.update(payload, token);
+      await api.settings.update(payload, token, selectedShopId);
       showToast({ message: "Настройки магазина обновлены", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("PATCH", "/settings", payload, {});
+        await queueSyncAction("PATCH", `/settings${selectedShopId ? `?shop_id=${selectedShopId}` : ""}`, payload, {});
         showToast({ message: "Нет сети. Настройки сохранены локально.", variant: "warning" });
         onClose();
       } else {
@@ -97,6 +139,16 @@ export function ShopSettingsModal({
             <Text variant="muted" className="text-center py-8">Загрузка…</Text>
           ) : (
             <View className="gap-4">
+              {isSuperAdmin && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map((shop) => ({ label: shop.name, value: String(shop.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              )}
               <Input
                 label="Валюта"
                 required
@@ -122,7 +174,7 @@ export function ShopSettingsModal({
             size="lg"
             onPress={handleSave}
             loading={submitting}
-            disabled={submitting || loading}
+            disabled={submitting || loading || (isSuperAdmin && !shopId)}
           >
             Сохранить
           </Button>
