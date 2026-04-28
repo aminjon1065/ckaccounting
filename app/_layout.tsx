@@ -26,7 +26,6 @@ import { BiometricGuard } from "@/components/auth/BiometricGuard";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
 import { ConflictProvider } from "@/lib/sync/ConflictContext";
-import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
 import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
 import { requestNotificationPermissions } from "@/lib/notifications";
@@ -121,7 +120,6 @@ export default function RootLayout() {
               <AuthGuard />
               <SyncProvider>
                 <ConflictProvider>
-                  <ConflictResolutionModal />
                   <BiometricGuard>
                   <Stack>
                   <Stack.Screen name="(auth)" options={{ headerShown: false }} />

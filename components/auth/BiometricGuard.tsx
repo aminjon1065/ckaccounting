@@ -102,6 +102,11 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   // Not logged in: let AuthGuard in _layout handle routing.
   if (!isEnabled || inAuthGroup || pinSetupPending) return <>{children}</>;
 
+  // Still probing hardware capabilities — pass through to avoid mounting a
+  // full-screen overlay during an active Fabric navigation transition.
+  // The lock screen will appear once the probe resolves to "locked".
+  if (status === "checking") return <>{children}</>;
+
   // Biometrics unavailable (no hardware / not enrolled): pass through.
   // Sensitive data is still protected by the server-side token.
   if (status === "unavailable") return <>{children}</>;

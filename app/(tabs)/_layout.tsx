@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useSync } from "@/lib/sync/SyncContext";
+import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
 
 const PRIMARY = "#0a7ea4";
 const MUTED = "#94a3b8";
@@ -49,6 +50,8 @@ export default function TabLayout() {
   const tabBarHeight = 56 + tabBarPaddingBottom;
 
   return (
+    <>
+    <ConflictResolutionModal />
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -110,5 +113,6 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </>
   );
 }

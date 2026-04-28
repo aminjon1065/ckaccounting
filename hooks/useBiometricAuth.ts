@@ -68,7 +68,13 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
         const caps: BiometricCapabilities = { hasHardware, isEnrolled, supportedTypes };
         capabilitiesRef.current = caps;
         setCapabilities(caps);
-        setStatus(hasHardware && isEnrolled ? "locked" : "unavailable");
+
+        if (hasHardware && isEnrolled) {
+          // Skip locking immediately after a fresh login — the user just authenticated.
+          setStatus(isBiometricRelockSuppressed() ? "unlocked" : "locked");
+        } else {
+          setStatus("unavailable");
+        }
       } catch {
         if (!cancelled) setStatus("unavailable");
       }

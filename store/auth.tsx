@@ -10,6 +10,7 @@ import { registerSuspensionHandler } from "@/store/suspension";
 import { registerTokenExpiryHandler } from "@/lib/sync/TokenExpiryBridge";
 import { registerTokenRefreshHandler } from "@/lib/sync/TokenRefreshBridge";
 import { clearLocalData } from "@/lib/db";
+import { suppressBiometricRelock } from "@/lib/biometricRelock";
 
 const TOKEN_KEY = STORAGE_KEYS.authToken;
 const USER_KEY = STORAGE_KEYS.authUser;
@@ -182,6 +183,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
       SecureStore.deleteItemAsync(SHOP_SUSPENDED_KEY),
     ]);
+    // Suppress biometric lock for 10s so the capability probe triggered by
+    // token becoming non-null doesn't immediately lock the user out after login.
+    suppressBiometricRelock(10_000);
     setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
   }, []);
 
