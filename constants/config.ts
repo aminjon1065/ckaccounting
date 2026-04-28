@@ -26,6 +26,7 @@ export const STORAGE_KEYS = {
   authPasswordSalt: "ck_auth_password_salt", // random salt for password hashing
   appTheme: "ck_app_theme",
   dashboardHideAmounts: "ck_dashboard_hide_amounts",
+  shopSuspended: "ck_shop_suspended",
 } as const;
 
 // ─── App ──────────────────────────────────────────────────────────────────────

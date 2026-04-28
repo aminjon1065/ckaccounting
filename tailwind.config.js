@@ -36,6 +36,14 @@ module.exports = {
           100: "#fef3c7",
         },
       },
+      fontFamily: {
+        sans: ["Inter_400Regular", "System"],
+        "sans-medium": ["Inter_500Medium", "System"],
+        "sans-semibold": ["Inter_600SemiBold", "System"],
+        "sans-bold": ["Inter_700Bold", "System"],
+        heading: ["PlusJakartaSans_700Bold", "System"],
+        "heading-semibold": ["PlusJakartaSans_600SemiBold", "System"],
+      },
       borderRadius: {
         "2xl": "16px",
         "3xl": "24px",

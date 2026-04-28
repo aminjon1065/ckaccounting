@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import * as React from "react";
 import * as SecureStore from "expo-secure-store";
 import * as Crypto from "expo-crypto";
@@ -10,6 +9,7 @@ import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
 import { registerTokenExpiryHandler } from "@/lib/sync/TokenExpiryBridge";
 import { registerTokenRefreshHandler } from "@/lib/sync/TokenRefreshBridge";
+import { clearLocalData } from "@/lib/db";
 
 const TOKEN_KEY = STORAGE_KEYS.authToken;
 const USER_KEY = STORAGE_KEYS.authUser;
@@ -17,6 +17,7 @@ const PIN_KEY = STORAGE_KEYS.authPin;
 const PIN_SALT_KEY = STORAGE_KEYS.authPinSalt;
 const PASSWORD_HASH_KEY = STORAGE_KEYS.authPasswordHash;
 const PASSWORD_SALT_KEY = STORAGE_KEYS.authPasswordSalt;
+const SHOP_SUSPENDED_KEY = STORAGE_KEYS.shopSuspended;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,18 +27,20 @@ interface AuthState {
   user: User | null;
   shopSuspended: boolean;
   tokenExpired: boolean;
+  pinSetupPending: boolean;
 }
 
 interface AuthActions {
   signIn: (payload: LoginPayload) => Promise<void>;
   signInOffline: () => Promise<boolean>;
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
-  signOut: () => Promise<void>;
+  signOut: (clearLocal?: boolean) => Promise<void>;
   updateUser: (user: User) => Promise<void>;
   setPin: (pin: string) => Promise<void>;
   verifyPin: (pin: string) => Promise<boolean>;
   hasPin: () => Promise<boolean>;
   hasCredentials: () => Promise<boolean>;
+  setPinSetupPending: (pending: boolean) => void;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -77,6 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user: null,
     shopSuspended: false,
     tokenExpired: false,
+    pinSetupPending: false,
   });
 
   // Always-current token ref — avoids stale closure in callbacks that depend on token
@@ -91,6 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // The shop is locked but data is preserved for recovery/export.
       // Only mark the shop as suspended — UI will show suspension screen
       // and block further sync operations.
+      await SecureStore.setItemAsync(SHOP_SUSPENDED_KEY, "1");
       setState((prev) => ({ ...prev, shopSuspended: true }));
     });
   }, []);
@@ -106,14 +111,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Register token refresh handler so api.ts can attempt refresh on 401 before forcing re-login
   React.useEffect(() => {
     registerTokenRefreshHandler({
-      getToken: () => state.token,
+      getToken: () => tokenRef.current,
       refreshToken: (token: string) => api.auth.refresh(token),
       setToken: async (newToken: string) => {
         await SecureStore.setItemAsync(TOKEN_KEY, newToken);
         setState((prev) => ({ ...prev, token: newToken, tokenExpired: false }));
       },
     });
-  }, [state.token]);
+  }, []); // mount only — tokenRef is always current
 
   // Load persisted session on mount
   React.useEffect(() => {
@@ -121,13 +126,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const [token, userJson] = await Promise.all([
+        const [token, userJson, suspendedFlag] = await Promise.all([
           SecureStore.getItemAsync(TOKEN_KEY),
           SecureStore.getItemAsync(USER_KEY),
+          SecureStore.getItemAsync(SHOP_SUSPENDED_KEY),
         ]);
 
+        const wasShopSuspended = suspendedFlag === "1";
+
         if (!token) {
-          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
+          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
           return;
         }
 
@@ -135,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const cachedUser: User | null = userJson
           ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
           : null;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: false, tokenExpired: false });
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -148,7 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Offline or server error — cached user is sufficient, stay logged in
         }
       } catch {
-        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
+        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
       }
     })();
 
@@ -166,14 +174,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const salt = await generateSalt();
     const passwordHash = await hashPassword(payload.password, salt);
 
-    // Store credentials for offline login
+    // Store credentials for offline login; clear any prior suspension flag
     await Promise.all([
       SecureStore.setItemAsync(TOKEN_KEY, token),
       SecureStore.setItemAsync(USER_KEY, JSON.stringify(user ?? null)),
       SecureStore.setItemAsync(PASSWORD_HASH_KEY, passwordHash),
       SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
+      SecureStore.deleteItemAsync(SHOP_SUSPENDED_KEY),
     ]);
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false });
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
@@ -181,11 +190,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // verified. The login screen enforces this by requiring PIN entry before calling
     // this function. Calling it directly without verification bypasses authentication.
     try {
-      const [passwordHash, salt, token, userJson] = await Promise.all([
+      const [passwordHash, salt, token, userJson, suspendedFlag] = await Promise.all([
         SecureStore.getItemAsync(PASSWORD_HASH_KEY),
         SecureStore.getItemAsync(PASSWORD_SALT_KEY),
         SecureStore.getItemAsync(TOKEN_KEY),
         SecureStore.getItemAsync(USER_KEY),
+        SecureStore.getItemAsync(SHOP_SUSPENDED_KEY),
       ]);
 
       if (!passwordHash || !salt || !token) return false;
@@ -196,7 +206,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
-      setState({ isLoaded: true, token, user, shopSuspended: false, tokenExpired: false });
+      setState(prev => ({
+        isLoaded: true,
+        token,
+        user,
+        shopSuspended: suspendedFlag === "1",
+        tokenExpired: prev.tokenExpired, // preserve server-invalidated state
+        pinSetupPending: false,
+      }));
       return true;
     } catch {
       return false;
@@ -215,9 +232,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const inputHash = await hashPassword(password, salt);
       if (inputHash !== passwordHash) return false;
 
-      const [token, userJson] = await Promise.all([
+      const [token, userJson, suspendedFlag] = await Promise.all([
         SecureStore.getItemAsync(TOKEN_KEY),
         SecureStore.getItemAsync(USER_KEY),
+        SecureStore.getItemAsync(SHOP_SUSPENDED_KEY),
       ]);
 
       if (!token) return false;
@@ -226,7 +244,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
-      setState({ isLoaded: true, token, user, shopSuspended: false, tokenExpired: false });
+      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false });
       return true;
     } catch {
       return false;
@@ -266,12 +284,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return !!pin;
   }, []);
 
+  const setPinSetupPending = React.useCallback((pending: boolean) => {
+    setState((prev) => ({ ...prev, pinSetupPending: pending }));
+  }, []);
+
   const updateUser = React.useCallback(async (user: User) => {
     await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
     setState((prev) => ({ ...prev, user }));
   }, []);
 
-  const signOut = React.useCallback(async () => {
+  const signOut = React.useCallback(async (clearLocal: boolean = false) => {
     // Use tokenRef to avoid stale closure — state.token may be null while the
     // token expiry handler is still running its setState
     const currentToken = tokenRef.current;
@@ -286,7 +308,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.deleteItemAsync(PASSWORD_HASH_KEY),
       SecureStore.deleteItemAsync(PASSWORD_SALT_KEY),
     ]);
-    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false });
+    if (clearLocal) {
+      await clearLocalData();
+    }
+    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
   }, []);
 
   const value = React.useMemo<AuthContextValue>(
@@ -301,8 +326,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       verifyPin,
       hasPin,
       hasCredentials,
+      setPinSetupPending,
     }),
-    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials]
+    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

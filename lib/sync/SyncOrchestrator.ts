@@ -34,13 +34,18 @@ export class SyncOrchestrator {
   private purchaseFetcher: RemotePurchaseFetcher;
 
   constructor(
-    private getDeps: () => { token: string; shopId: number | undefined }
+    private getDeps: () => { token: string; shopId: number | undefined; role?: string; userId?: number }
   ) {
     this.outbox = new OutboxProcessor();
     this.productFetcher = new RemoteProductFetcher(getDeps);
     this.debtFetcher = new RemoteDebtFetcher(() => ({ token: getDeps().token }));
     this.shopFetcher = new RemoteShopFetcher(() => ({ token: getDeps().token }));
-    this.saleFetcher = new RemoteSaleFetcher(getDeps);
+    this.saleFetcher = new RemoteSaleFetcher(() => ({
+      token: getDeps().token,
+      shopId: getDeps().shopId,
+      role: getDeps().role,
+      userId: getDeps().userId,
+    }));
     this.expenseFetcher = new RemoteExpenseFetcher(() => ({ token: getDeps().token }));
     this.purchaseFetcher = new RemotePurchaseFetcher(() => ({ token: getDeps().token }));
   }
@@ -60,13 +65,16 @@ export class SyncOrchestrator {
   async refreshAll(forceFullSync = false): Promise<void> {
     // Run sequentially to completely avoid "cannot start a transaction within a transaction"
     // SQLite locking crashes when overlapping async operations trigger withTransactionAsync
+    const isSeller = this.getDeps().role === "seller";
     const fetchTasks = [
       { name: "products", task: () => this.productFetcher.fetch(forceFullSync) },
       { name: "debts", task: () => this.debtFetcher.fetch(forceFullSync) },
       { name: "shops", task: () => this.shopFetcher.fetch() },
       { name: "sales", task: () => this.saleFetcher.fetch(forceFullSync) },
-      { name: "expenses", task: () => this.expenseFetcher.fetch(forceFullSync) },
-      { name: "purchases", task: () => this.purchaseFetcher.fetch(forceFullSync) },
+      ...(!isSeller ? [
+        { name: "expenses", task: () => this.expenseFetcher.fetch(forceFullSync) },
+        { name: "purchases", task: () => this.purchaseFetcher.fetch(forceFullSync) },
+      ] : []),
     ];
 
     for (const { name, task } of fetchTasks) {
@@ -100,5 +108,21 @@ export class SyncOrchestrator {
    */
   async refreshCounts(): Promise<SyncCounts> {
     return this.outbox.refreshCounts();
+  }
+
+  async refreshDebts(forceFullSync = false): Promise<void> {
+    try {
+      await this.debtFetcher.fetch(forceFullSync);
+    } catch (e) {
+      console.warn("debtFetcher failed:", e);
+    }
+  }
+
+  async refreshShops(): Promise<void> {
+    try {
+      await this.shopFetcher.fetch();
+    } catch (e) {
+      console.warn("shopFetcher failed:", e);
+    }
   }
 }

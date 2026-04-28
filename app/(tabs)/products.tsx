@@ -141,6 +141,7 @@ export default function ProductsScreen() {
               }}
               onDelete={() => handleDelete(item.id)}
               canEdit={canEdit}
+              token={token}
             />
           )}
         />

@@ -135,8 +135,54 @@ export function resolveBackendAssetUrl(url?: string | null): string | null {
   return `${base}${path}`;
 }
 
+function extractImageUrlFromValue(value: unknown): string | null {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractImageUrlFromValue(item);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  if (typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    return extractImageUrlFromValue(
+      candidate.url ??
+      candidate.uri ??
+      candidate.path ??
+      candidate.src ??
+      candidate.original_url ??
+      candidate.preview_url ??
+      candidate.image_url ??
+      candidate.photo_url ??
+      candidate.media_url ??
+      candidate.file
+    );
+  }
+
+  return null;
+}
+
 function normalizeProductImageUrls(product: Product): Product {
-  const imageUrl = resolveBackendAssetUrl(product.photo_url ?? product.image_url ?? null);
+  const rawProduct = product as Product & Record<string, unknown>;
+  const imageCandidate =
+    extractImageUrlFromValue(rawProduct.photo_url) ??
+    extractImageUrlFromValue(rawProduct.image_url) ??
+    extractImageUrlFromValue(rawProduct.photo) ??
+    extractImageUrlFromValue(rawProduct.image) ??
+    extractImageUrlFromValue(rawProduct.image_path) ??
+    extractImageUrlFromValue(rawProduct.photo_path) ??
+    extractImageUrlFromValue(rawProduct.media_url) ??
+    extractImageUrlFromValue(rawProduct.thumbnail_url) ??
+    extractImageUrlFromValue(rawProduct.media) ??
+    extractImageUrlFromValue(rawProduct.images);
+  const imageUrl = resolveBackendAssetUrl(imageCandidate);
   return {
     ...product,
     photo_url: imageUrl,
@@ -187,6 +233,7 @@ export interface DebtTransaction {
 export interface Debt {
   id: number;
   shop_id?: number;
+  user_id?: number | null;
   person_name: string;
   opening_balance: number;
   balance: number;
@@ -258,6 +305,7 @@ export interface SaleItem {
 export interface Sale {
   id: number;
   type?: SaleType;
+  user_id?: number | null;
   customer_name: string | null;
   total: number;
   discount: number;
@@ -393,7 +441,7 @@ function normalizeStockReport(report: any): StockReport {
 
 // ─── Product Movement ─────────────────────────────────────────────────────────
 
-export type ProductMovementType = "purchase" | "sale" | "write_off";
+export type ProductMovementType = "purchase" | "sale" | "return" | "write_off";
 
 export interface ProductMovement {
   id: number;
@@ -410,6 +458,7 @@ export interface ProductMovement {
 export interface ProductMovementsResponse {
   current_stock: number;
   movements: ProductMovement[];
+  next_cursor: string | null;
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
@@ -764,8 +813,11 @@ export const api = {
         headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
       }),
 
-    movements: (id: number, token: string) =>
-      request<ProductMovementsResponse>(`/products/${id}/movements`, { token }),
+    movements: (id: number, token: string, params: { cursor?: string; limit?: number } = {}) =>
+      request<ProductMovementsResponse>(
+        `/products/${id}/movements${qs({ cursor: params.cursor, limit: params.limit })}`,
+        { token }
+      ),
   },
 
   // ── Expenses ──────────────────────────────────────────────────────────────
@@ -878,6 +930,17 @@ export const api = {
         headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
         token,
       }),
+
+    return: (
+      id: number,
+      token: string,
+      payload?: { items?: Array<{ product_id: number; quantity: number }>; reason?: string; refund_method?: string }
+    ) =>
+      request<Sale>(`/sales/${id}/return`, {
+        method: "POST",
+        body: payload ? JSON.stringify(payload) : undefined,
+        token,
+      }),
   },
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -918,7 +981,11 @@ export const api = {
 
   // ── Users ─────────────────────────────────────────────────────────────────
   users: {
-    list: (token: string) => request<AppUser[]>("/users", { token }),
+    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+      request<Paginated<AppUser>>(
+        `/users${qs({ page: params.page, limit: params.limit ?? 20 })}`,
+        { token }
+      ).then((res) => res.data),
 
     create: (payload: CreateUserPayload, token: string) =>
       request<AppUser>("/users", {

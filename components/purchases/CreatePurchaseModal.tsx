@@ -1,5 +1,6 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
+import * as Crypto from "expo-crypto";
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -233,7 +234,10 @@ export function CreatePurchaseModal({
     setError("");
     if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
     setSubmitting(true);
-    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    const bytes = await Crypto.getRandomBytesAsync(16);
+    const idempotencyKey = Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
     const payload: CreatePurchasePayload = {
       items: cart.map((c) => ({
         product_id: c.product.id,

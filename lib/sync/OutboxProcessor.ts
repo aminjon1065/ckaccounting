@@ -224,7 +224,7 @@ export class OutboxProcessor {
                 if (item.product_id != null && qty !== null) {
                   if (action.path === "/purchases") {
                     await onPurchaseSyncSuccess(item.product_id, qty);
-                  } else {
+                  } else if (action.path === "/sales") {
                     await onSaleSyncSuccess(item.product_id, qty);
                   }
                 }
@@ -303,8 +303,8 @@ export class OutboxProcessor {
                 [`/debts/${tempId}/`, `/debts/${realId}/`, `/debts/${tempId}/%`]
               );
               await getDb().runAsync(
-                "UPDATE sync_queue SET path = REPLACE(path, ?, ?) WHERE path = ?",
-                [`/debts/${tempId}`, `/debts/${realId}`, `/debts/${tempId}`]
+                "UPDATE sync_queue SET path = REPLACE(path, ?, ?) WHERE path LIKE ?",
+                [`/debts/${tempId}`, `/debts/${realId}`, `/debts/${tempId}%`]
               );
             }
           }
@@ -343,7 +343,7 @@ export class OutboxProcessor {
         } catch {}
       } else if (response.status >= 400 && response.status < 500) {
         const errBody = await response.json().catch(() => ({}));
-        const errorMsg = errBody?.message ?? `HTTP ${response.status}`;
+        const errorMsg = `HTTP ${response.status}: ${errBody?.message ?? response.statusText ?? ""}`;
         await markSyncActionStatus(action.id, "dead", false, errorMsg);
 
         if (action.method === "POST" && (action.path === "/sales" || action.path === "/purchases")) {
@@ -365,7 +365,7 @@ export class OutboxProcessor {
         }
       } else {
         const errBody = await response.json().catch(() => ({}));
-        await markSyncActionStatus(action.id, "failed", true, errBody?.message ?? `HTTP ${response.status}`);
+        await markSyncActionStatus(action.id, "failed", true, `HTTP ${response.status}: ${errBody?.message ?? response.statusText ?? ""}`);
       }
     } catch (err) {
       await markSyncActionStatus(action.id, "failed", true, String(err));

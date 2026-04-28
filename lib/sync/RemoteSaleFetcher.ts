@@ -1,5 +1,6 @@
 import { api, getLastServerTime, Sale } from "../api";
 import {
+  getDb,
   getSalesLastSyncedAt,
   insertOrUpdateRemoteSales,
   setSalesLastSyncedAt,
@@ -8,6 +9,8 @@ import {
 export interface SaleFetcherDeps {
   token: string;
   shopId: number | undefined;
+  role?: string;
+  userId?: number;
 }
 
 /**
@@ -57,6 +60,16 @@ export class RemoteSaleFetcher {
 
       const serverTime = getLastServerTime();
       await setSalesLastSyncedAt(serverTime ?? new Date().toISOString());
+
+      // Clean up cross-user sales for Seller role
+      const { role, userId, shopId: currentShopId } = this.deps();
+      if (role === "seller" && userId && currentShopId) {
+        const db = getDb();
+        await db.runAsync(
+          "DELETE FROM sales WHERE user_id IS NOT NULL AND user_id != ? AND shop_id = ?",
+          [userId, currentShopId]
+        );
+      }
     } catch (error) {
       console.error("Failed to fetch remote sales:", error);
     }

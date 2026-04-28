@@ -10,22 +10,53 @@ if (Platform.OS !== 'web') {
   DateTimePicker = require('@react-native-community/datetimepicker').default;
 }
 
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalDate(value?: string | null) {
+  if (!value) return new Date();
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return new Date();
+  return new Date(year, month - 1, day);
+}
+
 export function CustomPeriodModal({
   visible,
   onClose,
   onApply,
+  initialFrom,
+  initialTo,
 }: {
   visible: boolean;
   onClose: () => void;
   onApply: (from: string, to: string) => void;
+  initialFrom?: string | null;
+  initialTo?: string | null;
 }) {
   const [from, setFrom] = React.useState(new Date());
   const [to, setTo] = React.useState(new Date());
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!visible) return;
+    setFrom(parseLocalDate(initialFrom));
+    setTo(parseLocalDate(initialTo));
+    setError("");
+  }, [visible, initialFrom, initialTo]);
 
   const handleApply = () => {
+    if (from.getTime() > to.getTime()) {
+      setError("Дата начала не может быть позже даты окончания.");
+      return;
+    }
+
     onApply(
-      from.toISOString().split("T")[0],
-      to.toISOString().split("T")[0]
+      formatLocalDate(from),
+      formatLocalDate(to)
     );
     onClose();
   };
@@ -41,14 +72,23 @@ export function CustomPeriodModal({
             </TouchableOpacity>
           </View>
 
+          {!!error && (
+            <View className="mb-4 rounded-xl bg-red-50 p-3 dark:bg-red-900/20">
+              <Text className="text-sm text-red-600">{error}</Text>
+            </View>
+          )}
+
           {Platform.OS === 'web' ? (
             <View className="gap-5 mb-8">
               <View>
                 <Text className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">От</Text>
                 <input 
                   type="date" 
-                  value={from.toISOString().split("T")[0]}
-                  onChange={(e) => setFrom(new Date(e.target.value))}
+                  value={formatLocalDate(from)}
+                  onChange={(e) => {
+                    setFrom(parseLocalDate(e.target.value));
+                    if (error) setError("");
+                  }}
                   style={{ padding: 10, borderRadius: 10, border: '1px solid #e2e8f0', width: '100%', fontSize: 16 }}
                 />
               </View>
@@ -56,8 +96,11 @@ export function CustomPeriodModal({
                 <Text className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">До</Text>
                 <input 
                   type="date" 
-                  value={to.toISOString().split("T")[0]}
-                  onChange={(e) => setTo(new Date(e.target.value))}
+                  value={formatLocalDate(to)}
+                  onChange={(e) => {
+                    setTo(parseLocalDate(e.target.value));
+                    if (error) setError("");
+                  }}
                   style={{ padding: 10, borderRadius: 10, border: '1px solid #e2e8f0', width: '100%', fontSize: 16 }}
                 />
               </View>
@@ -71,7 +114,12 @@ export function CustomPeriodModal({
                     value={from}
                     mode="date"
                     display="default"
-                    onChange={(e: any, d?: Date) => d && setFrom(d)}
+                    onChange={(e: any, d?: Date) => {
+                      if (d) {
+                        setFrom(d);
+                        if (error) setError("");
+                      }
+                    }}
                   />
                 )}
               </View>
@@ -82,7 +130,12 @@ export function CustomPeriodModal({
                     value={to}
                     mode="date"
                     display="default"
-                    onChange={(e: any, d?: Date) => d && setTo(d)}
+                    onChange={(e: any, d?: Date) => {
+                      if (d) {
+                        setTo(d);
+                        if (error) setError("");
+                      }
+                    }}
                   />
                 )}
               </View>

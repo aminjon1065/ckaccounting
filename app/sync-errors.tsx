@@ -105,7 +105,7 @@ export default function SyncErrorsScreen() {
           text: "Удалить все",
           style: "destructive",
           onPress: async () => {
-            await archiveSyncActions("'failed', 'dead'");
+            await archiveSyncActions(["failed", "dead"]);
             await refreshPendingActions();
           },
         },

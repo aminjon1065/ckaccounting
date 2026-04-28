@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as LocalAuthentication from "expo-local-authentication";
 import { AppState, type AppStateStatus, Platform } from "react-native";
+import { isBiometricRelockSuppressed } from "@/lib/biometricRelock";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,9 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
 
       if (next === "active" && wasInBackground.current) {
         wasInBackground.current = false;
+        if (isBiometricRelockSuppressed()) {
+          return;
+        }
         const caps = capabilitiesRef.current;
         if (caps?.hasHardware && caps?.isEnrolled) {
           setErrorMessage(null);

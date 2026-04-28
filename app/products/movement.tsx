@@ -48,6 +48,13 @@ const MOVEMENT_CONFIG: Record<
     iconColor: "#3b82f6",
     sign: "−",
   },
+  return: {
+    label: "Возврат",
+    icon: "undo",
+    bg: "bg-amber-50 dark:bg-amber-900/20",
+    iconColor: "#f59e0b",
+    sign: "+",
+  },
   write_off: {
     label: "Списание",
     icon: "remove-circle-outline",
@@ -139,16 +146,25 @@ export default function ProductMovementScreen() {
   const [currentStock, setCurrentStock] = React.useState<number | null>(null);
   const [movements, setMovements] = React.useState<ProductMovement[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
   const [error, setError] = React.useState("");
   const [isOffline, setIsOffline] = React.useState(false);
+  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
+  const [hasMore, setHasMore] = React.useState(false);
 
-  const fetchMovements = React.useCallback(async () => {
+  const fetchMovements = React.useCallback(async (cursor?: string) => {
     if (!token || !id) return;
     setError("");
     try {
-      const data = await api.products.movements(Number(id), token);
+      const data = await api.products.movements(Number(id), token, { cursor });
       setCurrentStock(data.current_stock);
-      setMovements(data.movements);
+      setNextCursor(data.next_cursor ?? null);
+      setHasMore(!!data.next_cursor);
+      if (cursor) {
+        setMovements((prev) => [...prev, ...data.movements]);
+      } else {
+        setMovements(data.movements);
+      }
       setIsOffline(false);
     } catch (e: any) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
@@ -160,6 +176,12 @@ export default function ProductMovementScreen() {
       }
     }
   }, [id, token]);
+
+  const loadMore = React.useCallback(() => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    fetchMovements(nextCursor).finally(() => setLoadingMore(false));
+  }, [nextCursor, loadingMore, fetchMovements]);
 
   React.useEffect(() => {
     fetchMovements().finally(() => setLoading(false));
@@ -185,7 +207,7 @@ export default function ProductMovementScreen() {
       {/* Sub-header: summary strip */}
       {!loading && !error && movements.length > 0 && (
         <View className="flex-row bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800 px-4 py-2 gap-4">
-          {(["purchase", "sale", "write_off"] as ProductMovementType[]).map((t) => {
+          {((["purchase", "sale", "return", "write_off"]) as ProductMovementType[]).map((t) => {
             const cfg = MOVEMENT_CONFIG[t];
             const count = movements.filter((m) => m.type === t).length;
             return (
@@ -237,6 +259,15 @@ export default function ProductMovementScreen() {
           contentContainerStyle={{ paddingBottom: 32 }}
           showsVerticalScrollIndicator={false}
           ItemSeparatorComponent={() => null}
+          onEndReached={hasMore ? loadMore : undefined}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            loadingMore ? (
+              <View className="items-center py-4">
+                <Text variant="muted" className="text-sm">Загрузка...</Text>
+              </View>
+            ) : null
+          }
         />
       )}
     </SafeAreaView>

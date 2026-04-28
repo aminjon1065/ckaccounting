@@ -106,12 +106,17 @@ export default function SettingsScreen() {
         {/* Records */}
         <Card>
           <CardContent className="p-0 pt-0 pb-0">
-            <SettingsRow
-              icon="people"
-              label="Долги"
-              description="Учёт долгов"
-              onPress={() => router.push("/debts")}
-            />
+            {can(user?.role, "debts:view") && (
+              <>
+                <SettingsRow
+                  icon="people"
+                  label="Долги"
+                  description="Учёт долгов"
+                  onPress={() => router.push("/debts")}
+                />
+                <Separator className="ml-16" />
+              </>
+            )}
             {can(user?.role, "purchases:view") && (
               <>
                 <Separator className="ml-16" />
@@ -203,7 +208,7 @@ export default function SettingsScreen() {
               onPress={() =>
                 Alert.alert("Выход", "Вы уверены, что хотите выйти?", [
                   { text: "Отмена", style: "cancel" },
-                  { text: "Выйти", style: "destructive", onPress: signOut },
+                  { text: "Выйти", style: "destructive", onPress: () => signOut() },
                 ])
               }
             />

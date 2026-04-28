@@ -9,6 +9,7 @@ export type Action =
   | "products:delete"
   | "sales:view"
   | "sales:create"
+  | "sales:return"
   | "expenses:view"
   | "expenses:create"
   | "expenses:edit"
@@ -18,6 +19,7 @@ export type Action =
   | "debts:view"
   | "debts:create"
   | "debts:addTransaction"
+  | "debts:delete"
   | "reports:view"
   | "settings:viewShop"
   | "settings:editShop"
@@ -33,6 +35,7 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "products:delete":      ["super_admin", "owner"],
   "sales:view":           ["super_admin", "owner", "seller"],
   "sales:create":         ["super_admin", "owner", "seller"],
+  "sales:return":         ["super_admin", "owner"],
   "expenses:view":        ["super_admin", "owner"],
   "expenses:create":      ["super_admin", "owner"],
   "expenses:edit":        ["super_admin", "owner"],
@@ -40,8 +43,9 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "purchases:view":       ["super_admin", "owner"],
   "purchases:create":     ["super_admin", "owner"],
   "debts:view":           ["super_admin", "owner", "seller"],
-  "debts:create":         ["super_admin", "owner"],
-  "debts:addTransaction": ["super_admin", "owner"],
+  "debts:create":         ["super_admin", "owner", "seller"],
+  "debts:addTransaction": ["super_admin", "owner", "seller"],
+  "debts:delete":         ["super_admin", "owner"],
   "reports:view":         ["super_admin", "owner"],
   "settings:viewShop":    ["super_admin", "owner"],
   "settings:editShop":    ["super_admin", "owner"],

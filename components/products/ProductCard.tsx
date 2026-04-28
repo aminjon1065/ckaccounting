@@ -1,7 +1,6 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { Image } from "expo-image";
 import * as React from "react";
-import { Alert, TouchableOpacity, View } from "react-native";
+import { Alert, Image, type ImageSourcePropType, TouchableOpacity, View } from "react-native";
 import { Badge, Text } from "@/components/ui";
 import { resolveBackendAssetUrl, type Product } from "@/lib/api";
 
@@ -41,6 +40,7 @@ interface ProductCardProps {
   onEdit: () => void;
   onDelete: () => void;
   canEdit: boolean;
+  token?: string | null;
 }
 
 export function ProductCard({
@@ -49,12 +49,17 @@ export function ProductCard({
   onEdit,
   onDelete,
   canEdit,
+  token,
 }: ProductCardProps) {
   const isLow =
     item.low_stock_alert != null && item.stock_quantity <= item.low_stock_alert;
   const isOut = item.stock_quantity === 0;
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(item.photo_url ?? item.image_url ?? null);
+  const imageSource = React.useMemo<ImageSourcePropType | undefined>(() => {
+    if (!imageUri) return undefined;
+    return { uri: imageUri };
+  }, [imageUri]);
 
   React.useEffect(() => {
     setImageFailed(false);
@@ -76,12 +81,11 @@ export function ProductCard({
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 shadow-sm border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-center gap-3 mb-2">
-        {imageUri && !imageFailed ? (
+        {imageSource && !imageFailed ? (
           <Image
-            source={{ uri: imageUri }}
+            source={imageSource}
             style={{ width: 52, height: 52, borderRadius: 10 }}
-            contentFit="cover"
-            transition={120}
+            resizeMode="cover"
             onError={() => setImageFailed(true)}
           />
         ) : (

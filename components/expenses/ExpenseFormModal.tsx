@@ -1,4 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import * as Crypto from "expo-crypto";
 import * as React from "react";
 import {
   KeyboardAvoidingView,
@@ -79,7 +80,7 @@ export function ExpenseFormModal({
     if (note.trim()) payload.note = note.trim();
 
     setSubmitting(true);
-    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    const idempotencyKey = await Crypto.randomUUID();
     try {
       const saved = editing
         ? await api.expenses.update(editing.id, payload, token)
@@ -90,7 +91,7 @@ export function ExpenseFormModal({
       if (e instanceof ApiError && e.status === 0) {
         const localId = editing
           ? ((editing as LocalExpense).local_id ?? `expense-${editing.id}`)
-          : generateUUID();
+          : await Crypto.randomUUID();
         const now = new Date().toISOString();
         const localExpense: Expense = {
           id: editing ? editing.id : -Date.now(),
@@ -121,14 +122,6 @@ export function ExpenseFormModal({
     return Math.round(n)
       .toString()
       .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  }
-
-  function generateUUID() {
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === "x" ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
   }
 
   return (

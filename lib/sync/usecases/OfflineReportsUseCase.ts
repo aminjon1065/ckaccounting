@@ -192,27 +192,32 @@ export async function computeLocalProfitReport(
     isInDateRange(r.created_at, range)
   );
 
-  for (const sale of filteredSales) {
-    if (sale.type === "product") {
-      const saleLocalId = sale.local_id ?? String(sale.id);
-      const items = await db.getAllAsync<any>(
-        "SELECT * FROM sale_items WHERE sale_local_id = ?",
-        [saleLocalId]
-      );
-      for (const item of items) {
-        // cost = unit_price - (unit_price * markup / 100) approximation
-        // Since we don't store cost per sale item, we use a best-effort estimate:
-        // We use the product's cost_price from the products table
-        if (item.product_id) {
-          const product = await db.getFirstAsync<any>(
-            "SELECT cost_price FROM products WHERE id = ?",
-            [item.product_id]
-          );
-          if (product) {
-            totalCost += (product.cost_price ?? 0) * item.quantity;
-          }
-        }
-      }
+  // Batch-fetch all sale items and product costs to avoid N+1 queries
+  const productSaleLocalIds = filteredSales
+    .filter(s => s.type === "product")
+    .map(s => s.local_id ?? String(s.id));
+
+  let allSaleItems: any[] = [];
+  if (productSaleLocalIds.length > 0) {
+    allSaleItems = await db.getAllAsync<any>(
+      `SELECT * FROM sale_items WHERE sale_local_id IN (${productSaleLocalIds.map(() => "?").join(",")})`,
+      productSaleLocalIds
+    );
+  }
+
+  // Batch-fetch all needed product cost prices in one query
+  const allProductIds = [...new Set(allSaleItems.map((i: any) => i.product_id).filter(Boolean))];
+  const products = allProductIds.length > 0
+    ? await db.getAllAsync<{ id: number; cost_price: number }>(
+        `SELECT id, cost_price FROM products WHERE id IN (${allProductIds.map(() => "?").join(",")})`,
+        allProductIds
+      )
+    : [];
+  const productCostMap = new Map(products.map(p => [p.id, p.cost_price ?? 0]));
+
+  for (const item of allSaleItems) {
+    if (item.product_id) {
+      totalCost += (productCostMap.get(item.product_id) ?? 0) * item.quantity;
     }
   }
 
@@ -254,8 +259,8 @@ export async function computeLocalStockReport(
 
   for (const p of rows) {
     const qty = p.stock_quantity ?? 0;
-    const salePrice = p.sale_price ?? 0;
-    const value = qty * salePrice;
+    const costPrice = p.cost_price ?? 0;
+    const value = qty * costPrice;
 
     totalProducts++;
     totalValue += value;
@@ -271,7 +276,7 @@ export async function computeLocalStockReport(
       id: p.id,
       name: p.name,
       stock_quantity: qty,
-      sale_price: salePrice,
+      sale_price: p.sale_price ?? 0,
       value,
     });
   }

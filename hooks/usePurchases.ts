@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Purchase } from "@/lib/api";
 import { getLocalPurchases, type LocalPurchase } from "@/lib/db";
 
-export function usePurchases({ token }: { token: string | null }) {
+export function usePurchases({ token, shopId }: { token: string | null; shopId?: number | null }) {
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -18,7 +18,7 @@ export function usePurchases({ token }: { token: string | null }) {
     setError("");
 
     // Always load local purchases first — instant, always works
-    const localPurchases = await getLocalPurchases();
+    const localPurchases = await getLocalPurchases(shopId ?? undefined);
 
     try {
       const res = await api.purchases.list(token, { page: pg });

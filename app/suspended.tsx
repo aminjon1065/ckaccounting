@@ -28,9 +28,18 @@ export default function ShopSuspendedScreen() {
         className="mt-8 w-full"
         size="lg"
         variant="outline"
-        onPress={signOut}
+        onPress={() => signOut(false)}
       >
         Выйти из аккаунта
+      </Button>
+
+      <Button
+        className="mt-3 w-full"
+        size="lg"
+        variant="ghost"
+        onPress={() => signOut(true)}
+      >
+        Выйти и удалить локальные данные
       </Button>
     </SafeAreaView>
   );

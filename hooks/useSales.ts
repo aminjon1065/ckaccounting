@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Sale } from "@/lib/api";
 import { getLocalSales } from "@/lib/db";
 
-export function useSales({ token }: { token: string | null }) {
+export function useSales({ token, userId, isSeller }: { token: string | null; userId?: number | null; isSeller?: boolean }) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -18,7 +18,11 @@ export function useSales({ token }: { token: string | null }) {
     setError("");
 
     // Always load local sales first — instant, always works
-    const localSales = await getLocalSales();
+    // Pass userId for Sellers so the DB query itself filters to own sales
+    const localSales = await getLocalSales(undefined, isSeller && userId ? userId : undefined);
+
+    // filteredLocal is already scoped by userId when isSeller
+    const filteredLocal = localSales;
 
     try {
       const res = await api.sales.list(token, { page: pg });
@@ -26,7 +30,7 @@ export function useSales({ token }: { token: string | null }) {
 
       if (reset) {
         // Merge: server data first, then any local-only records (sync_action != 'none')
-        const merged = mergeSales(localSales, res.data);
+        const merged = mergeSales(filteredLocal, res.data);
         setSales(merged);
         setPage(2);
       } else {
@@ -40,9 +44,9 @@ export function useSales({ token }: { token: string | null }) {
     } catch (e: any) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
       if (isOfflineError) {
-        // Offline: use all local sales
+        // Offline: use only own sales for seller
         setIsOffline(true);
-        setSales(localSales);
+        setSales(filteredLocal);
         setHasMore(false);
       } else {
         if (reset) setError("Не удалось загрузить продажи.");
@@ -98,29 +102,45 @@ function mergeSales(local: Sale[], server: Sale[]): Sale[] {
     serverMap.set(s.id, s);
   }
 
-  // For local sales with negative id, if server has same absolute id, replace with server version
+  // For local sales with negative id, if server has same absolute id, replace with server version.
+  // For positive ids, prefer the freshest server version and don't keep a duplicate local row.
   const result: Sale[] = [];
+  const seenKeys = new Set<string>();
+
+  const pushUnique = (sale: Sale) => {
+    const localId = (sale as { local_id?: string | null }).local_id;
+    const key = localId ? `local:${localId}` : `id:${sale.id}`;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    result.push(sale);
+  };
+
   for (const l of local) {
     if (l.id < 0) {
       // Local pending — check if server has a matching record
       const absId = Math.abs(l.id);
       if (serverMap.has(absId)) {
         // Server version supersedes local pending
-        result.push(serverMap.get(absId)!);
+        pushUnique(serverMap.get(absId)!);
         serverMap.delete(absId);
       } else {
         // No server counterpart yet — keep local pending
-        result.push(l);
+        pushUnique(l);
       }
     } else {
-      // Local with positive id — treat as server record
-      result.push(l);
+      // Local with positive id mirrors a server record; if server has it, prefer server.
+      if (serverMap.has(l.id)) {
+        pushUnique(serverMap.get(l.id)!);
+        serverMap.delete(l.id);
+      } else {
+        pushUnique(l);
+      }
     }
   }
 
   // Add remaining server records
   for (const s of serverMap.values()) {
-    result.push(s);
+    pushUnique(s);
   }
 
   // Sort by created_at desc

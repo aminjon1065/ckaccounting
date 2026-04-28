@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { useSegments } from "expo-router";
 import {
   ActivityIndicator,
   Platform,
@@ -41,8 +42,10 @@ interface BiometricGuardProps {
  * Fallback: When biometric fails and PIN is set, shows PIN entry screen.
  */
 export function BiometricGuard({ children }: BiometricGuardProps) {
-  const { token, verifyPin, hasPin } = useAuth();
+  const { token, verifyPin, hasPin, pinSetupPending } = useAuth();
+  const segments = useSegments();
   const isEnabled = !!token;
+  const inAuthGroup = segments[0] === "(auth)";
 
   const { status, capabilities, authenticate, errorMessage } =
     useBiometricAuth(isEnabled);
@@ -97,7 +100,7 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
 
   // ── Pass-through cases ────────────────────────────────────────────────────
   // Not logged in: let AuthGuard in _layout handle routing.
-  if (!isEnabled) return <>{children}</>;
+  if (!isEnabled || inAuthGroup || pinSetupPending) return <>{children}</>;
 
   // Biometrics unavailable (no hardware / not enrolled): pass through.
   // Sensitive data is still protected by the server-side token.

@@ -14,7 +14,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 
 import { Card, CardContent, Skeleton, Text } from "@/components/ui";
-import { api,
+import { api, ApiError,
   type ExpensesReport,
   type ProfitReport,
   type SalesReport,
@@ -512,32 +512,38 @@ export default function ReportsScreen() {
         }
       }
     } catch (e: any) {
-      // Offline fallback: try local computation even if online but API call failed
-      try {
-        switch (activeTab) {
-          case "sales": {
-            const data = await computeLocalSalesReport(range, user?.shop_id);
-            setSalesReport(data);
-            break;
+      const isNetworkError = (e instanceof ApiError && e.status === 0) ||
+                             (e?.message?.includes("Network request failed"));
+      if (isNetworkError) {
+        // Offline fallback: compute from local SQLite
+        try {
+          switch (activeTab) {
+            case "sales": {
+              const data = await computeLocalSalesReport(range, user?.shop_id);
+              setSalesReport(data);
+              break;
+            }
+            case "expenses": {
+              const data = await computeLocalExpensesReport(range, user?.shop_id);
+              setExpensesReport(data);
+              break;
+            }
+            case "profit": {
+              const data = await computeLocalProfitReport(range, user?.shop_id);
+              setProfitReport(data);
+              break;
+            }
+            case "stock": {
+              const data = await computeLocalStockReport(user?.shop_id);
+              setStockReport(data);
+              break;
+            }
           }
-          case "expenses": {
-            const data = await computeLocalExpensesReport(range, user?.shop_id);
-            setExpensesReport(data);
-            break;
-          }
-          case "profit": {
-            const data = await computeLocalProfitReport(range, user?.shop_id);
-            setProfitReport(data);
-            break;
-          }
-          case "stock": {
-            const data = await computeLocalStockReport(user?.shop_id);
-            setStockReport(data);
-            break;
-          }
+        } catch {
+          setError("Нет данных для отображения в офлайн режиме.");
         }
-      } catch {
-        setError(e.message ?? "Не удалось загрузить отчёт.");
+      } else {
+        setError(e?.message ?? "Не удалось загрузить отчёт.");
       }
     } finally {
       setLoading(false);
@@ -545,8 +551,9 @@ export default function ReportsScreen() {
   }, [activeTab, dateFrom, dateTo, token, isOnline, user?.shop_id]);
 
   React.useEffect(() => {
+    if (!can(user?.role, "reports:view")) return; // Don't fire API call if no permission
     loadReport();
-  }, [loadReport]);
+  }, [loadReport, user?.role]);
 
   const currentData =
     activeTab === "sales" ? salesReport :

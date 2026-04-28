@@ -1,5 +1,5 @@
 import { Alert, Button, Input, Text } from "@/components/ui";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
 import { Alert as RNAlertDialog } from "react-native";
@@ -17,8 +17,7 @@ import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
 export default function LoginScreen() {
-  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin } = useAuth();
-  const router = useRouter();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending } = useAuth();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 
@@ -73,9 +72,10 @@ export default function LoginScreen() {
       // After successful login, check if PIN is set — if not, prompt setup
       const pinSet = await hasPin();
       if (!pinSet) {
+        setPinSetupPending(true);
         setShowPinSetup(true);
       } else {
-        router.replace("/(tabs)");
+        setPinSetupPending(false);
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
@@ -122,9 +122,10 @@ export default function LoginScreen() {
       setPinVerifyValue("");
       const pinSet = await hasPin();
       if (!pinSet) {
+        setPinSetupPending(true);
         setShowPinSetup(true);
       } else {
-        router.replace("/(tabs)");
+        setPinSetupPending(false);
       }
     } else {
       setError("Не удалось войти офлайн. Проверьте подключение.");
@@ -143,7 +144,7 @@ export default function LoginScreen() {
     setPinError("");
     try {
       await setPin(pinValue);
-      router.replace("/(tabs)");
+      setPinSetupPending(false);
     } catch {
       setPinError("Не удалось сохранить PIN. Попробуйте снова.");
     }
@@ -301,6 +302,7 @@ export default function LoginScreen() {
               <Pressable
                 className="items-center mt-2"
                 onPress={() => {
+                  setPinSetupPending(false);
                   setShowPinSetup(false);
                   setPinValue("");
                   setPinConfirm("");

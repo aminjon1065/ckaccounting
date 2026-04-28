@@ -84,7 +84,7 @@ export default function PurchasesScreen() {
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = usePurchases({ token });
+  } = usePurchases({ token, shopId: user?.shop_id });
 
   const [createVisible, setCreateVisible] = React.useState(false);
 
@@ -167,13 +167,15 @@ export default function PurchasesScreen() {
       )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => setCreateVisible(true)}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      {can(user?.role, "purchases:create") && (
+        <TouchableOpacity
+          onPress={() => setCreateVisible(true)}
+          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
+          style={{ elevation: 6 }}
+        >
+          <MaterialIcons name="add" size={28} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       {/* Create modal */}
       <CreatePurchaseModal

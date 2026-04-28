@@ -12,11 +12,17 @@ export function ProductPicker({
   products,
   onSelect,
   onClose,
+  loadingMore = false,
+  hasMore = false,
+  onLoadMore,
 }: {
   visible: boolean;
   products: Product[];
   onSelect: (p: Product) => void;
   onClose: () => void;
+  loadingMore?: boolean;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const [search, setSearch] = React.useState("");
   const [showScanner, setShowScanner] = React.useState(false);
@@ -103,6 +109,13 @@ export function ProductPicker({
             <Text variant="muted" className="text-center py-10">
               Товары не найдены.
             </Text>
+          }
+          onEndReached={hasMore ? onLoadMore : undefined}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            loadingMore ? (
+              <Text variant="muted" className="text-center py-4">Загрузка…</Text>
+            ) : null
           }
         />
       </SafeAreaView>

@@ -3,6 +3,9 @@ import * as SQLite from "expo-sqlite";
 export const dbName = "ckaccounting.db";
 
 let _db: SQLite.SQLiteDatabase | null = null;
+let _initDbPromise: Promise<void> | null = null;
+
+const DB_LOCK_RETRY_DELAYS_MS = [120, 250, 500, 1000, 1500];
 
 export function getDb(): SQLite.SQLiteDatabase {
   if (!_db) {
@@ -12,12 +15,45 @@ export function getDb(): SQLite.SQLiteDatabase {
 }
 
 export async function initDb() {
+  if (_initDbPromise) {
+    return _initDbPromise;
+  }
+
+  _initDbPromise = performInitDbWithRetry();
+
+  try {
+    await _initDbPromise;
+  } catch (error) {
+    _initDbPromise = null;
+    throw error;
+  }
+}
+
+async function performInitDbWithRetry() {
+  for (let attempt = 0; attempt <= DB_LOCK_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      await performInitDb();
+      return;
+    } catch (error) {
+      if (!isDatabaseLockedError(error) || attempt === DB_LOCK_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      await sleep(DB_LOCK_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+async function performInitDb() {
   const db = getDb();
 
-  // Enable foreign key constraints
-  await db.execAsync("PRAGMA foreign_keys = ON");
+  // Improve concurrent access resilience across foreground/background connections.
+  db.execSync(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
+      PRAGMA foreign_keys = ON;
+    `);
 
-  await db.execAsync(`
+  db.execSync(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY,
       local_id TEXT,
@@ -60,6 +96,7 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS debts (
       id INTEGER PRIMARY KEY,
       shop_id INTEGER,
+      user_id INTEGER,
       person_name TEXT NOT NULL,
       opening_balance REAL DEFAULT 0,
       balance REAL DEFAULT 0,
@@ -175,16 +212,16 @@ export async function initDb() {
   const MIGRATIONS: {
     version: number;
     sql?: string;
-    migrate?: (db: SQLite.SQLiteDatabase) => Promise<void>;
-    check?: (db: SQLite.SQLiteDatabase) => Promise<boolean>;
+    migrate?: (db: SQLite.SQLiteDatabase) => void;
+    check?: (db: SQLite.SQLiteDatabase) => boolean;
   }[] = [
-    { version: 1, sql: "ALTER TABLE products ADD COLUMN pricing_mode TEXT DEFAULT 'fixed';", check: async (db) => !(await columnExists(db, "products", "pricing_mode")) },
-    { version: 2, sql: "ALTER TABLE products ADD COLUMN markup_percent REAL;", check: async (db) => !(await columnExists(db, "products", "markup_percent")) },
-    { version: 3, sql: "ALTER TABLE products ADD COLUMN local_id TEXT;", check: async (db) => !(await columnExists(db, "products", "local_id")) },
-    { version: 4, sql: "ALTER TABLE products ADD COLUMN sync_action TEXT DEFAULT 'none';", check: async (db) => !(await columnExists(db, "products", "sync_action")) },
-    { version: 5, sql: "ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'pending';", check: async (db) => !(await columnExists(db, "products", "status")) },
-    { version: 6, sql: "ALTER TABLE purchases ADD COLUMN shop_id INTEGER;", check: async (db) => !(await columnExists(db, "purchases", "shop_id")) },
-    { version: 7, sql: "ALTER TABLE products ADD COLUMN created_at TEXT;", check: async (db) => !(await columnExists(db, "products", "created_at")) },
+    { version: 1, sql: "ALTER TABLE products ADD COLUMN pricing_mode TEXT DEFAULT 'fixed';", check: (db) => !columnExists(db, "products", "pricing_mode") },
+    { version: 2, sql: "ALTER TABLE products ADD COLUMN markup_percent REAL;", check: (db) => !columnExists(db, "products", "markup_percent") },
+    { version: 3, sql: "ALTER TABLE products ADD COLUMN local_id TEXT;", check: (db) => !columnExists(db, "products", "local_id") },
+    { version: 4, sql: "ALTER TABLE products ADD COLUMN sync_action TEXT DEFAULT 'none';", check: (db) => !columnExists(db, "products", "sync_action") },
+    { version: 5, sql: "ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'pending';", check: (db) => !columnExists(db, "products", "status") },
+    { version: 6, sql: "ALTER TABLE purchases ADD COLUMN shop_id INTEGER;", check: (db) => !columnExists(db, "purchases", "shop_id") },
+    { version: 7, sql: "ALTER TABLE products ADD COLUMN created_at TEXT;", check: (db) => !columnExists(db, "products", "created_at") },
     // Purge stale queue entries created with negative temp IDs (PATCH /entity/-timestamp)
     { version: 8, sql: "DELETE FROM sync_queue WHERE path LIKE '%/-%'" },
     // Re-run purge in case version 8 was recorded with the broken SQL
@@ -195,28 +232,28 @@ export async function initDb() {
         key TEXT PRIMARY KEY,
         value TEXT
       );
-    `, check: async (db) => !(await columnExists(db, "sync_metadata", "key")) },
+    `, check: (db) => !columnExists(db, "sync_metadata", "key") },
     // Migration v11: pending_stock_delta for race condition protection (replaces pending_sale_decrement)
-    { version: 11, sql: "ALTER TABLE products ADD COLUMN pending_stock_delta INTEGER DEFAULT 0;", check: async (db) => !(await columnExists(db, "products", "pending_stock_delta")) },
+    { version: 11, sql: "ALTER TABLE products ADD COLUMN pending_stock_delta INTEGER DEFAULT 0;", check: (db) => !columnExists(db, "products", "pending_stock_delta") },
     // Migration v12: indexes + last_error + batch_id columns for sync_queue
     {
       version: 12,
-      migrate: async (db) => {
-        await ensureSyncQueueColumns(db);
-        await db.execAsync(`
+      migrate: (db) => {
+        ensureSyncQueueColumns(db);
+        db.execSync(`
           CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at);
           CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
         `);
       },
-      check: async (db) =>
-        !(await columnExists(db, "sync_queue", "last_error")) ||
-        !(await columnExists(db, "sync_queue", "batch_id")) ||
-        !(await columnExists(db, "sync_queue", "idempotency_key")) ||
-        !(await indexExists(db, "idx_products_updated_at")) ||
-        !(await indexExists(db, "idx_sales_created_at")),
+      check: (db) =>
+        !columnExists(db, "sync_queue", "last_error") ||
+        !columnExists(db, "sync_queue", "batch_id") ||
+        !columnExists(db, "sync_queue", "idempotency_key") ||
+        !indexExists(db, "idx_products_updated_at") ||
+        !indexExists(db, "idx_sales_created_at"),
     },
     // Migration v13: version column for optimistic locking
-    { version: 13, sql: "ALTER TABLE products ADD COLUMN version INTEGER DEFAULT 1;", check: async (db) => !(await columnExists(db, "products", "version")) },
+    { version: 13, sql: "ALTER TABLE products ADD COLUMN version INTEGER DEFAULT 1;", check: (db) => !columnExists(db, "products", "version") },
     // Migration v14: normalize sales.items JSON → sale_items table for queryability
     { version: 14, sql: `
       CREATE TABLE IF NOT EXISTS sale_items (
@@ -224,6 +261,7 @@ export async function initDb() {
         sale_local_id TEXT NOT NULL,
         product_id INTEGER,
         product_name TEXT NOT NULL,
+        unit TEXT,
         quantity REAL NOT NULL,
         unit_price REAL NOT NULL,
         total REAL NOT NULL,
@@ -231,147 +269,170 @@ export async function initDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
       CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_local_id);
-    `, check: async (db) => !(await columnExists(db, "sale_items", "sale_local_id")) },
+    `, check: (db) => !columnExists(db, "sale_items", "sale_local_id") },
     // Migration v15: version column for optimistic locking on debts and sales
-    { version: 15, sql: "ALTER TABLE debts ADD COLUMN version INTEGER DEFAULT 1;", check: async (db) => !(await columnExists(db, "debts", "version")) },
-    { version: 16, sql: "ALTER TABLE sales ADD COLUMN version INTEGER DEFAULT 1;", check: async (db) => !(await columnExists(db, "sales", "version")) },
+    { version: 15, sql: "ALTER TABLE debts ADD COLUMN version INTEGER DEFAULT 1;", check: (db) => !columnExists(db, "debts", "version") },
+    { version: 16, sql: "ALTER TABLE sales ADD COLUMN version INTEGER DEFAULT 1;", check: (db) => !columnExists(db, "sales", "version") },
     // Migration v17: add index on products.shop_id for faster filtering on multi-shop queries
-    { version: 17, sql: "CREATE INDEX IF NOT EXISTS idx_products_shop_id ON products(shop_id);", check: async (db) => !(await indexExists(db, "idx_products_shop_id")) },
+    { version: 17, sql: "CREATE INDEX IF NOT EXISTS idx_products_shop_id ON products(shop_id);", check: (db) => !indexExists(db, "idx_products_shop_id") },
     // Migration v18: add foreign key for sale_items → sales
-    { version: 18, sql: "CREATE TABLE IF NOT EXISTS sale_items (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        sale_local_id TEXT NOT NULL,\n        product_id INTEGER,\n        product_name TEXT NOT NULL,\n        quantity REAL NOT NULL,\n        unit_price REAL NOT NULL,\n        total REAL NOT NULL,\n        created_at TEXT\n      );", check: async (db) => !(await columnExists(db, "sale_items", "sale_local_id")) },
+    { version: 18, sql: "CREATE TABLE IF NOT EXISTS sale_items (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        sale_local_id TEXT NOT NULL,\n        product_id INTEGER,\n        product_name TEXT NOT NULL,\n        unit TEXT,\n        quantity REAL NOT NULL,\n        unit_price REAL NOT NULL,\n        total REAL NOT NULL,\n        created_at TEXT\n      );", check: (db) => !columnExists(db, "sale_items", "sale_local_id") },
     // Migration v19: store money in integer minor units (kopecks) to avoid floating-point drift.
     // New _kopecks columns coexist with existing REAL columns during the transition.
     // Backfill populates them from existing REAL values × 100.
     {
       version: 19,
       migrate: ensureAccountingMoneyColumns,
-      check: async (db) =>
-        !(await columnExists(db, "products", "cost_price_kopecks")) ||
-        !(await columnExists(db, "products", "sale_price_kopecks")) ||
-        !(await columnExists(db, "debts", "balance_kopecks")) ||
-        !(await columnExists(db, "sales", "total_kopecks")) ||
-        !(await columnExists(db, "expenses", "total_kopecks")) ||
-        !(await columnExists(db, "purchases", "total_kopecks")) ||
-        ((await tableExists(db, "sale_items")) && !(await columnExists(db, "sale_items", "total_kopecks"))),
+      check: (db) =>
+        !columnExists(db, "products", "cost_price_kopecks") ||
+        !columnExists(db, "products", "sale_price_kopecks") ||
+        !columnExists(db, "debts", "balance_kopecks") ||
+        !columnExists(db, "sales", "total_kopecks") ||
+        !columnExists(db, "expenses", "total_kopecks") ||
+        !columnExists(db, "purchases", "total_kopecks") ||
+        (tableExists(db, "sale_items") && !columnExists(db, "sale_items", "total_kopecks")),
     },
     // Migration v20: add local_id and sync_action columns to debts, purchases, and debt_transactions
     // for dirty-state tracking so remote upsert doesn't blindly overwrite pending local changes.
     {
       version: 20,
       migrate: ensureAccountingDirtyStateColumns,
-      check: async (db) =>
-        !(await columnExists(db, "debts", "local_id")) ||
-        !(await columnExists(db, "debts", "sync_action")) ||
-        !(await columnExists(db, "purchases", "local_id")) ||
-        !(await columnExists(db, "purchases", "sync_action")) ||
-        !(await columnExists(db, "debt_transactions", "local_id")) ||
-        !(await columnExists(db, "debt_transactions", "sync_action")),
+      check: (db) =>
+        !columnExists(db, "debts", "local_id") ||
+        !columnExists(db, "debts", "sync_action") ||
+        !columnExists(db, "purchases", "local_id") ||
+        !columnExists(db, "purchases", "sync_action") ||
+        !columnExists(db, "debt_transactions", "local_id") ||
+        !columnExists(db, "debt_transactions", "sync_action"),
     },
     // Migration v21: archived_at column for sync_queue audit trail.
     // Failed/dead rows are no longer physically deleted — they are soft-deleted
     // by setting archived_at so deleted rows can be audited if needed.
-    { version: 21, migrate: ensureSyncQueueColumns, check: async (db) => !(await columnExists(db, "sync_queue", "archived_at")) },
+    { version: 21, migrate: ensureSyncQueueColumns, check: (db) => !columnExists(db, "sync_queue", "archived_at") },
+    // Migration v22: sale_items.unit for sale detail/report queries.
+    { version: 22, migrate: ensureSaleItemsColumns, check: (db) => !columnExists(db, "sale_items", "unit") },
+    // Migration v23: user_id column on debts for seller-scoped visibility.
+    { version: 23, sql: "ALTER TABLE debts ADD COLUMN user_id INTEGER;", check: (db) => !columnExists(db, "debts", "user_id") },
   ];
 
-  await db.execAsync(`
+  db.execSync(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY
     );
   `);
 
-  const row = await db.getFirstAsync<{ version: number }>("SELECT MAX(version) AS version FROM schema_version");
+  const row = db.getFirstSync<{ version: number }>("SELECT MAX(version) AS version FROM schema_version");
   let currentVersion = row?.version ?? 0;
 
   // Run all pending migrations atomically: if the app is killed mid-migration,
   // the transaction is rolled back and schema_version is not updated, so
   // migrations will re-run safely on next launch.
-  await db.withTransactionAsync(async () => {
+  db.withTransactionSync(() => {
     for (const migration of MIGRATIONS) {
       if (migration.version > currentVersion) {
-        const needsMigration = migration.check ? await migration.check(db) : true;
+        const needsMigration = migration.check ? migration.check(db) : true;
         if (needsMigration) {
           if (migration.migrate) {
-            await migration.migrate(db);
+            migration.migrate(db);
           } else if (migration.sql) {
-            await db.execAsync(migration.sql);
+            db.execSync(migration.sql);
           }
         }
-        await db.runAsync("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", [migration.version]);
+        db.runSync("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", [migration.version]);
       }
     }
   });
 
-  await ensureSyncQueueColumns(db);
-  await ensureAccountingSyncColumns(db);
+  ensureSyncQueueColumns(db);
+  ensureAccountingSyncColumns(db);
+  ensureSaleItemsColumns(db);
 
-  // Reset any rows stuck as 'processing' from a previous crashed session.
-  // This must run after sync_queue repair because older DBs may not have batch_id.
-  await db.runAsync(
+    // Reset any rows stuck as 'processing' from a previous crashed session.
+    // This must run after sync_queue repair because older DBs may not have batch_id.
+  db.runSync(
     "UPDATE sync_queue SET status = 'pending', batch_id = NULL WHERE status = 'processing'"
   );
 }
 
-async function columnExists(db: SQLite.SQLiteDatabase, table: string, column: string): Promise<boolean> {
-  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+function isDatabaseLockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /database is locked/i.test(error.message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function columnExists(db: SQLite.SQLiteDatabase, table: string, column: string): boolean {
+  const cols = db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
   return cols.some(c => c.name === column);
 }
 
-async function addColumnIfMissing(
+function addColumnIfMissing(
   db: SQLite.SQLiteDatabase,
   table: string,
   column: string,
   definition: string
-): Promise<void> {
-  if (!(await columnExists(db, table, column))) {
-    await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+): void {
+  if (!columnExists(db, table, column)) {
+    db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
   }
 }
 
-async function ensureSyncQueueColumns(db: SQLite.SQLiteDatabase): Promise<void> {
-  await addColumnIfMissing(db, "sync_queue", "last_error", "TEXT");
-  await addColumnIfMissing(db, "sync_queue", "batch_id", "TEXT");
-  await addColumnIfMissing(db, "sync_queue", "idempotency_key", "TEXT");
-  await addColumnIfMissing(db, "sync_queue", "archived_at", "TEXT");
-  await db.execAsync(`
+function ensureSyncQueueColumns(db: SQLite.SQLiteDatabase): void {
+  addColumnIfMissing(db, "sync_queue", "last_error", "TEXT");
+  addColumnIfMissing(db, "sync_queue", "batch_id", "TEXT");
+  addColumnIfMissing(db, "sync_queue", "idempotency_key", "TEXT");
+  addColumnIfMissing(db, "sync_queue", "archived_at", "TEXT");
+  db.execSync(`
     CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_archived_status ON sync_queue(archived_at, status, created_at);
   `);
 }
 
-async function ensureAccountingMoneyColumns(db: SQLite.SQLiteDatabase): Promise<void> {
-  await addColumnIfMissing(db, "products", "cost_price_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "products", "sale_price_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "products", "bulk_price_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "debts", "opening_balance_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "debts", "balance_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "debt_transactions", "amount_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "sales", "total_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "sales", "discount_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "sales", "paid_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "sales", "debt_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "expenses", "price_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "expenses", "total_kopecks", "INTEGER");
-  await addColumnIfMissing(db, "purchases", "total_kopecks", "INTEGER");
+function ensureAccountingMoneyColumns(db: SQLite.SQLiteDatabase): void {
+  addColumnIfMissing(db, "products", "cost_price_kopecks", "INTEGER");
+  addColumnIfMissing(db, "products", "sale_price_kopecks", "INTEGER");
+  addColumnIfMissing(db, "products", "bulk_price_kopecks", "INTEGER");
+  addColumnIfMissing(db, "debts", "opening_balance_kopecks", "INTEGER");
+  addColumnIfMissing(db, "debts", "balance_kopecks", "INTEGER");
+  addColumnIfMissing(db, "debt_transactions", "amount_kopecks", "INTEGER");
+  addColumnIfMissing(db, "sales", "total_kopecks", "INTEGER");
+  addColumnIfMissing(db, "sales", "discount_kopecks", "INTEGER");
+  addColumnIfMissing(db, "sales", "paid_kopecks", "INTEGER");
+  addColumnIfMissing(db, "sales", "debt_kopecks", "INTEGER");
+  addColumnIfMissing(db, "expenses", "price_kopecks", "INTEGER");
+  addColumnIfMissing(db, "expenses", "total_kopecks", "INTEGER");
+  addColumnIfMissing(db, "purchases", "total_kopecks", "INTEGER");
 
-  if (await tableExists(db, "sale_items")) {
-    await addColumnIfMissing(db, "sale_items", "unit_price_kopecks", "INTEGER");
-    await addColumnIfMissing(db, "sale_items", "total_kopecks", "INTEGER");
+  if (tableExists(db, "sale_items")) {
+    addColumnIfMissing(db, "sale_items", "unit_price_kopecks", "INTEGER");
+    addColumnIfMissing(db, "sale_items", "total_kopecks", "INTEGER");
   }
 
-  await backfillAccountingMoneyColumns(db);
+  backfillAccountingMoneyColumns(db);
 }
 
-async function ensureAccountingDirtyStateColumns(db: SQLite.SQLiteDatabase): Promise<void> {
-  await addColumnIfMissing(db, "debts", "local_id", "TEXT");
-  await addColumnIfMissing(db, "debts", "sync_action", "TEXT DEFAULT 'none'");
-  await addColumnIfMissing(db, "purchases", "local_id", "TEXT");
-  await addColumnIfMissing(db, "purchases", "sync_action", "TEXT DEFAULT 'none'");
-  await addColumnIfMissing(db, "debt_transactions", "local_id", "TEXT");
-  await addColumnIfMissing(db, "debt_transactions", "sync_action", "TEXT DEFAULT 'none'");
+function ensureAccountingDirtyStateColumns(db: SQLite.SQLiteDatabase): void {
+  addColumnIfMissing(db, "debts", "local_id", "TEXT");
+  addColumnIfMissing(db, "debts", "sync_action", "TEXT DEFAULT 'none'");
+  addColumnIfMissing(db, "purchases", "local_id", "TEXT");
+  addColumnIfMissing(db, "purchases", "sync_action", "TEXT DEFAULT 'none'");
+  addColumnIfMissing(db, "debt_transactions", "local_id", "TEXT");
+  addColumnIfMissing(db, "debt_transactions", "sync_action", "TEXT DEFAULT 'none'");
 }
 
-async function backfillAccountingMoneyColumns(db: SQLite.SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+function ensureSaleItemsColumns(db: SQLite.SQLiteDatabase): void {
+  if (tableExists(db, "sale_items")) {
+    addColumnIfMissing(db, "sale_items", "unit", "TEXT");
+  }
+}
+
+function backfillAccountingMoneyColumns(db: SQLite.SQLiteDatabase): void {
+  db.execSync(`
     UPDATE products
     SET cost_price_kopecks = COALESCE(cost_price_kopecks, ROUND(cost_price * 100)),
         sale_price_kopecks = COALESCE(sale_price_kopecks, ROUND(sale_price * 100)),
@@ -396,8 +457,8 @@ async function backfillAccountingMoneyColumns(db: SQLite.SQLiteDatabase): Promis
     SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
   `);
 
-  if (await tableExists(db, "sale_items")) {
-    await db.execAsync(`
+  if (tableExists(db, "sale_items")) {
+    db.execSync(`
       UPDATE sale_items
       SET unit_price_kopecks = COALESCE(unit_price_kopecks, ROUND(unit_price * 100)),
           total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
@@ -405,21 +466,21 @@ async function backfillAccountingMoneyColumns(db: SQLite.SQLiteDatabase): Promis
   }
 }
 
-async function ensureAccountingSyncColumns(db: SQLite.SQLiteDatabase): Promise<void> {
-  await ensureAccountingMoneyColumns(db);
-  await ensureAccountingDirtyStateColumns(db);
+function ensureAccountingSyncColumns(db: SQLite.SQLiteDatabase): void {
+  ensureAccountingMoneyColumns(db);
+  ensureAccountingDirtyStateColumns(db);
 }
 
-async function tableExists(db: SQLite.SQLiteDatabase, table: string): Promise<boolean> {
-  const row = await db.getFirstAsync<{ name: string }>(
+function tableExists(db: SQLite.SQLiteDatabase, table: string): boolean {
+  const row = db.getFirstSync<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
     [table]
   );
   return !!row;
 }
 
-async function indexExists(db: SQLite.SQLiteDatabase, indexName: string): Promise<boolean> {
-  const row = await db.getFirstAsync<{ name: string }>(
+function indexExists(db: SQLite.SQLiteDatabase, indexName: string): boolean {
+  const row = db.getFirstSync<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
     [indexName]
   );

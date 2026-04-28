@@ -126,16 +126,18 @@ export default function ExpensesScreen() {
       )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => {
-          setEditing(null);
-          setFormVisible(true);
-        }}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      {can(user?.role, "expenses:create") && (
+        <TouchableOpacity
+          onPress={() => {
+            setEditing(null);
+            setFormVisible(true);
+          }}
+          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
+          style={{ elevation: 6 }}
+        >
+          <MaterialIcons name="add" size={28} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       {/* Form modal */}
       <ExpenseFormModal

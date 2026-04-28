@@ -29,6 +29,7 @@ import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal"
 import { ExpenseFormModal } from "@/components/expenses/ExpenseFormModal";
 import { CustomPeriodModal } from "@/components/dashboard/CustomPeriodModal";
 import { STORAGE_KEYS } from "@/constants/config";
+import { can } from "@/lib/permissions";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -81,7 +82,9 @@ export default function DashboardScreen() {
     error,
     isOffline,
     fetchDashboard,
+    dateFrom,
     setDateFrom,
+    dateTo,
     setDateTo,
   } = useDashboard({ token, isSuperAdmin });
 
@@ -178,7 +181,7 @@ export default function DashboardScreen() {
         {loading ? (
           <StatsGridSkeleton />
         ) : summary ? (
-          <StatsGrid summary={summary} isDataHidden={isDataHidden} />
+          <StatsGrid summary={summary} isDataHidden={isDataHidden} userRole={user?.role} />
         ) : null}
 
         {/* ── Stock, Debts & Zakat ── */}
@@ -188,7 +191,7 @@ export default function DashboardScreen() {
             <View className="flex-1 gap-4">
               <StockInfoCard
                 totalQty={summary.stock_total_qty ?? 0}
-                totalCost={summary.stock_total_cost ?? 0}
+                totalCost={user?.role !== "seller" ? (summary.stock_total_cost ?? 0) : 0}
                 totalSalesValue={summary.stock_total_sales_value ?? 0}
                 isDataHidden={isDataHidden}
                 onPress={() => router.push("/(tabs)/products")}
@@ -201,14 +204,16 @@ export default function DashboardScreen() {
             </View>
 
             {/* Right column */}
-            <View className="w-32">
-              <ZakatCard
-                totalCost={summary.stock_total_cost ?? 0}
-                receivables={summary.debts_receivable ?? 0}
-                payables={summary.debts_payable ?? 0}
-                isDataHidden={isDataHidden}
-              />
-            </View>
+            {user?.role !== "seller" && (
+              <View className="w-32">
+                <ZakatCard
+                  totalCost={summary.stock_total_cost ?? 0}
+                  receivables={summary.debts_receivable ?? 0}
+                  payables={summary.debts_payable ?? 0}
+                  isDataHidden={isDataHidden}
+                />
+              </View>
+            )}
           </View>
         )}
 
@@ -218,6 +223,7 @@ export default function DashboardScreen() {
             onAddSale={() => setSaleModalVisible(true)}
             onAddPurchase={() => setPurchaseModalVisible(true)}
             onAddExpense={() => setExpenseModalVisible(true)}
+            userRole={user?.role}
           />
         )}
 
@@ -249,22 +255,28 @@ export default function DashboardScreen() {
         onCreated={() => { fetchDashboard(true); }}
         token={token!}
       />
-      <CreatePurchaseModal
-        visible={purchaseModalVisible}
-        onClose={() => setPurchaseModalVisible(false)}
-        onCreated={() => { fetchDashboard(true); }}
-        token={token!}
-      />
-      <ExpenseFormModal
-        visible={expenseModalVisible}
-        editing={null}
-        onClose={() => setExpenseModalVisible(false)}
-        onSaved={() => { fetchDashboard(true); }}
-        token={token!}
-      />
+      {can(user?.role, "purchases:create") && (
+        <CreatePurchaseModal
+          visible={purchaseModalVisible}
+          onClose={() => setPurchaseModalVisible(false)}
+          onCreated={() => { fetchDashboard(true); }}
+          token={token!}
+        />
+      )}
+      {can(user?.role, "expenses:create") && (
+        <ExpenseFormModal
+          visible={expenseModalVisible}
+          editing={null}
+          onClose={() => setExpenseModalVisible(false)}
+          onSaved={() => { fetchDashboard(true); }}
+          token={token!}
+        />
+      )}
       <CustomPeriodModal
         visible={customModalVisible}
         onClose={() => setCustomModalVisible(false)}
+        initialFrom={dateFrom}
+        initialTo={dateTo}
         onApply={(from, to) => {
           setDateFrom(from);
           setDateTo(to);

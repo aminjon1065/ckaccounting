@@ -19,7 +19,7 @@ interface SyncContextType {
   deadActionsCount: number;
   failedActionsCount: number;
   failedActions: SyncAction[];
-  triggerSync: () => Promise<void>;
+  triggerSync: () => Promise<boolean>;
   refreshProducts: (forceFullSync?: boolean) => Promise<void>;
   fetchRemoteDebts: () => Promise<void>;
   fetchRemoteShops: () => Promise<void>;
@@ -35,7 +35,7 @@ const SyncContext = createContext<SyncContextType>({
   deadActionsCount: 0,
   failedActionsCount: 0,
   failedActions: [],
-  triggerSync: async () => {},
+  triggerSync: async () => false,
   refreshProducts: async () => {},
   fetchRemoteDebts: async () => {},
   fetchRemoteShops: async () => {},
@@ -53,19 +53,21 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   const [deadActionsCount, setDeadActionsCount] = useState(0);
   const [failedActions, setFailedActions] = useState<SyncAction[]>([]);
 
-  const { token, user, tokenExpired } = useAuth();
+  const { token, user, tokenExpired, pinSetupPending } = useAuth();
 
   // Always-current refs — avoid stale closures in event handlers and callbacks
-  const authRef = useRef({ token: token ?? "", shopId: user?.shop_id });
-  authRef.current = { token: token ?? "", shopId: user?.shop_id };
+  const authRef = useRef({ token: token ?? "", shopId: user?.shop_id, role: user?.role, userId: user?.id });
+  authRef.current = { token: token ?? "", shopId: user?.shop_id, role: user?.role, userId: user?.id };
 
   // FIX (Bug 2): Mirror reactive state into refs so triggerSync never reads stale values
   const isOnlineRef = useRef(false);
   const tokenRef = useRef<string | null>(null);
   const tokenExpiredRef = useRef(false);
+  const pinSetupPendingRef = useRef(false);
   isOnlineRef.current = isOnline;
   tokenRef.current = token;
   tokenExpiredRef.current = tokenExpired;
+  pinSetupPendingRef.current = pinSetupPending;
 
   const syncLock = useRef(false);
   const consecutiveFailuresRef = useRef(0);
@@ -130,8 +132,8 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   // ─── Manual foreground sync trigger (outbox only, not full pull) ────────────
 
   // FIX (Bug 2): Read from refs so AppState event handlers always see current values
-  const triggerSync = useCallback(async () => {
-    if (!isOnlineRef.current || !tokenRef.current || syncLock.current || tokenExpiredRef.current) return;
+  const triggerSync = useCallback(async (): Promise<boolean> => {
+    if (!isOnlineRef.current || !tokenRef.current || syncLock.current || tokenExpiredRef.current) return false;
     syncLock.current = true;
     setIsSyncing(true);
     try {
@@ -140,6 +142,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
         await refreshPendingActions();
         setLastSyncedAt(new Date());
       });
+      return true;
     } finally {
       setIsSyncing(false);
       syncLock.current = false;
@@ -159,14 +162,14 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   }, [isOnline, token, tokenExpired]);
 
   const fetchRemoteDebts = useCallback(async () => {
-    if (!isOnline || !token || tokenExpired) return;
-    await orchestrator.current.refreshAll();
-  }, [isOnline, token, tokenExpired]);
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
+    await orchestrator.current.refreshDebts();
+  }, []);
 
   const fetchRemoteShops = useCallback(async () => {
-    if (!isOnline || !token || tokenExpired) return;
-    await orchestrator.current.refreshAll();
-  }, [isOnline, token, tokenExpired]);
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
+    await orchestrator.current.refreshShops();
+  }, []);
 
   // ─── Mount: NetInfo subscription ────────────────────────────────────────────
 
@@ -234,7 +237,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
         fetchRemoteShops,
         refreshPendingActions,
         clearFailedActions: async () => {
-          await archiveSyncActions("'failed', 'dead'");
+          await archiveSyncActions(["failed", "dead"]);
           setFailedActions([]);
         },
       }}

@@ -1,9 +1,11 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { Image } from "expo-image";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import * as React from "react";
 import {
   Alert,
+  Image,
+  type ImageSourcePropType,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -23,9 +25,12 @@ import {
   type Product,
   type Shop,
 } from "@/lib/api";
-import { useSync } from "@/lib/sync/SyncContext";
 import { getLocalShops, insertOrUpdateProduct } from "@/lib/db";
 import type { LocalProduct } from "@/lib/db";
+import {
+  finishSystemUiBiometricSuppression,
+  suppressBiometricRelockForSystemUi,
+} from "@/lib/biometricRelock";
 
 interface FormModalProps {
   visible: boolean;
@@ -57,6 +62,41 @@ function generateUUID() {
   });
 }
 
+const PRODUCT_PHOTO_DIR = `${FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? ""}product-photos/`;
+
+function inferPhotoExtension(uri: string, fileName?: string | null) {
+  const source = fileName ?? uri;
+  const match = source.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+  const ext = match?.[1]?.toLowerCase();
+  if (!ext || ext.length > 5) {
+    return "jpg";
+  }
+  return ext;
+}
+
+async function persistProductPhoto(asset: ImagePicker.ImagePickerAsset): Promise<string> {
+  const sourceUri = asset.uri;
+  if (!sourceUri) {
+    throw new Error("Не удалось получить путь к фото.");
+  }
+
+  if (/^https?:\/\//i.test(sourceUri)) {
+    return sourceUri;
+  }
+
+  if (!PRODUCT_PHOTO_DIR) {
+    return sourceUri;
+  }
+
+  await FileSystem.makeDirectoryAsync(PRODUCT_PHOTO_DIR, { intermediates: true });
+
+  const extension = inferPhotoExtension(sourceUri, asset.fileName);
+  const destinationUri = `${PRODUCT_PHOTO_DIR}${generateUUID()}.${extension}`;
+  await FileSystem.copyAsync({ from: sourceUri, to: destinationUri });
+
+  return destinationUri;
+}
+
 export function ProductFormModal({
   visible,
   editing,
@@ -67,7 +107,6 @@ export function ProductFormModal({
 }: FormModalProps) {
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
-  const { refreshPendingActions } = useSync();
 
   const [name, setName] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -144,41 +183,57 @@ export function ProductFormModal({
   const computedMarkupPrice = pricingMode === "markup"
     ? computeMarkupPrice(costPrice, markupPercent)
     : salePrice;
+  const previewSource = React.useMemo<ImageSourcePropType | undefined>(() => {
+    if (!photoUri) return undefined;
+    return { uri: photoUri };
+  }, [photoUri]);
 
   async function pickPhoto() {
     const options = [
       {
         text: "Выбрать из галереи",
         onPress: async () => {
-          const result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: "images" as ImagePicker.MediaType,
-            allowsEditing: true,
-            aspect: [1, 1] as [number, number],
-            quality: 0.7,
-          });
+          try {
+            suppressBiometricRelockForSystemUi();
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: "images" as ImagePicker.MediaType,
+              allowsEditing: true,
+              aspect: [1, 1] as [number, number],
+              quality: 0.7,
+            });
 
-          if (!result.canceled) {
-            setPhotoUri(result.assets[0].uri);
+            if (!result.canceled) {
+              const persistedUri = await persistProductPhoto(result.assets[0]);
+              setPhotoUri(persistedUri);
+            }
+          } finally {
+            finishSystemUiBiometricSuppression();
           }
         },
       },
       {
         text: "Сделать фото",
         onPress: async () => {
-          const permission = await ImagePicker.requestCameraPermissionsAsync();
+          try {
+            suppressBiometricRelockForSystemUi();
+            const permission = await ImagePicker.requestCameraPermissionsAsync();
 
-          if (permission.status !== "granted") {
-            return;
-          }
+            if (permission.status !== "granted") {
+              return;
+            }
 
-          const result = await ImagePicker.launchCameraAsync({
-            allowsEditing: true,
-            aspect: [1, 1] as [number, number],
-            quality: 0.7,
-          });
+            const result = await ImagePicker.launchCameraAsync({
+              allowsEditing: true,
+              aspect: [1, 1] as [number, number],
+              quality: 0.7,
+            });
 
-          if (!result.canceled) {
-            setPhotoUri(result.assets[0].uri);
+            if (!result.canceled) {
+              const persistedUri = await persistProductPhoto(result.assets[0]);
+              setPhotoUri(persistedUri);
+            }
+          } finally {
+            finishSystemUiBiometricSuppression();
           }
         },
       },
@@ -378,12 +433,12 @@ export function ProductFormModal({
                 onPress={pickPhoto}
                 className="self-center w-28 h-28 rounded-2xl bg-slate-100 dark:bg-zinc-800 items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 dark:border-zinc-600"
               >
-                {photoUri ? (
+                {previewSource ? (
                   <>
                     <Image
-                      source={{ uri: photoUri }}
+                      source={previewSource}
                       style={{ width: "100%", height: "100%" }}
-                      contentFit="cover"
+                      resizeMode="cover"
                     />
                     <TouchableOpacity
                       onPress={() => setPhotoUri(null)}

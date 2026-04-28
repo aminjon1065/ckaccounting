@@ -11,6 +11,9 @@ import { api, type Sale, type SaleItem } from "@/lib/api";
 import { buildReceiptText, generateReceiptHtml } from "@/lib/receipt";
 import { getLocalSaleById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
+import { can } from "@/lib/permissions";
+import { useToast } from "@/store/toast";
+import { ReturnSaleModal } from "@/components/sales/ReturnSaleModal";
 
 function fmt(n: number) {
   return Math.round(n)
@@ -93,13 +96,15 @@ function SummaryRow({
 
 export default function SaleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const router = useRouter();
+  const { showToast } = useToast();
 
   const [sale, setSale] = React.useState<Sale | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [isOffline, setIsOffline] = React.useState(false);
+  const [returnModalVisible, setReturnModalVisible] = React.useState(false);
 
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
@@ -125,6 +130,11 @@ export default function SaleDetailScreen() {
     }
   }, [sale]);
 
+  const handleReturn = React.useCallback(async () => {
+    if (!sale || !token) return;
+    setReturnModalVisible(true);
+  }, [sale, token]);
+
   const fetchSale = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
@@ -133,19 +143,30 @@ export default function SaleDetailScreen() {
     const local = await getLocalSaleById(id);
     if (local) setSale(local);
 
-    try {
-      const s = await api.sales.get(Number(id), token);
-      setSale(s);
-      setIsOffline(false);
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        if (!local) setError("Нет сети. Продажа недоступна офлайн.");
-      } else {
-        if (!local) setError("Не удалось загрузить продажу.");
-      }
+    // Offline sales have negative ids (local temp ids like -1745000000000)
+  const isOfflineId = id.startsWith("-") || Number(id) < 0;
+
+  // For offline sales, only load from local — api.sales.get would fail
+  if (isOfflineId) {
+    const local = await getLocalSaleById(id);
+    if (local) setSale(local);
+    setLoading(false);
+    return;
+  }
+
+  try {
+    const s = await api.sales.get(Number(id), token);
+    setSale(s);
+    setIsOffline(false);
+  } catch (e: any) {
+    const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+    if (isOfflineError) {
+      setIsOffline(true);
+      if (!local) setError("Нет сети. Продажа недоступна офлайн.");
+    } else {
+      if (!local) setError("Не удалось загрузить продажу.");
     }
+  }
   }, [id, token]);
 
   React.useEffect(() => {
@@ -294,6 +315,15 @@ export default function SaleDetailScreen() {
         </Card>
 
         <View className="flex-row gap-3 mt-4">
+          {can(user?.role, "sales:return") && (
+            <Button
+              className="flex-1"
+              variant="destructive"
+              onPress={handleReturn}
+            >
+              Возврат
+            </Button>
+          )}
           <Button className="flex-1" variant="outline" onPress={handlePrintReceipt}>
             Печать
           </Button>
@@ -302,6 +332,20 @@ export default function SaleDetailScreen() {
           </Button>
         </View>
       </ScrollView>
+
+      {sale && (
+        <ReturnSaleModal
+          visible={returnModalVisible}
+          saleId={sale.id}
+          items={sale.items}
+          token={token!}
+          onClose={() => setReturnModalVisible(false)}
+          onSuccess={() => {
+            setReturnModalVisible(false);
+            router.back();
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

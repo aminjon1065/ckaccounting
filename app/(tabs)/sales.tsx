@@ -21,10 +21,11 @@ import { useSync } from "@/lib/sync/SyncContext";
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function SalesScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { showToast } = useToast();
   const router = useRouter();
   const { isOnline, isSyncing, pendingActionsCount, failedActionsCount, failedActions, clearFailedActions, triggerSync } = useSync();
+  const isSeller = user?.role === "seller";
 
   const {
     sales,
@@ -36,7 +37,7 @@ export default function SalesScreen() {
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = useSales({ token });
+  } = useSales({ token, userId: user?.id, isSeller });
 
   const [createVisible, setCreateVisible] = React.useState(false);
 
@@ -124,7 +125,10 @@ export default function SalesScreen() {
       ) : (
         <FlatList
           data={sales}
-          keyExtractor={(item) => String(item.id)}
+          keyExtractor={(item) => {
+            const localId = (item as { local_id?: string | null }).local_id;
+            return localId ? `local:${localId}` : `id:${String(item.id)}`;
+          }}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           initialNumToRender={10}
           maxToRenderPerBatch={10}

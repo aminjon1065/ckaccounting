@@ -166,14 +166,16 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
   let params: any[] = [];
 
   if (shop_id && search) {
-    query += " WHERE shop_id = ? AND (name LIKE ? OR code LIKE ?)";
+    query += " WHERE shop_id = ? AND (name LIKE ? OR code LIKE ?) AND (sync_action IS NULL OR sync_action != 'delete')";
     params = [shop_id, `%${search}%`, `%${search}%`];
   } else if (shop_id) {
-    query += " WHERE shop_id = ?";
+    query += " WHERE shop_id = ? AND (sync_action IS NULL OR sync_action != 'delete')";
     params = [shop_id];
   } else if (search) {
-    query += " WHERE name LIKE ? OR code LIKE ?";
+    query += " WHERE (name LIKE ? OR code LIKE ?) AND (sync_action IS NULL OR sync_action != 'delete')";
     params = [`%${search}%`, `%${search}%`];
+  } else {
+    query += " WHERE (sync_action IS NULL OR sync_action != 'delete')";
   }
 
   query += " ORDER BY name ASC";
@@ -211,7 +213,7 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
 
 export async function getLocalProductById(id: number): Promise<Product | null> {
   const db = getDb();
-  const r = await db.getFirstAsync<any>("SELECT * FROM products WHERE id = ?", [id]);
+  const r = await db.getFirstAsync<any>("SELECT * FROM products WHERE id = ? AND (sync_action IS NULL OR sync_action != 'delete')", [id]);
   if (!r) return null;
   const photoUrl = resolveBackendAssetUrl(r.photo_url);
   return {
@@ -646,11 +648,11 @@ export async function insertOrUpdateDebts(debts: Debt[], shopId?: number) {
       const openingBalance = d.opening_balance ?? 0;
       await db.runAsync(
         `INSERT OR REPLACE INTO debts (
-          id, local_id, shop_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at,
+          id, local_id, shop_id, user_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at,
           opening_balance_kopecks, balance_kopecks, sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          d.id, existingLocalId, shopId ?? d.shop_id ?? null, d.person_name, openingBalance, d.balance,
+          d.id, existingLocalId, shopId ?? d.shop_id ?? null, (d as any).user_id ?? null, d.person_name, openingBalance, d.balance,
           d.direction ?? "receivable", d.updated_at, new Date().toISOString(),
           toKopecks(openingBalance), toKopecks(d.balance), incomingSyncAction,
         ]
@@ -712,19 +714,28 @@ export async function insertOrUpdateDebtTransactions(transactions: DebtTransacti
   });
 }
 
-export async function getLocalDebts(shop_id?: number): Promise<Debt[]> {
+export async function getLocalDebts(shop_id?: number, userId?: number | null): Promise<Debt[]> {
   const db = getDb();
   let query = "SELECT * FROM debts";
   const params: any[] = [];
+  const conditions: string[] = [];
   if (shop_id) {
-    query += " WHERE shop_id = ? OR shop_id IS NULL";
+    conditions.push("(shop_id = ? OR shop_id IS NULL)");
     params.push(shop_id);
+  }
+  if (userId) {
+    conditions.push("user_id = ?");
+    params.push(userId);
+  }
+  if (conditions.length > 0) {
+    query += " WHERE " + conditions.join(" AND ");
   }
   query += " ORDER BY updated_at DESC";
   
   const results = await db.getAllAsync<any>(query, params);
   return results.map(r => ({
     id: r.id,
+    user_id: r.user_id ?? undefined,
     person_name: r.person_name,
     opening_balance: signedDebtAmount(
       r.opening_balance_kopecks != null ? fromKopecks(r.opening_balance_kopecks) : Number(r.opening_balance),
@@ -918,11 +929,14 @@ export async function pruneArchivedSyncActions(olderThanDays = 30): Promise<void
 }
 
 /** Archive all sync queue rows matching the given status filter. */
-export async function archiveSyncActions(statusFilter: string): Promise<void> {
+export async function archiveSyncActions(
+  statuses: Array<"pending" | "failed" | "dead" | "completed">
+): Promise<void> {
   const db = getDb();
+  const placeholders = statuses.map(() => "?").join(", ");
   await db.runAsync(
-    `UPDATE sync_queue SET archived_at = ? WHERE archived_at IS NULL AND status IN (${statusFilter})`,
-    [new Date().toISOString()]
+    `UPDATE sync_queue SET archived_at = ? WHERE status IN (${placeholders}) AND archived_at IS NULL`,
+    [new Date().toISOString(), ...statuses]
   );
 }
 
@@ -1065,12 +1079,13 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
     const now = new Date().toISOString();
     for (const item of sale.items ?? []) {
       await db.runAsync(
-        `INSERT INTO sale_items (sale_local_id, product_id, product_name, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sale_items (sale_local_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           localId,
           item.product_id ?? null,
           item.product_name ?? item.name ?? "",
+          item.unit ?? null,
           item.quantity,
           item.price,
           item.total,
@@ -1138,7 +1153,7 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
           sale.id,
           saleLocalId,
           shopId ?? null,
-          null,
+          sale.user_id ?? null,
           sale.customer_name,
           sale.type ?? null,
           sale.total,
@@ -1162,12 +1177,13 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
       const now = new Date().toISOString();
       for (const item of sale.items ?? []) {
         await db.runAsync(
-          `INSERT INTO sale_items (sale_local_id, product_id, product_name, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sale_items (sale_local_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             saleLocalId,
             item.product_id ?? null,
             item.product_name ?? item.name ?? "",
+            item.unit ?? null,
             item.quantity,
             item.price,
             item.total,
@@ -1181,13 +1197,21 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
   });
 }
 
-export async function getLocalSales(shopId?: number): Promise<LocalSale[]> {
+export async function getLocalSales(shopId?: number, userId?: number): Promise<LocalSale[]> {
   const db = getDb();
   let query = "SELECT * FROM sales";
   const params: any[] = [];
+  const conditions: string[] = [];
   if (shopId !== undefined) {
-    query += " WHERE shop_id = ?";
+    conditions.push("shop_id = ?");
     params.push(shopId);
+  }
+  if (userId !== undefined) {
+    conditions.push("user_id = ?");
+    params.push(userId);
+  }
+  if (conditions.length > 0) {
+    query += " WHERE " + conditions.join(" AND ");
   }
   query += " ORDER BY created_at DESC";
   const results = await db.getAllAsync<SaleRow>(query, params);
@@ -1649,9 +1673,16 @@ export async function insertOrUpdatePurchase(purchase: Purchase, localId: string
   });
 }
 
-export async function getLocalPurchases(): Promise<LocalPurchase[]> {
+export async function getLocalPurchases(shopId?: number): Promise<LocalPurchase[]> {
   const db = getDb();
-  const results = await db.getAllAsync<PurchaseRow>("SELECT * FROM purchases ORDER BY created_at DESC");
+  let query = "SELECT * FROM purchases";
+  const params: any[] = [];
+  if (shopId !== undefined) {
+    query += " WHERE shop_id = ?";
+    params.push(shopId);
+  }
+  query += " ORDER BY created_at DESC";
+  const results = await db.getAllAsync<PurchaseRow>(query, params);
   return results.map(mapRowToLocalPurchase);
 }
 

@@ -116,12 +116,14 @@ function CreateDebtModal({
   onCreated,
   isSuperAdmin,
   currentShopId,
+  userId,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (d: Debt) => void;
   isSuperAdmin: boolean;
   currentShopId?: number | null;
+  userId?: number | null;
 }) {
   const [shopId, setShopId] = React.useState("");
   const [shops, setShops] = React.useState<{ id: number; name: string }[]>([]);
@@ -188,6 +190,7 @@ function CreateDebtModal({
         id: tempId,
         local_id: localId,
         shop_id: selectedShopId,
+        user_id: userId ?? undefined,
         person_name: payload.person_name,
         opening_balance: signedOpeningBalance,
         balance: signedOpeningBalance,
@@ -206,11 +209,15 @@ function CreateDebtModal({
         `local-debt-${localId}`
       );
       await refreshPendingActions();
-      
+
+      try {
+        await triggerSync();
+      } catch (e) {
+        console.error("Debt sync failed:", e);
+      }
+      // Always proceed — debt is saved locally and will sync when online
       onCreated(newDebt);
       onClose();
-      
-      triggerSync().catch(console.error);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
     } finally {
@@ -332,6 +339,7 @@ export default function DebtsScreen() {
   const { showToast } = useToast();
   const { lastSyncedAt } = useSync();
   const router = useRouter();
+  const isSeller = user?.role === "seller";
 
   const [debts, setDebts] = React.useState<Debt[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -346,7 +354,7 @@ export default function DebtsScreen() {
     async (reset = false) => {
       setError("");
       try {
-        const localDebts = await getLocalDebts(user?.shop_id);
+        const localDebts = await getLocalDebts(user?.shop_id, isSeller ? user.id : undefined);
         setDebts(localDebts);
         setHasMore(false);
       } catch (e) {
@@ -354,7 +362,7 @@ export default function DebtsScreen() {
         if (reset) setError("Не удалось загрузить долги.");
       }
     },
-    [user?.shop_id]
+    [user?.shop_id, user?.id, isSeller]
   );
 
   React.useEffect(() => {
@@ -469,6 +477,7 @@ export default function DebtsScreen() {
         }}
         isSuperAdmin={user?.role === "super_admin"}
         currentShopId={user?.shop_id}
+        userId={user?.id}
       />
     </SafeAreaView>
   );

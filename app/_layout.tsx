@@ -8,12 +8,25 @@ import { useEffect, useState } from "react";
 import { LogBox } from "react-native";
 import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts as useInterFonts,
+} from "@expo-google-fonts/inter";
+import {
+  PlusJakartaSans_600SemiBold,
+  PlusJakartaSans_700Bold,
+  useFonts as useJakartaFonts,
+} from "@expo-google-fonts/plus-jakarta-sans";
 
 import { ErrorBoundary } from "@/components/error-boundary";
 import { BiometricGuard } from "@/components/auth/BiometricGuard";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
 import { ConflictProvider } from "@/lib/sync/ConflictContext";
+import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
 import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
 import { requestNotificationPermissions } from "@/lib/notifications";
@@ -30,7 +43,7 @@ SplashScreen.preventAutoHideAsync();
 // Removed SyncGuard in favor of SyncProvider and Background syncing.
 
 function AuthGuard() {
-  const { isLoaded, token, shopSuspended, tokenExpired } = useAuth();
+  const { isLoaded, token, shopSuspended, tokenExpired, pinSetupPending } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
@@ -54,10 +67,10 @@ function AuthGuard() {
     }
 
     if (!token && !inAuthGroup) router.replace("/(auth)/login");
-    else if (token && inAuthGroup) router.replace("/(tabs)");
+    else if (token && inAuthGroup && !pinSetupPending) router.replace("/(tabs)");
     else if (!token && inSuspendedScreen) router.replace("/(auth)/login");
     else if (token && !shopSuspended && inSuspendedScreen) router.replace("/(tabs)");
-  }, [isLoaded, token, shopSuspended, tokenExpired, segments, router]);
+  }, [isLoaded, token, shopSuspended, tokenExpired, pinSetupPending, segments, router]);
 
   return null;
 }
@@ -65,6 +78,20 @@ function AuthGuard() {
 export default function RootLayout() {
   const { colorScheme } = useColorScheme();
   const [isDbReady, setIsDbReady] = useState(false);
+
+  const [interLoaded] = useInterFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+
+  const [jakartaLoaded] = useJakartaFonts({
+    PlusJakartaSans_600SemiBold,
+    PlusJakartaSans_700Bold,
+  });
+
+  const fontsLoaded = interLoaded && jakartaLoaded;
 
   // Request notification permissions on app start
   useEffect(() => {
@@ -81,8 +108,8 @@ export default function RootLayout() {
       });
   }, []);
 
-  if (!isDbReady) {
-    return null; // or a splash/loading view
+  if (!isDbReady || !fontsLoaded) {
+    return null;
   }
 
   return (
@@ -94,6 +121,7 @@ export default function RootLayout() {
               <AuthGuard />
               <SyncProvider>
                 <ConflictProvider>
+                  <ConflictResolutionModal />
                   <BiometricGuard>
                   <Stack>
                   <Stack.Screen name="(auth)" options={{ headerShown: false }} />

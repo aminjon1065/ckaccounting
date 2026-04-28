@@ -1,8 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { ScrollView, TouchableOpacity, View } from "react-native";
+import { Image, type ImageSourcePropType, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
@@ -53,7 +52,8 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const canViewCost = user?.role !== "seller";
   const router = useRouter();
 
   const [product, setProduct] = React.useState<Product | null>(null);
@@ -61,6 +61,19 @@ export default function ProductDetailScreen() {
   const [error, setError] = React.useState("");
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(product?.photo_url ?? product?.image_url ?? null);
+  const imageSource = React.useMemo<ImageSourcePropType | undefined>(() => {
+    if (!imageUri) return undefined;
+    if (/^https?:\/\//i.test(imageUri) && token) {
+      return {
+        uri: imageUri,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "image/*",
+        },
+      };
+    }
+    return { uri: imageUri };
+  }, [imageUri, token]);
 
   React.useEffect(() => {
     setImageFailed(false);
@@ -143,12 +156,11 @@ export default function ProductDetailScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* Product photo */}
-          {imageUri && !imageFailed && (
+          {imageSource && !imageFailed && (
             <Image
-              source={{ uri: imageUri }}
+              source={imageSource}
               style={{ width: "100%", aspectRatio: 1, borderRadius: 16 }}
-              contentFit="cover"
-              transition={160}
+              resizeMode="cover"
               onError={() => setImageFailed(true)}
             />
           )}
@@ -164,7 +176,9 @@ export default function ProductDetailScreen() {
                   Цены
                 </Text>
               </View>
-              <InfoRow label="Цена закупки" value={fmt(product.cost_price)} />
+              {canViewCost && (
+                <InfoRow label="Цена закупки" value={fmt(product.cost_price)} />
+              )}
               <InfoRow label="Цена продажи" value={fmt(product.sale_price)} />
               <InfoRow label="Ед. изм." value={product.unit ?? "—"} />
               <InfoRow label="Артикул" value={product.code ?? "—"} />
@@ -238,12 +252,14 @@ export default function ProductDetailScreen() {
 
             {/* Stock value info row */}
             <View className="flex-row gap-3">
-              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
-                <Text variant="muted" className="text-xs mb-0.5">Себестоимость склада</Text>
-                <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
-                  {fmt(product.stock_quantity * product.cost_price)} {DEFAULT_CURRENCY}
-                </Text>
-              </View>
+              {canViewCost && (
+                <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
+                  <Text variant="muted" className="text-xs mb-0.5">Себестоимость склада</Text>
+                  <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
+                    {fmt(product.stock_quantity * product.cost_price)} {DEFAULT_CURRENCY}
+                  </Text>
+                </View>
+              )}
               <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
                 <Text variant="muted" className="text-xs mb-0.5">По цене продажи</Text>
                 <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">

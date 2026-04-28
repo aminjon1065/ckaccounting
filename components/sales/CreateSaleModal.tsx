@@ -1,4 +1,5 @@
 import * as React from "react";
+import * as Crypto from "expo-crypto";
 import { Modal, TouchableOpacity, View, TextInput as RNTextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
@@ -34,6 +35,7 @@ export function CreateSaleModal({
 }) {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  const canEditPrice = user?.role !== "seller";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
   const { showToast } = useToast();
   const { refreshPendingActions } = useSync();
@@ -60,6 +62,8 @@ export function CreateSaleModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [scannerVisible, setScannerVisible] = React.useState(false);
+  const [productsHasMore, setProductsHasMore] = React.useState(false);
+  const [productsNextCursor, setProductsNextCursor] = React.useState<string | null>(null);
 
   // Load Shops for SuperAdmin
   React.useEffect(() => {
@@ -68,19 +72,27 @@ export function CreateSaleModal({
     }
   }, [visible, isSuperAdmin, token]);
 
-  const loadProductsForSale = React.useCallback(async (selectedShopId?: number) => {
+  const loadProductsForSale = React.useCallback(async (selectedShopId?: number, cursor?: string) => {
     setProductsLoading(true);
-    const localProducts = await getLocalProducts(selectedShopId);
-    setProducts(localProducts);
+    const localProducts = cursor ? products : await getLocalProducts(selectedShopId);
+    if (!cursor) setProducts(localProducts);
 
     try {
       const remoteProducts = await api.products.list(token, {
         limit: 100,
         shop_id: selectedShopId,
+        cursor: cursor ?? undefined,
       });
       await insertOrUpdateProducts(remoteProducts.data, selectedShopId);
       const refreshedLocalProducts = await getLocalProducts(selectedShopId);
-      setProducts(refreshedLocalProducts.length > 0 ? refreshedLocalProducts : remoteProducts.data);
+      const newProducts = refreshedLocalProducts.length > 0 ? refreshedLocalProducts : remoteProducts.data;
+      if (cursor) {
+        setProducts((prev) => [...prev, ...newProducts]);
+      } else {
+        setProducts(newProducts);
+      }
+      setProductsNextCursor(remoteProducts.next_cursor ?? null);
+      setProductsHasMore(!!remoteProducts.next_cursor);
     } catch (e) {
       if (localProducts.length === 0) {
         console.error("Failed to load products for sale:", e);
@@ -88,7 +100,12 @@ export function CreateSaleModal({
     } finally {
       setProductsLoading(false);
     }
-  }, [token]);
+  }, [token, products]);
+
+  const loadMoreProducts = React.useCallback(() => {
+    if (!productsHasMore || productsLoading) return;
+    loadProductsForSale(undefined, productsNextCursor);
+  }, [productsHasMore, productsNextCursor, productsLoading, loadProductsForSale]);
 
   // Reset form state
   React.useEffect(() => {
@@ -100,7 +117,7 @@ export function CreateSaleModal({
     setPaymentType("cash"); setError("");
     serviceIdRef.current = 0;
     setShopId("");
-  }, [visible, isSuperAdmin, token, user?.shop_id]);
+  }, [visible, isSuperAdmin, token, user?.shop_id, shopId]);
 
   React.useEffect(() => {
     if (visible && isSuperAdmin && shopId) {
@@ -137,6 +154,7 @@ export function CreateSaleModal({
           return {
             ...c,
             quantity,
+            quantityInput: String(quantity),
             price: c.priceMode === "manual"
               ? c.price
               : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
@@ -159,6 +177,7 @@ export function CreateSaleModal({
         {
           product: p,
           quantity: 1,
+          quantityInput: "1",
           price: deriveProductPrice(p, priceMode, markupPercent, 1),
           priceMode,
           markupPercent,
@@ -167,32 +186,66 @@ export function CreateSaleModal({
     });
   }
 
-  function updateQty(productId: number, delta: number) {
+  function updateCartQuantity(productId: number, rawQuantity: string) {
+    const normalized = rawQuantity.replace(",", ".").trim();
     setCart((prev) =>
-      prev
-        .map((c) => {
-          if (c.product.id !== productId) {
-            return c;
-          }
+      prev.map((c) => {
+        if (c.product.id !== productId) {
+          return c;
+        }
 
-          const quantity = c.quantity + delta;
-          if (quantity <= 0) return c;
+        const parsedQuantity = Number(normalized);
+        if (!normalized) {
+          return { ...c, quantityInput: "" };
+        }
 
-          const availableQty = c.product.stock_quantity ?? 0;
-          if (quantity > availableQty) {
-            showToast({ message: `Нет столько на складе (доступно: ${availableQty})`, variant: "warning" });
-            return { ...c, quantity: availableQty };
-          }
+        if (Number.isNaN(parsedQuantity) || parsedQuantity <= 0) {
+          return { ...c, quantityInput: rawQuantity };
+        }
 
-          return {
-            ...c,
-            quantity,
-            price: c.priceMode === "manual"
-              ? c.price
-              : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
-          };
-        })
-        .filter((c) => c.quantity > 0)
+        const availableQty = c.product.stock_quantity ?? 0;
+        const quantity = Math.min(parsedQuantity, availableQty);
+        if (parsedQuantity > availableQty) {
+          showToast({ message: `Нет столько на складе (доступно: ${availableQty})`, variant: "warning" });
+        }
+
+        return {
+          ...c,
+          quantityInput: String(quantity <= 0 ? 1 : quantity),
+          quantity: quantity <= 0 ? 1 : quantity,
+          price: c.priceMode === "manual"
+            ? c.price
+            : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity <= 0 ? 1 : quantity),
+        };
+      })
+    );
+  }
+
+  function finalizeCartQuantity(productId: number) {
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.product.id !== productId) return c;
+        const normalized = (c.quantityInput ?? "").replace(",", ".").trim();
+        if (!normalized) {
+          return { ...c, quantityInput: String(c.quantity) };
+        }
+
+        const parsedQuantity = Number(normalized);
+        if (Number.isNaN(parsedQuantity) || parsedQuantity <= 0) {
+          return { ...c, quantityInput: String(c.quantity) };
+        }
+
+        const availableQty = c.product.stock_quantity ?? 0;
+        const quantity = Math.max(1, Math.min(parsedQuantity, availableQty));
+        return {
+          ...c,
+          quantity,
+          quantityInput: String(quantity),
+          price: c.priceMode === "manual"
+            ? c.price
+            : deriveProductPrice(c.product, c.priceMode, c.markupPercent, quantity),
+        };
+      })
     );
   }
 
@@ -240,7 +293,7 @@ export function CreateSaleModal({
     const id = String(serviceIdRef.current++);
     setServiceItems((prev) => [
       ...prev,
-      { id, name: "", unit: "шт", quantity: 1, price: "" },
+      { id, name: "", unit: "шт", quantity: 1, quantityInput: "1", price: "" },
     ]);
   }
 
@@ -252,6 +305,40 @@ export function CreateSaleModal({
 
   function removeServiceItem(id: string) {
     setServiceItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  function updateServiceQuantity(id: string, rawQuantity: string) {
+    const normalized = rawQuantity.replace(",", ".").trim();
+    setServiceItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const parsedQuantity = Number(normalized);
+        if (!normalized) {
+          return { ...item, quantityInput: "" };
+        }
+        if (Number.isNaN(parsedQuantity) || parsedQuantity <= 0) {
+          return { ...item, quantityInput: rawQuantity };
+        }
+        return { ...item, quantity: parsedQuantity, quantityInput: rawQuantity };
+      })
+    );
+  }
+
+  function finalizeServiceQuantity(id: string) {
+    setServiceItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const normalized = (item.quantityInput ?? "").replace(",", ".").trim();
+        if (!normalized) {
+          return { ...item, quantityInput: String(item.quantity) };
+        }
+        const parsedQuantity = Number(normalized);
+        if (Number.isNaN(parsedQuantity) || parsedQuantity <= 0) {
+          return { ...item, quantityInput: String(item.quantity) };
+        }
+        return { ...item, quantity: parsedQuantity, quantityInput: String(parsedQuantity) };
+      })
+    );
   }
 
   // ── Calculations ────────────────────────────────────────────────────────────
@@ -281,6 +368,16 @@ export function CreateSaleModal({
       }
     }
 
+    // Validate Seller cannot sell below sale_price
+    if (user?.role === "seller" && saleType === "product") {
+      for (const c of cart) {
+        if (c.price < (c.product.sale_price ?? 0)) {
+          setError(`Цена "${c.product.name}" ниже прайса (${c.product.sale_price})`);
+          return;
+        }
+      }
+    }
+
     const payload: CreateSalePayload = {
       type: saleType,
       payment_type: paymentType,
@@ -305,7 +402,10 @@ export function CreateSaleModal({
     if (notes.trim()) payload.notes = notes.trim();
 
     setSubmitting(true);
-    const idempotencyKey = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    const bytes = await Crypto.getRandomBytesAsync(16);
+    const idempotencyKey = Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
     try {
       const created = await api.sales.create(payload, token, idempotencyKey);
       // Check low stock for sold products (online case)
@@ -563,10 +663,11 @@ export function CreateSaleModal({
                           {(["fixed", "manual", "markup"] as const).map((m) => (
                             <TouchableOpacity
                               key={m}
-                              onPress={() => updatePriceMode(c.product.id, m)}
+                              onPress={() => canEditPrice && updatePriceMode(c.product.id, m)}
+                              disabled={!canEditPrice}
                               className={`flex-1 py-1.5 rounded-md items-center ${
                                 c.priceMode === m ? "bg-white dark:bg-zinc-900" : ""
-                              }`}
+                              } ${!canEditPrice ? "opacity-50" : ""}`}
                             >
                               <Text
                                 className={`text-xs font-medium ${
@@ -581,22 +682,15 @@ export function CreateSaleModal({
                           ))}
                         </View>
                         <View className="flex-row items-center gap-3">
-                          <View className="flex-row items-center gap-2">
-                            <TouchableOpacity
-                              onPress={() => updateQty(c.product.id, -1)}
-                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                            >
-                              <MaterialIcons name="remove" size={14} color="#64748b" />
-                            </TouchableOpacity>
-                            <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
-                              {c.quantity}
-                            </Text>
-                            <TouchableOpacity
-                              onPress={() => updateQty(c.product.id, 1)}
-                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                            >
-                              <MaterialIcons name="add" size={14} color="#64748b" />
-                            </TouchableOpacity>
+                          <View className="w-20">
+                            <Input
+                              value={c.quantityInput ?? String(c.quantity)}
+                              onChangeText={(v) => updateCartQuantity(c.product.id, v)}
+                              onBlur={() => finalizeCartQuantity(c.product.id)}
+                              keyboardType="numeric"
+                              placeholder="Кол-во"
+                              className="py-1 text-xs text-center"
+                            />
                           </View>
                           {c.priceMode === "markup" ? (
                             <View className="flex-1">
@@ -616,7 +710,7 @@ export function CreateSaleModal({
                                 keyboardType="numeric"
                                 placeholder="Цена"
                                 className="py-1 text-xs"
-                                editable={c.priceMode === "manual"}
+                                editable={c.priceMode === "manual" && canEditPrice}
                               />
                             </View>
                           )}
@@ -680,7 +774,7 @@ export function CreateSaleModal({
                           </TouchableOpacity>
                         </View>
 
-                        {/* Row 2: unit + qty stepper + price + total */}
+                        {/* Row 2: unit + qty input + price + total */}
                         <View className="flex-row items-center gap-2">
                           {/* Unit */}
                           <RNTextInput
@@ -690,29 +784,15 @@ export function CreateSaleModal({
                             placeholderTextColor="#94a3b8"
                             className="w-14 text-xs text-slate-900 dark:text-slate-50 bg-white dark:bg-zinc-900 rounded-lg px-2 py-1.5 text-center"
                           />
-                          {/* Qty stepper */}
-                          <View className="flex-row items-center gap-1.5">
-                            <TouchableOpacity
-                              onPress={() =>
-                                updateServiceItem(item.id, {
-                                  quantity: Math.max(1, item.quantity - 1),
-                                })
-                              }
-                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                            >
-                              <MaterialIcons name="remove" size={14} color="#64748b" />
-                            </TouchableOpacity>
-                            <Text className="text-sm font-semibold w-6 text-center text-slate-900 dark:text-slate-50">
-                              {item.quantity}
-                            </Text>
-                            <TouchableOpacity
-                              onPress={() =>
-                                updateServiceItem(item.id, { quantity: item.quantity + 1 })
-                              }
-                              className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center"
-                            >
-                              <MaterialIcons name="add" size={14} color="#64748b" />
-                            </TouchableOpacity>
+                          <View className="w-20">
+                            <Input
+                              value={item.quantityInput ?? String(item.quantity)}
+                              onChangeText={(v) => updateServiceQuantity(item.id, v)}
+                              onBlur={() => finalizeServiceQuantity(item.id)}
+                              keyboardType="numeric"
+                              placeholder="Кол-во"
+                              className="py-1 text-xs text-center"
+                            />
                           </View>
                           {/* Price */}
                           <View className="flex-1">
@@ -852,6 +932,9 @@ export function CreateSaleModal({
           products={products}
           onSelect={addToCart}
           onClose={() => setPickerVisible(false)}
+          loadingMore={productsLoading}
+          hasMore={productsHasMore}
+          onLoadMore={loadMoreProducts}
         />
       )}
 

@@ -36,7 +36,10 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
       // Cache successful response
       await setDashboardCache(cacheKey, sum);
     } catch (err: any) {
-      const isOfflineError = err?.status === 0 || !err?.message?.includes("status");
+      const isOfflineError =
+        err?.status === 0 ||
+        err?.message === "Network request failed" ||
+        (typeof err?.message === "string" && err.message.includes("Network request failed"));
       if (isOfflineError) {
         setIsOffline(true);
         // Try to load from cache
