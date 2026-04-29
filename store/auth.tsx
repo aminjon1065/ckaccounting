@@ -176,6 +176,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const passwordHash = await hashPassword(payload.password, salt);
 
     // Store credentials for offline login; clear any prior suspension flag
+    const pin = await SecureStore.getItemAsync(PIN_KEY);
+    const pinPending = !pin;
+
     await Promise.all([
       SecureStore.setItemAsync(TOKEN_KEY, token),
       SecureStore.setItemAsync(USER_KEY, JSON.stringify(user ?? null)),
@@ -186,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Suppress biometric lock for 10s so the capability probe triggered by
     // token becoming non-null doesn't immediately lock the user out after login.
     suppressBiometricRelock(10_000);
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending });
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
