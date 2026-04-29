@@ -62,6 +62,20 @@ export interface CreateShopPayload {
   is_active?: boolean;
 }
 
+export function normalizeShop(shop: any): Shop {
+  return {
+    ...shop,
+    is_active: shop.is_active !== undefined ? shop.is_active : shop.status === 'active',
+  };
+}
+
+export function normalizeShopsPage(page: Paginated<any>): Paginated<Shop> {
+  return {
+    ...page,
+    data: page.data.map(normalizeShop),
+  };
+}
+
 // ─── Products ─────────────────────────────────────────────────────────────────
 
 export interface Product {
@@ -1008,27 +1022,36 @@ export const api = {
   // ─── Shops ──────────────────────────────────────────────────────────────────
   shops: {
     list: (token: string, params: { page?: number; limit?: number } = {}) =>
-      request<Paginated<Shop>>(
+      request<Paginated<any>>(
         `/shops${qs({ page: params.page, limit: params.limit ?? 100 })}`,
         { token }
-      ),
+      ).then(normalizeShopsPage),
 
     get: (id: number, token: string) =>
-      request<Shop>(`/shops/${id}`, { token }),
+      request<any>(`/shops/${id}`, { token }).then(normalizeShop),
 
-    create: (payload: CreateShopPayload, token: string) =>
-      request<Shop>("/shops", {
+    create: (payload: CreateShopPayload, token: string) => {
+      const { is_active, ...rest } = payload;
+      const apiPayload = is_active !== undefined ? { ...rest, status: is_active ? "active" : "suspended" } : rest;
+      return request<any>("/shops", {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify(apiPayload),
         token,
-      }),
+      }).then(normalizeShop);
+    },
 
-    update: (id: number, payload: Partial<CreateShopPayload>, token: string) =>
-      request<Shop>(`/shops/${id}`, {
+    update: (id: number, payload: Partial<CreateShopPayload>, token: string) => {
+      const apiPayload: any = { ...payload };
+      if (apiPayload.is_active !== undefined) {
+        apiPayload.status = apiPayload.is_active ? "active" : "suspended";
+        delete apiPayload.is_active;
+      }
+      return request<any>(`/shops/${id}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify(apiPayload),
         token,
-      }),
+      }).then(normalizeShop);
+    },
 
     delete: (id: number, token: string) =>
       request<void>(`/shops/${id}`, { method: "DELETE", token }),

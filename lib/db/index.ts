@@ -89,15 +89,17 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
         await db.runAsync(
           `INSERT OR REPLACE INTO products (
             id, local_id, shop_id, name, code, unit, cost_price, sale_price,
-            pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta,
+            cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             p.id, existing?.local_id ?? null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
             p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null,
             mergedStock,
             p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
             (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced",
-            remainingDelta,  // preserved so onSaleSyncSuccess can reconcile correctly
+            remainingDelta,
+            toKopecks(p.cost_price), toKopecks(p.sale_price), toKopecks(p.bulk_price),
           ]
         );
         // Clear low-stock alert if stock is now above threshold
