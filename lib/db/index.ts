@@ -593,11 +593,12 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
     name: r.name,
     code: r.code ?? null,
     unit: r.unit ?? null,
-    cost_price: Number(r.cost_price),
-    sale_price: Number(r.sale_price),
+    // Prefer kopeck columns for precision — consistent with getLocalProducts()
+    cost_price: r.cost_price_kopecks != null ? fromKopecks(r.cost_price_kopecks) : Number(r.cost_price),
+    sale_price: r.sale_price_kopecks != null ? fromKopecks(r.sale_price_kopecks) : Number(r.sale_price),
     pricing_mode: r.pricing_mode ?? "fixed",
     markup_percent: r.markup_percent != null ? Number(r.markup_percent) : undefined,
-    bulk_price: r.bulk_price != null ? Number(r.bulk_price) : undefined,
+    bulk_price: r.bulk_price_kopecks != null ? fromKopecks(r.bulk_price_kopecks) : (r.bulk_price != null ? Number(r.bulk_price) : undefined),
     bulk_threshold: r.bulk_threshold != null ? Number(r.bulk_threshold) : undefined,
     stock_quantity: Number(r.stock_quantity),
     low_stock_alert: r.low_stock_alert != null ? Number(r.low_stock_alert) : null,
@@ -1227,8 +1228,10 @@ export async function getLocalSales(shopId?: number, userId?: number): Promise<L
         sale_local_id: string; id: number; product_id: number | null;
         product_name: string | null; unit: string | null;
         quantity: number; unit_price: number; total: number;
+        unit_price_kopecks: number | null; total_kopecks: number | null;
       }>(
-        `SELECT sale_local_id, id, product_id, product_name, unit, quantity, unit_price, total
+        `SELECT sale_local_id, id, product_id, product_name, unit, quantity, unit_price, total,
+                unit_price_kopecks, total_kopecks
          FROM sale_items WHERE sale_local_id IN (${saleLocalIds.map(() => "?").join(", ")})`,
         saleLocalIds
       )
@@ -1244,26 +1247,24 @@ export async function getLocalSales(shopId?: number, userId?: number): Promise<L
       product_name: item.product_name,
       unit: item.unit ?? undefined,
       quantity: item.quantity,
-      price: item.unit_price,
-      total: item.total,
+      price: item.unit_price_kopecks != null ? fromKopecks(item.unit_price_kopecks) : item.unit_price,
+      total: item.total_kopecks != null ? fromKopecks(item.total_kopecks) : item.total,
     });
     itemsBySale.set(item.sale_local_id, list);
   }
-
-  // Fallback items JSON parse for any sales missing from sale_items
-  const fallbackItemsJson = new Map<string, SaleItem[]>();
 
   return results.map(r => ({
     id: r.id,
     type: r.type as Sale["type"],
     customer_name: r.customer_name,
-    total: r.total ?? 0,
-    discount: r.discount ?? 0,
-    paid: r.paid ?? 0,
-    debt: r.debt ?? 0,
+    // Prefer kopeck columns for precision — consistent with mapRowToSale()
+    total: r.total_kopecks != null ? fromKopecks(r.total_kopecks) : (r.total ?? 0),
+    discount: r.discount_kopecks != null ? fromKopecks(r.discount_kopecks) : (r.discount ?? 0),
+    paid: r.paid_kopecks != null ? fromKopecks(r.paid_kopecks) : (r.paid ?? 0),
+    debt: r.debt_kopecks != null ? fromKopecks(r.debt_kopecks) : (r.debt ?? 0),
     payment_type: (r.payment_type as Sale["payment_type"]) ?? "cash",
     notes: r.notes ?? undefined,
-    items: itemsBySale.get(r.local_id) ?? fallbackItemsJson.get(r.local_id) ?? parseSaleItemsJson(r.items),
+    items: itemsBySale.get(r.local_id) ?? parseSaleItemsJson(r.items),
     created_at: r.created_at,
     updated_at: r.updated_at,
     local_id: r.local_id,
@@ -1380,9 +1381,6 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
   const db = getDb();
   const now = new Date().toISOString();
   await db.withTransactionAsync(async () => {
-    // For updates: preserve the existing server id in the row so PATCH /expenses/{id} routes correctly.
-    // For creates: use expense.id (may be negative for offline-created).
-    const rowId = syncAction === "update" ? expense.id : expense.id;
     await db.runAsync(
       `INSERT OR REPLACE INTO expenses (
         id, local_id, shop_id, user_id, name, quantity, price, total, note,
@@ -1390,7 +1388,7 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         price_kopecks, total_kopecks
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        rowId,
+        expense.id,
         localId,
         shopId ?? null,
         userId ?? null,
@@ -1454,8 +1452,10 @@ export async function getLocalExpenses(shopId?: number): Promise<LocalExpense[]>
   let query = "SELECT * FROM expenses";
   const params: any[] = [];
   if (shopId) {
-    query += " WHERE shop_id = ?";
+    query += " WHERE shop_id = ? AND (sync_action IS NULL OR sync_action != 'delete')";
     params.push(shopId);
+  } else {
+    query += " WHERE (sync_action IS NULL OR sync_action != 'delete')";
   }
   query += " ORDER BY created_at DESC";
   const results = await db.getAllAsync<ExpenseRow>(query, params);
@@ -1680,8 +1680,10 @@ export async function getLocalPurchases(shopId?: number): Promise<LocalPurchase[
   let query = "SELECT * FROM purchases";
   const params: any[] = [];
   if (shopId !== undefined) {
-    query += " WHERE shop_id = ?";
+    query += " WHERE shop_id = ? AND (sync_action IS NULL OR sync_action != 'delete')";
     params.push(shopId);
+  } else {
+    query += " WHERE (sync_action IS NULL OR sync_action != 'delete')";
   }
   query += " ORDER BY created_at DESC";
   const results = await db.getAllAsync<PurchaseRow>(query, params);

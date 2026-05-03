@@ -27,9 +27,13 @@ TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
     }
 
     let shopId: number | undefined;
+    let role: string | undefined;
+    let userId: number | undefined;
     try {
-      const authUser = JSON.parse(authUserStr) as { shop_id?: number };
+      const authUser = JSON.parse(authUserStr) as { shop_id?: number; role?: string; id?: number };
       shopId = authUser.shop_id;
+      role = authUser.role;
+      userId = authUser.id;
     } catch {}
 
     // initDb() ensures all tables exist on fresh install/background run.
@@ -37,7 +41,8 @@ TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
     getDb(); // ensure DB is open
 
     // Run full sync: outbox push + pull all remote entities.
-    const orchestrator = new SyncOrchestrator(() => ({ token, shopId }));
+    // role and userId are required so sellers don't trigger expense/purchase fetches.
+    const orchestrator = new SyncOrchestrator(() => ({ token, shopId, role, userId }));
     await orchestrator.syncAll(false);
 
     const db = getDb();
