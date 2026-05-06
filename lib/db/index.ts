@@ -492,6 +492,13 @@ export async function insertOrUpdateProduct(product: Product, syncAction = "none
     );
 
     if (syncAction !== "none") {
+      // Local file URIs (file://) must travel via multipart/form-data — the
+      // outbox processor switches to FormData when it sees `photo_uri`.
+      // Server-side HTTP URLs are skipped: the server already has them.
+      const localPhoto = product.photo_url && product.photo_url.startsWith("file://")
+        ? product.photo_url
+        : null;
+
       await queueSyncAction(
         syncAction === "create" ? "POST" : "PATCH",
         syncAction === "create" ? "/products" : `/products/${product.id}`,
@@ -509,7 +516,7 @@ export async function insertOrUpdateProduct(product: Product, syncAction = "none
           stock_quantity: product.stock_quantity,
           low_stock_alert: product.low_stock_alert,
           shop_id: product.shop_id,
-          photo_url: product.photo_url,
+          ...(localPhoto ? { photo_uri: localPhoto } : {}),
           version: (product as any).version ?? 1,
         },
         { "Idempotency-Key": `prod-${product.id}` },

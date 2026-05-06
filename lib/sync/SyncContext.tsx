@@ -20,6 +20,13 @@ interface SyncContextType {
   failedActionsCount: number;
   failedActions: SyncAction[];
   triggerSync: () => Promise<boolean>;
+  /**
+   * Force a full outbox + remote-pull cycle and await its completion.
+   * Returns true if a sync ran (or piggy-backed on an in-flight one),
+   * false if the device is offline / unauthenticated.
+   * Used by the login screen to gate navigation on the initial data load.
+   */
+  runFullSync: () => Promise<boolean>;
   refreshProducts: (forceFullSync?: boolean) => Promise<void>;
   fetchRemoteDebts: () => Promise<void>;
   fetchRemoteShops: () => Promise<void>;
@@ -27,9 +34,9 @@ interface SyncContextType {
   fetchOlderSales: (pages?: number) => Promise<boolean>;
   fetchOlderExpenses: (pages?: number) => Promise<boolean>;
   fetchOlderPurchases: (pages?: number) => Promise<boolean>;
-  /** Drain all historical pages for sales / expenses / purchases. */
+  /** Drain all historical pages for products, shops, sales, expenses, and purchases. */
   fetchAllHistory: (
-    onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void
+    onProgress?: (s: { entity: "products" | "shops" | "sales" | "expenses" | "purchases"; pagesPulled: number }) => void
   ) => Promise<void>;
   refreshPendingActions: () => Promise<void>;
   clearFailedActions: () => Promise<void>;
@@ -44,6 +51,7 @@ const SyncContext = createContext<SyncContextType>({
   failedActionsCount: 0,
   failedActions: [],
   triggerSync: async () => false,
+  runFullSync: async () => false,
   refreshProducts: async () => {},
   fetchRemoteDebts: async () => {},
   fetchRemoteShops: async () => {},
@@ -87,6 +95,12 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   // FIX (Bug 1): Track reconnect requests that arrive while a sync is already running
   const pendingReconnectSync = useRef(false);
 
+  // Promise that resolves when the currently-running sync finishes. Lets
+  // runFullSync() piggy-back on an in-flight sync triggered by the auto
+  // [isOnline, token] effect instead of returning early. Cleared when no
+  // sync is running.
+  const inFlightSyncRef = useRef<Promise<void> | null>(null);
+
   const orchestrator = useRef(
     new SyncOrchestrator(() => authRef.current)
   );
@@ -118,6 +132,8 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     }
     syncLock.current = true;
     setIsSyncing(true);
+    let resolveDone: (() => void) | undefined;
+    inFlightSyncRef.current = new Promise<void>((resolve) => { resolveDone = resolve; });
     try {
       const sinceLast = Date.now() - lastFullSyncAtRef.current;
       const shouldDoFullSync = forceFullSync || sinceLast >= FULL_SYNC_COOLDOWN_MS;
@@ -146,6 +162,8 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       await refreshPendingActions().catch(console.error);
       setIsSyncing(false);
       syncLock.current = false;
+      resolveDone?.();
+      inFlightSyncRef.current = null;
 
       // Drain any reconnect sync that arrived while we were busy
       if (pendingReconnectSync.current) {
@@ -155,6 +173,19 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       }
     }
   }, [refreshPendingActions]);
+
+  // Public wrapper: forces a full sync and awaits actual completion. If a
+  // sync is already running (e.g. kicked by the [isOnline, token] effect on
+  // first login), piggy-back on its in-flight promise instead of skipping.
+  const runFullSync = useCallback(async (): Promise<boolean> => {
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return false;
+    if (syncLock.current && inFlightSyncRef.current) {
+      try { await inFlightSyncRef.current; } catch {}
+      return true;
+    }
+    await runSync(true);
+    return true;
+  }, [runSync]);
 
   // ─── Manual foreground sync trigger (outbox only, not full pull) ────────────
 
@@ -214,7 +245,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const fetchAllHistory = useCallback(
-    async (onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void) => {
+    async (onProgress?: (s: { entity: "products" | "shops" | "sales" | "expenses" | "purchases"; pagesPulled: number }) => void) => {
       if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
       await orchestrator.current.fetchAllHistory(onProgress);
     },
@@ -288,6 +319,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       failedActionsCount: failedActions.length,
       failedActions,
       triggerSync,
+      runFullSync,
       refreshProducts,
       fetchRemoteDebts,
       fetchRemoteShops,
@@ -306,6 +338,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
       deadActionsCount,
       failedActions,
       triggerSync,
+      runFullSync,
       refreshProducts,
       fetchRemoteDebts,
       fetchRemoteShops,

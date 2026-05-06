@@ -2,7 +2,7 @@ import { Alert, Button, Input, Text } from "@/components/ui";
 import { useLocalSearchParams } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
-import { Alert as RNAlertDialog } from "react-native";
+import { ActivityIndicator, Alert as RNAlertDialog } from "react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -15,9 +15,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { useSync } from "@/lib/sync/SyncContext";
+
+// Cap initial post-login pull at 12s. If the network is slow, fall through
+// to the tabs anyway — SyncProvider keeps polling in the background and the
+// data will appear once it arrives.
+const BOOTSTRAP_TIMEOUT_MS = 12_000;
 
 export default function LoginScreen() {
-  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, token } = useAuth();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, bootstrapPending, completeBootstrap, token } = useAuth();
+  const { runFullSync, isOnline } = useSync();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 
@@ -33,6 +40,41 @@ export default function LoginScreen() {
   React.useEffect(() => {
     if (token && pinSetupPending) setShowPinSetup(true);
   }, [token, pinSetupPending]);
+
+  // Initial bootstrap pull: fires once after PIN setup is done (or skipped)
+  // and bootstrapPending is still armed. Awaits the first remote pull so the
+  // user lands in tabs with their data already in SQLite. Bounded by a
+  // timeout so a flaky network doesn't trap the user on the login screen.
+  const bootstrapStartedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!bootstrapPending) {
+      bootstrapStartedRef.current = false;
+      return;
+    }
+    if (pinSetupPending) return; // wait for PIN setup to clear first
+    if (bootstrapStartedRef.current) return;
+    bootstrapStartedRef.current = true;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!isOnline) {
+          // Online sign-in already succeeded, but the device dropped offline
+          // before the pull could start. Skip the gate — SyncProvider will
+          // catch up automatically once connectivity returns.
+          return;
+        }
+        await Promise.race([
+          runFullSync(),
+          new Promise<void>((resolve) => setTimeout(resolve, BOOTSTRAP_TIMEOUT_MS)),
+        ]);
+      } finally {
+        if (!cancelled) completeBootstrap();
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [bootstrapPending, pinSetupPending, isOnline, runFullSync, completeBootstrap]);
   const [pinValue, setPinValue] = React.useState("");
   const [pinConfirm, setPinConfirm] = React.useState("");
   const [pinError, setPinError] = React.useState("");
@@ -151,9 +193,39 @@ export default function LoginScreen() {
     try {
       await setPin(pinValue);
       setPinSetupPending(false);
+      // Drop the local PIN-setup view so the bootstrap loader (or AuthGuard
+      // routing to tabs) can take over on the next render.
+      setShowPinSetup(false);
+      setPinValue("");
+      setPinConfirm("");
     } catch {
       setPinError("Не удалось сохранить PIN. Попробуйте снова.");
     }
+  }
+
+  // ── Bootstrap loading screen (post-login initial data pull) ──────────────────
+  // Shown after the user authenticates (and finished PIN setup, if needed)
+  // while the first remote pull populates SQLite. Replaces the empty-tabs
+  // flicker on first login. Falls through automatically on success or timeout.
+  if (token && bootstrapPending && !pinSetupPending && !showPinSetup && !showPinVerify) {
+    return (
+      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
+        <View className="flex-1 items-center justify-center px-6">
+          <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-5">
+            <MaterialIcons name="cloud-download" size={28} color="#fff" />
+          </View>
+          <Text variant="h2" className="text-center">
+            Загрузка данных
+          </Text>
+          <Text variant="muted" className="text-center mt-2">
+            {isOnline
+              ? "Загружаем ваши товары, продажи и долги из облака…"
+              : "Нет сети. Запускаем приложение в офлайн-режиме…"}
+          </Text>
+          <ActivityIndicator size="large" className="mt-6" />
+        </View>
+      </SafeAreaView>
+    );
   }
 
   // ── PIN Verify Screen (before offline login) ─────────────────────────────────

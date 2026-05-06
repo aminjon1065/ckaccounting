@@ -7,7 +7,6 @@ import {
   onPurchaseSyncSuccess,
   cancelPendingStockDelta,
   cancelPendingPurchaseStockDelta,
-  queueSyncAction,
   getPendingSyncActionsCount,
   getDeadSyncActionsCount,
   getPendingSyncActions,
@@ -133,6 +132,42 @@ export class OutboxProcessor {
       const response = await fetch(requestUrl, fetchOptions);
 
       if (response.ok) {
+        // Shops use integer auto-increment IDs (not UUIDs), so the id-remap
+        // has to happen explicitly here: read the server response to get the
+        // assigned id and rewrite the local row + any queued actions that
+        // still target the old temporary negative id.
+        if (action.method === "POST" && action.path === "/shops") {
+          try {
+            const reqPayload = JSON.parse(action.payload || "{}");
+            const localId = reqPayload._local_id as string | undefined;
+            if (localId) {
+              const responseBody = await response.clone().json().catch(() => null) as { id?: number } | null;
+              const newId = responseBody?.id;
+              if (typeof newId === "number" && Number.isFinite(newId)) {
+                const db = getDb();
+                const oldRow = await db.getFirstAsync<{ id: number }>(
+                  "SELECT id FROM shops WHERE local_id = ?",
+                  [localId]
+                );
+                await db.runAsync(
+                  "UPDATE shops SET id = ?, sync_action = 'none', status = 'synced', last_synced_at = ? WHERE local_id = ?",
+                  [newId, new Date().toISOString(), localId]
+                );
+                if (oldRow && oldRow.id !== newId) {
+                  // Re-target queued PATCH/DELETE actions that still point to
+                  // the temp negative id so they don't 404 when replayed.
+                  await db.runAsync(
+                    "UPDATE sync_queue SET path = ? WHERE path = ? AND archived_at IS NULL AND status IN ('pending','processing')",
+                    [`/shops/${newId}`, `/shops/${oldRow.id}`]
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            console.error("Failed to remap local shop id after sync", e);
+          }
+        }
+
         // Resolve pending stock deltas for synced sales/purchases
         if (action.method === "POST" && (action.path === "/sales" || action.path === "/purchases")) {
           try {
@@ -175,34 +210,6 @@ export class OutboxProcessor {
               }
             }
 
-            // Upload product photo if it's a local file URI
-            if (table === "products" && action.method === "POST") {
-              try {
-                const row = await getDb().getFirstAsync<{ photo_url: string | null }>(
-                  "SELECT photo_url FROM products WHERE id = ?", [entityId]
-                );
-                if (row?.photo_url?.startsWith("file://")) {
-                  const formData = new FormData();
-                  formData.append("image", {
-                    uri: row.photo_url,
-                    type: "image/jpeg",
-                    name: "photo.jpg",
-                  } as any);
-                  const photoResponse = await fetch(`${API_URL}/products/${entityId}`, {
-                    method: "PATCH",
-                    headers: { "Authorization": `Bearer ${authToken}`, "Accept": "application/json" },
-                    body: formData,
-                  });
-                  if (!photoResponse.ok) {
-                    await queueSyncAction(
-                      "PATCH", `/products/${entityId}`,
-                      { photo_uri: row.photo_url },
-                      { "Content-Type": "multipart/form-data" }
-                    );
-                  }
-                }
-              } catch {}
-            }
           }
 
           // DELETE: mark the local tombstone as confirmed-synced

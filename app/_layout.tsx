@@ -26,6 +26,7 @@ import { BiometricGuard } from "@/components/auth/BiometricGuard";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
+import { BackgroundSync } from "@/lib/sync/BackgroundSync";
 import { ConflictProvider } from "@/lib/sync/ConflictContext";
 import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
@@ -55,7 +56,7 @@ async function hideSplashAfterMinDuration() {
 // Removed SyncGuard in favor of SyncProvider and Background syncing.
 
 function AuthGuard() {
-  const { isLoaded, token, shopSuspended, tokenExpired, pinSetupPending } = useAuth();
+  const { isLoaded, token, shopSuspended, tokenExpired, pinSetupPending, bootstrapPending } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
@@ -78,14 +79,17 @@ function AuthGuard() {
       return;
     }
 
-    // PIN setup is mandatory — once a session token exists but PIN is not set,
-    // keep the user inside the (auth) group until they complete setup.
-    if (token && pinSetupPending && !inAuthGroup) router.replace("/(auth)/login");
+    // Two gates keep the user inside (auth) even when a token exists:
+    //   pinSetupPending — PIN must be created before entering tabs
+    //   bootstrapPending — initial post-login data pull must complete first
+    // Both block tab navigation; only the absence of both lets the user in.
+    const authBlocked = pinSetupPending || bootstrapPending;
+    if (token && authBlocked && !inAuthGroup) router.replace("/(auth)/login");
     else if (!token && !inAuthGroup) router.replace("/(auth)/login");
-    else if (token && inAuthGroup && !pinSetupPending) router.replace("/(tabs)");
+    else if (token && inAuthGroup && !authBlocked) router.replace("/(tabs)");
     else if (!token && inSuspendedScreen) router.replace("/(auth)/login");
     else if (token && !shopSuspended && inSuspendedScreen) router.replace("/(tabs)");
-  }, [isLoaded, token, shopSuspended, tokenExpired, pinSetupPending, segments, router]);
+  }, [isLoaded, token, shopSuspended, tokenExpired, pinSetupPending, bootstrapPending, segments, router]);
 
   return null;
 }
@@ -140,6 +144,7 @@ export default function RootLayout() {
             <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
               <AuthGuard />
               <SyncProvider>
+                <BackgroundSync>
                 <ConflictProvider>
                   <BiometricGuard>
                   <OfflineBanner />
@@ -163,6 +168,7 @@ export default function RootLayout() {
                   </Stack>
                 </BiometricGuard>
                 </ConflictProvider>
+                </BackgroundSync>
               </SyncProvider>
               <StatusBar style="auto" />
             </ThemeProvider>

@@ -19,6 +19,7 @@ const PIN_SALT_KEY = STORAGE_KEYS.authPinSalt;
 const PASSWORD_HASH_KEY = STORAGE_KEYS.authPasswordHash;
 const PASSWORD_SALT_KEY = STORAGE_KEYS.authPasswordSalt;
 const SHOP_SUSPENDED_KEY = STORAGE_KEYS.shopSuspended;
+const PREV_USER_ID_KEY = STORAGE_KEYS.authPrevUserId;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,10 @@ interface AuthState {
   shopSuspended: boolean;
   tokenExpired: boolean;
   pinSetupPending: boolean;
+  // True from signIn until the first remote pull completes (or times out).
+  // While true, AuthGuard keeps the user on the login screen so a "Загрузка
+  // данных…" overlay can render before the tabs mount with empty SQLite.
+  bootstrapPending: boolean;
 }
 
 interface AuthActions {
@@ -42,6 +47,8 @@ interface AuthActions {
   hasPin: () => Promise<boolean>;
   hasCredentials: () => Promise<boolean>;
   setPinSetupPending: (pending: boolean) => void;
+  /** Mark initial post-login data sync complete so the user can leave (auth) */
+  completeBootstrap: () => void;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -82,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     shopSuspended: false,
     tokenExpired: false,
     pinSetupPending: false,
+    bootstrapPending: false,
   });
 
   // Always-current token ref — avoids stale closure in callbacks that depend on token
@@ -137,18 +145,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const wasShopSuspended = suspendedFlag === "1";
 
         if (!token) {
-          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
+          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
           return;
         }
 
-        // Restore session immediately from cache — don't block on network
+        // Restore session immediately from cache — don't block on network.
+        // Returning users skip the bootstrap gate: their local SQLite already
+        // holds their data, so SyncProvider's background pull is enough.
         const cachedUser: User | null = userJson
           ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
           : null;
         // If we have a token but no PIN saved, force the PIN setup flow before
         // letting the user reach the app — PIN is mandatory for every account.
         const pinPending = !pinHash;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending });
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending, bootstrapPending: false });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -161,7 +171,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Offline or server error — cached user is sufficient, stay logged in
         }
       } catch {
-        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
+        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
       }
     })();
 
@@ -173,6 +183,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (!token || typeof token !== "string") {
       throw new Error("Authentication failed: server did not return a token.");
+    }
+
+    // Cross-account isolation: if a different user_id signs in on this device,
+    // wipe the local SQLite cache before arming the bootstrap. Otherwise the
+    // new user would briefly see the previous account's products/sales until
+    // the remote pull replaces them. Same user_id (re-login) keeps cache —
+    // their data is already correct.
+    const newUserId = user?.id != null ? String(user.id) : null;
+    const prevUserId = await SecureStore.getItemAsync(PREV_USER_ID_KEY);
+    const isDifferentAccount = !!prevUserId && !!newUserId && prevUserId !== newUserId;
+    if (isDifferentAccount) {
+      try {
+        await clearLocalData();
+      } catch (e) {
+        console.error("Failed to clear local data on account switch:", e);
+      }
     }
 
     // Store password hash for offline login
@@ -199,11 +225,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.setItemAsync(PASSWORD_HASH_KEY, passwordHash),
       SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
       SecureStore.deleteItemAsync(SHOP_SUSPENDED_KEY),
+      newUserId
+        ? SecureStore.setItemAsync(PREV_USER_ID_KEY, newUserId)
+        : SecureStore.deleteItemAsync(PREV_USER_ID_KEY),
     ]);
     // Suppress biometric lock for 10s so the capability probe triggered by
     // token becoming non-null doesn't immediately lock the user out after login.
     suppressBiometricRelock(10_000);
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending });
+    // Arm bootstrap: tabs stay gated until the login screen finishes the
+    // initial pull (or the timeout fires) and calls completeBootstrap().
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending, bootstrapPending: true });
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
@@ -234,6 +265,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         shopSuspended: suspendedFlag === "1",
         tokenExpired: prev.tokenExpired, // preserve server-invalidated state
         pinSetupPending: false,
+        // Offline path: SQLite already holds this user's data, no remote pull
+        // is possible, and no other user could have signed in meanwhile (PIN
+        // gate ensures it's the same physical user). Skip the bootstrap gate.
+        bootstrapPending: false,
       }));
       return true;
     } catch {
@@ -265,7 +300,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
-      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false });
+      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
       return true;
     } catch {
       return false;
@@ -309,6 +344,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => ({ ...prev, pinSetupPending: pending }));
   }, []);
 
+  const completeBootstrap = React.useCallback(() => {
+    setState((prev) => prev.bootstrapPending ? { ...prev, bootstrapPending: false } : prev);
+  }, []);
+
   const updateUser = React.useCallback(async (user: User) => {
     await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
     setState((prev) => ({ ...prev, user }));
@@ -332,7 +371,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (clearLocal) {
       await clearLocalData();
     }
-    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
+    // signOut also drops the prev-user pointer so the next signIn doesn't
+    // misclassify itself as the "same account" against stale state.
+    await SecureStore.deleteItemAsync(PREV_USER_ID_KEY).catch(() => {});
+    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
   }, []);
 
   const value = React.useMemo<AuthContextValue>(
@@ -348,8 +390,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hasPin,
       hasCredentials,
       setPinSetupPending,
+      completeBootstrap,
     }),
-    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending]
+    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending, completeBootstrap]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

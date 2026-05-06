@@ -146,15 +146,18 @@ export class SyncOrchestrator {
   }
 
   /**
-   * Drain all remaining historical pages for sales / expenses / purchases.
-   * Used by the "load full history" settings action so the user can have
-   * the entire dataset locally without scrolling page-by-page.
+   * Drain all remaining historical pages for the catalog (products, shops)
+   * and the transactional log (sales, expenses, purchases). Used by the
+   * "load full history" settings action so the user can have the entire
+   * dataset locally without scrolling page-by-page.
    *
    * Calls onProgress({ entity, pagesPulled }) after every chunk so the UI
    * can render a live counter. Stops when each fetcher reports no more
    * data on the server.
    */
-  async fetchAllHistory(onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void): Promise<void> {
+  async fetchAllHistory(
+    onProgress?: (s: { entity: "products" | "shops" | "sales" | "expenses" | "purchases"; pagesPulled: number }) => void,
+  ): Promise<void> {
     const PAGE_CHUNK = 5;
     const MAX_CHUNKS = 200; // safety cap: 200 * 5 * 100 = 100k records per entity
 
@@ -170,6 +173,14 @@ export class SyncOrchestrator {
         if (!more) break;
       }
     };
+
+    // Catalog fetchers paginate internally via cursors and do not expose
+    // fetchOlder — call fetch(forceFullSync=true) once and report a single
+    // tick of progress to the UI.
+    await this.productFetcher.fetch(true);
+    onProgress?.({ entity: "products", pagesPulled: 1 });
+    await this.shopFetcher.fetch(true);
+    onProgress?.({ entity: "shops", pagesPulled: 1 });
 
     await drain("sales", (p) => this.saleFetcher.fetchOlder(p));
     await drain("expenses", (p) => this.expenseFetcher.fetchOlder(p));

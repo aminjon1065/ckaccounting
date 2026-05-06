@@ -24,6 +24,10 @@ export const STORAGE_KEYS = {
   authPinSalt: "ck_auth_pin_salt", // random salt for PIN hashing
   authPasswordHash: "ck_auth_password_hash", // hash of password for offline login
   authPasswordSalt: "ck_auth_password_salt", // random salt for password hashing
+  // Last user_id that successfully signed in on this device. Compared against
+  // the new user_id on signIn to decide whether to wipe local SQLite data
+  // (prevents cross-account leak when a different user reuses the device).
+  authPrevUserId: "ck_auth_prev_user_id",
   appTheme: "ck_app_theme",
   dashboardHideAmounts: "ck_dashboard_hide_amounts",
   shopSuspended: "ck_shop_suspended",

@@ -34,7 +34,15 @@ export default function SettingsScreen() {
 
   // Full-history backfill state — shown inline so the user sees per-entity progress.
   const [historyLoading, setHistoryLoading] = React.useState(false);
-  const [historyProgress, setHistoryProgress] = React.useState<{ sales: number; expenses: number; purchases: number }>({
+  const [historyProgress, setHistoryProgress] = React.useState<{
+    products: number;
+    shops: number;
+    sales: number;
+    expenses: number;
+    purchases: number;
+  }>({
+    products: 0,
+    shops: 0,
     sales: 0,
     expenses: 0,
     purchases: 0,
@@ -48,14 +56,14 @@ export default function SettingsScreen() {
     }
     Alert.alert(
       "Загрузить всю историю?",
-      "Будут скачаны все продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
+      "Будут скачаны все товары, магазины, продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
       [
         { text: "Отмена", style: "cancel" },
         {
           text: "Загрузить",
           onPress: async () => {
             setHistoryLoading(true);
-            setHistoryProgress({ sales: 0, expenses: 0, purchases: 0 });
+            setHistoryProgress({ products: 0, shops: 0, sales: 0, expenses: 0, purchases: 0 });
             try {
               await fetchAllHistory(({ entity, pagesPulled }) => {
                 setHistoryProgress((prev) => ({ ...prev, [entity]: pagesPulled }));
@@ -250,7 +258,7 @@ export default function SettingsScreen() {
             <SettingsRow
               icon="cloud-download"
               label="Загрузить всю историю"
-              description="Скачать все продажи, расходы и закупки локально"
+              description="Скачать все товары, продажи, расходы и закупки локально"
               onPress={handleLoadAllHistory}
               rightText={historyLoading ? undefined : "Запустить"}
             />
@@ -261,6 +269,8 @@ export default function SettingsScreen() {
                   <Text variant="muted">Идёт загрузка истории…</Text>
                 </View>
                 <Text variant="small" className="text-slate-500">
+                  Товары: {historyProgress.products > 0 ? "✓" : "…"}{"  ·  "}
+                  Магазины: {historyProgress.shops > 0 ? "✓" : "…"}{"  ·  "}
                   Продажи: {historyProgress.sales} стр.{"  ·  "}
                   Расходы: {historyProgress.expenses} стр.{"  ·  "}
                   Закупки: {historyProgress.purchases} стр.
