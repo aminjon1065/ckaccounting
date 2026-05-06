@@ -313,6 +313,249 @@ async function performInitDb() {
     { version: 22, migrate: ensureSaleItemsColumns, check: (db) => !columnExists(db, "sale_items", "unit") },
     // Migration v23: user_id column on debts for seller-scoped visibility.
     { version: 23, sql: "ALTER TABLE debts ADD COLUMN user_id INTEGER;", check: (db) => !columnExists(db, "debts", "user_id") },
+    // Migration v24: UUID primary keys.
+    // Drops and recreates all entity tables with id TEXT PRIMARY KEY (UUID), removing the
+    // local_id dual-tracking column. sale_items.sale_local_id → sale_id. All existing data
+    // is cleared; server data re-syncs on next launch.
+    {
+      version: 24,
+      migrate: (db) => {
+        db.execSync(`
+          DROP TABLE IF EXISTS sale_items;
+          DROP TABLE IF EXISTS purchases;
+          DROP TABLE IF EXISTS sales;
+          DROP TABLE IF EXISTS expenses;
+          DROP TABLE IF EXISTS products;
+          DROP TABLE IF EXISTS debt_transactions;
+          DROP TABLE IF EXISTS debts;
+          DROP TABLE IF EXISTS shops;
+          DROP TABLE IF EXISTS low_stock_alerts_sent;
+
+          CREATE TABLE products (
+            id TEXT PRIMARY KEY,
+            shop_id INTEGER,
+            name TEXT NOT NULL,
+            code TEXT,
+            unit TEXT,
+            cost_price REAL NOT NULL DEFAULT 0,
+            sale_price REAL NOT NULL DEFAULT 0,
+            pricing_mode TEXT DEFAULT 'fixed',
+            markup_percent REAL,
+            bulk_price REAL,
+            bulk_threshold INTEGER,
+            stock_quantity REAL NOT NULL DEFAULT 0,
+            pending_stock_delta INTEGER DEFAULT 0,
+            low_stock_alert REAL,
+            photo_url TEXT,
+            version INTEGER DEFAULT 1,
+            sync_action TEXT DEFAULT 'none',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT,
+            cost_price_kopecks INTEGER,
+            sale_price_kopecks INTEGER,
+            bulk_price_kopecks INTEGER
+          );
+
+          CREATE TABLE debts (
+            id TEXT PRIMARY KEY,
+            shop_id INTEGER,
+            user_id INTEGER,
+            person_name TEXT NOT NULL,
+            opening_balance REAL DEFAULT 0,
+            opening_balance_kopecks INTEGER,
+            balance REAL DEFAULT 0,
+            balance_kopecks INTEGER,
+            direction TEXT DEFAULT 'receivable',
+            version INTEGER DEFAULT 1,
+            sync_action TEXT DEFAULT 'none',
+            status TEXT DEFAULT 'pending',
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          CREATE TABLE debt_transactions (
+            id TEXT PRIMARY KEY,
+            debt_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            amount REAL NOT NULL,
+            amount_kopecks INTEGER,
+            note TEXT,
+            sync_action TEXT DEFAULT 'none',
+            created_at TEXT
+          );
+
+          CREATE TABLE sales (
+            id TEXT PRIMARY KEY,
+            shop_id INTEGER,
+            user_id INTEGER,
+            customer_name TEXT,
+            type TEXT,
+            total REAL,
+            total_kopecks INTEGER,
+            discount REAL,
+            discount_kopecks INTEGER,
+            paid REAL,
+            paid_kopecks INTEGER,
+            debt REAL,
+            debt_kopecks INTEGER,
+            payment_type TEXT,
+            notes TEXT,
+            items TEXT,
+            version INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'pending',
+            sync_action TEXT DEFAULT 'none',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          CREATE TABLE sale_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id TEXT NOT NULL,
+            product_id TEXT,
+            product_name TEXT NOT NULL,
+            unit TEXT,
+            quantity REAL NOT NULL,
+            unit_price REAL NOT NULL,
+            unit_price_kopecks INTEGER,
+            total REAL NOT NULL,
+            total_kopecks INTEGER,
+            created_at TEXT
+          );
+
+          CREATE TABLE expenses (
+            id TEXT PRIMARY KEY,
+            shop_id INTEGER,
+            user_id INTEGER,
+            name TEXT,
+            quantity REAL,
+            price REAL,
+            price_kopecks INTEGER,
+            total REAL,
+            total_kopecks INTEGER,
+            note TEXT,
+            version INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'pending',
+            sync_action TEXT DEFAULT 'none',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          CREATE TABLE purchases (
+            id TEXT PRIMARY KEY,
+            shop_id INTEGER,
+            supplier_name TEXT,
+            total REAL,
+            total_kopecks INTEGER,
+            items TEXT,
+            status TEXT DEFAULT 'pending',
+            sync_action TEXT DEFAULT 'none',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          CREATE TABLE shops (
+            id INTEGER,
+            local_id TEXT,
+            name TEXT,
+            is_active INTEGER DEFAULT 1,
+            sync_action TEXT DEFAULT 'none',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          CREATE TABLE low_stock_alerts_sent (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            sent_at TEXT NOT NULL,
+            UNIQUE(product_id, shop_id)
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at);
+          CREATE INDEX IF NOT EXISTS idx_products_shop_id ON products(shop_id);
+          CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
+          CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+          CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+          CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, created_at);
+          CREATE INDEX IF NOT EXISTS idx_sync_queue_archived_status ON sync_queue(archived_at, status, created_at);
+
+          DELETE FROM sync_queue;
+          DELETE FROM sync_metadata;
+          DELETE FROM dashboard_cache;
+          DELETE FROM reports_cache;
+        `);
+      },
+      check: (db) => {
+        // Re-run if products table still has a local_id column (old schema)
+        return columnExists(db, "products", "local_id");
+      },
+    },
+    // Migration v25: hot-path indexes for the product picker, OutboxProcessor,
+    // and shop-scoped queries that previously triggered full table scans.
+    {
+      version: 25,
+      sql: `
+        CREATE INDEX IF NOT EXISTS idx_products_shop_status ON products(shop_id, sync_action, status);
+        CREATE INDEX IF NOT EXISTS idx_products_code ON products(code);
+        CREATE INDEX IF NOT EXISTS idx_products_name ON products(name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_sales_shop_created ON sales(shop_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_debts_shop_id ON debts(shop_id);
+        CREATE INDEX IF NOT EXISTS idx_debts_user_id ON debts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_expenses_shop_created ON expenses(shop_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_purchases_shop_created ON purchases(shop_id, created_at);
+      `,
+      check: (db) => !indexExists(db, "idx_products_code"),
+    },
+    // Migration v26: FTS5 full-text index for product search.
+    // Replaces LIKE '%query%' table scans with token-based ranked search.
+    // The contentless variant keeps the index in sync via triggers from
+    // products INSERT/UPDATE/DELETE.
+    {
+      version: 26,
+      migrate: (db) => {
+        db.execSync(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
+            id UNINDEXED,
+            shop_id UNINDEXED,
+            name,
+            code,
+            tokenize = 'unicode61 remove_diacritics 2'
+          );
+
+          CREATE TRIGGER IF NOT EXISTS products_fts_ai AFTER INSERT ON products BEGIN
+            INSERT INTO products_fts(id, shop_id, name, code)
+            VALUES (new.id, new.shop_id, new.name, COALESCE(new.code, ''));
+          END;
+
+          CREATE TRIGGER IF NOT EXISTS products_fts_ad AFTER DELETE ON products BEGIN
+            DELETE FROM products_fts WHERE id = old.id;
+          END;
+
+          CREATE TRIGGER IF NOT EXISTS products_fts_au AFTER UPDATE ON products BEGIN
+            DELETE FROM products_fts WHERE id = old.id;
+            INSERT INTO products_fts(id, shop_id, name, code)
+            VALUES (new.id, new.shop_id, new.name, COALESCE(new.code, ''));
+          END;
+
+          INSERT INTO products_fts(id, shop_id, name, code)
+          SELECT id, shop_id, name, COALESCE(code, '') FROM products
+          WHERE id NOT IN (SELECT id FROM products_fts);
+        `);
+      },
+      check: (db) => {
+        const row = db.getFirstSync<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'products_fts'"
+        );
+        return (row?.count ?? 0) === 0;
+      },
+    },
   ];
 
   db.execSync(`

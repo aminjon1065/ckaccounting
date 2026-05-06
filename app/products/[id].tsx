@@ -84,11 +84,11 @@ export default function ProductDetailScreen() {
     setError("");
 
     // Always load local first — instant, always works
-    const local = await getLocalProductById(Number(id));
+    const local = await getLocalProductById(id);
     if (local) setProduct(local);
 
     try {
-      const p = await api.products.get(Number(id), token);
+      const p = await api.products.get(id, token);
       setProduct(p);
     } catch (e: any) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");

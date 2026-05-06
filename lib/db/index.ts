@@ -37,7 +37,6 @@ function localDebtTransactionType(
 export async function insertOrUpdateProducts(products: Product[], shopId?: number) {
   const db = getDb();
 
-  // Lazy-load conflict utilities to avoid circular imports
   let detectConflict: (localId: string, entityType: "product", localData: Record<string, unknown>, serverData: Record<string, unknown>) => ReturnType<typeof import("../sync/ConflictContext").detectConflict>;
   let queueExternalConflict: (conflict: Exclude<ReturnType<typeof detectConflict>, null>) => void;
 
@@ -46,99 +45,91 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
     detectConflict = mod.detectConflict;
     queueExternalConflict = mod.queueExternalConflict;
   } catch {
-    // ConflictContext not available — skip conflict detection
     detectConflict = () => null;
     queueExternalConflict = () => {};
   }
 
+  // Batch-load every existing row up front to replace N round-trips with 1.
+  // This is the hottest sync path: a 500-product catalog used to issue 500
+  // SELECTs inside the transaction; it's now a single query.
+  type ExistingRow = { id: string; sync_action: string; status: string; stock_quantity: number; pending_stock_delta: number };
+  const existingMap = new Map<string, ExistingRow>();
+  if (products.length > 0) {
+    const ids = products.map((p) => p.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = await db.getAllAsync<ExistingRow>(
+      `SELECT id, sync_action, status, stock_quantity, pending_stock_delta FROM products WHERE id IN (${placeholders})`,
+      ids
+    );
+    for (const r of rows) existingMap.set(r.id, r);
+  }
+
   await db.withTransactionAsync(async () => {
     for (const p of products) {
-      // Server tombstone: delete local record if deleted_at is set
       if ((p as any).deleted_at) {
         await db.runAsync(
-          "DELETE FROM products WHERE id = ? OR local_id = ?",
-          [p.id, (p as any).local_id ?? ""]
+          `UPDATE products SET sync_action = 'delete', status = 'synced', updated_at = ? WHERE id = ?`,
+          [new Date().toISOString(), p.id]
         );
         continue;
       }
 
-      // Skip products with pending local changes — don't overwrite un-synced edits
-      const existingLocalId = (p as any).local_id ?? "";
-      const existing = await db.getFirstAsync<{ sync_action: string; stock_quantity: number; pending_stock_delta: number; local_id: string | null }>(
-        "SELECT sync_action, stock_quantity, pending_stock_delta, local_id FROM products WHERE id = ? OR local_id = ?",
-        [p.id, existingLocalId]
-      );
-      // If product has pending stock delta, merge server stock + local delta
+      const existing = existingMap.get(p.id) ?? null;
+
+      if (existing?.sync_action === "delete" && existing?.status === "synced") {
+        continue;
+      }
+
       if (existing && existing.pending_stock_delta !== 0) {
         const serverStock = p.stock_quantity;
         const localDelta = existing.pending_stock_delta;
-        // Only consume the delta if server stock confirms the sale happened
-        // (i.e. server stock decreased by at least as much as our delta suggests).
-        // If server didn't decrement (sale not yet processed), preserve delta.
-        // merged_stock reflects the server's view after applying confirmed changes.
         const mergedStock = serverStock + localDelta;
-        // We consume delta ONLY when server stock is consistent with the delta being
-        // "confirmed" (server stock is lower than it would be without the sale).
-        // If server stock is still high (sale not yet confirmed), keep delta pending.
-        // Delta is consumed incrementally: compute how much of the delta is reflected
-        // in the current server stock, then reduce pending_stock_delta accordingly.
         const confirmedDelta = localDelta < 0
-          ? Math.min(0, serverStock - (mergedStock - localDelta)) // stock went down
-          : 0; // positive delta: don't consume, it's from a cancelled/rejected sale
+          ? Math.min(0, serverStock - (mergedStock - localDelta))
+          : 0;
         const remainingDelta = localDelta - confirmedDelta;
         await db.runAsync(
           `INSERT OR REPLACE INTO products (
-            id, local_id, shop_id, name, code, unit, cost_price, sale_price,
+            id, shop_id, name, code, unit, cost_price, sale_price,
             pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta,
             cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            p.id, existing?.local_id ?? null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
+            p.id, p.shop_id ?? shopId, p.name, p.code, p.unit, p.cost_price, p.sale_price,
             p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null,
-            mergedStock,
-            p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
+            mergedStock, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
             (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced",
-            remainingDelta,
-            toKopecks(p.cost_price), toKopecks(p.sale_price), toKopecks(p.bulk_price),
+            remainingDelta, toKopecks(p.cost_price), toKopecks(p.sale_price), toKopecks(p.bulk_price),
           ]
         );
-        // Clear low-stock alert if stock is now above threshold
         if (p.stock_quantity > (p.low_stock_alert ?? 0)) {
           await db.runAsync(
             "DELETE FROM low_stock_alerts_sent WHERE product_id = ? AND shop_id = ?",
-            [p.id, shopId ?? p.shop_id]
+            [p.id, p.shop_id ?? shopId]
           );
         }
         continue;
       }
+
       if (existing && existing.sync_action && existing.sync_action !== "none") {
-        // Pending local change conflicts with server version — detect and surface
         const localRow = await db.getFirstAsync<Record<string, unknown>>(
-          "SELECT * FROM products WHERE id = ? OR local_id = ?",
-          [p.id, existingLocalId]
+          "SELECT * FROM products WHERE id = ?", [p.id]
         );
         if (localRow) {
-          const localData: Record<string, unknown> = { ...localRow };
           const serverData: Record<string, unknown> = {
             name: p.name, code: p.code, unit: p.unit,
             cost_price: p.cost_price, sale_price: p.sale_price,
             pricing_mode: p.pricing_mode, markup_percent: p.markup_percent,
             bulk_price: p.bulk_price, bulk_threshold: p.bulk_threshold,
             stock_quantity: p.stock_quantity, low_stock_alert: p.low_stock_alert,
-            photo_url: p.photo_url ?? p.image_url,
-            version: (p as any).version,
+            photo_url: p.photo_url ?? p.image_url, version: (p as any).version,
           };
-          const conflict = detectConflict(
-            String(existingLocalId || p.id),
-            "product",
-            localData,
-            serverData
-          );
+          const conflict = detectConflict(p.id, "product", { ...localRow }, serverData);
           if (conflict) queueExternalConflict(conflict);
         }
         continue;
       }
-      // Clear low-stock alert if stock is now above threshold (normal server sync)
+
       if (p.stock_quantity > (p.low_stock_alert ?? 0)) {
         await db.runAsync(
           "DELETE FROM low_stock_alerts_sent WHERE product_id = ? AND shop_id = ?",
@@ -147,13 +138,14 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO products (
-          id, local_id, shop_id, name, code, unit, cost_price, sale_price,
+          id, shop_id, name, code, unit, cost_price, sale_price,
           pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity, low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status, pending_stock_delta,
           cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         [
-          p.id, existing?.local_id ?? null, shopId ?? p.shop_id, p.name, p.code, p.unit, p.cost_price, p.sale_price,
-          p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null, p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
+          p.id, p.shop_id ?? shopId, p.name, p.code, p.unit, p.cost_price, p.sale_price,
+          p.pricing_mode ?? "fixed", p.markup_percent ?? null, p.bulk_price ?? null, p.bulk_threshold ?? null,
+          p.stock_quantity, p.low_stock_alert ?? null, p.photo_url ?? p.image_url ?? null,
           (p as any).version ?? 1, p.updated_at, new Date().toISOString(), "none", "synced",
           toKopecks(p.cost_price), toKopecks(p.sale_price), toKopecks(p.bulk_price),
         ]
@@ -162,37 +154,14 @@ export async function insertOrUpdateProducts(products: Product[], shopId?: numbe
   });
 }
 
-export async function getLocalProducts(shop_id?: number, search?: string): Promise<LocalProduct[]> {
-  const db = getDb();
-  let query = "SELECT * FROM products";
-  let params: any[] = [];
-
-  if (shop_id && search) {
-    query += " WHERE shop_id = ? AND (name LIKE ? OR code LIKE ?) AND (sync_action IS NULL OR sync_action != 'delete')";
-    params = [shop_id, `%${search}%`, `%${search}%`];
-  } else if (shop_id) {
-    query += " WHERE shop_id = ? AND (sync_action IS NULL OR sync_action != 'delete')";
-    params = [shop_id];
-  } else if (search) {
-    query += " WHERE (name LIKE ? OR code LIKE ?) AND (sync_action IS NULL OR sync_action != 'delete')";
-    params = [`%${search}%`, `%${search}%`];
-  } else {
-    query += " WHERE (sync_action IS NULL OR sync_action != 'delete')";
-  }
-
-  query += " ORDER BY name ASC";
-
-  const results = await db.getAllAsync<any>(query, params);
-  return results.map(r => {
-    const photoUrl = resolveBackendAssetUrl(r.photo_url);
-
-    return {
+function mapProductRow(r: any): LocalProduct {
+  const photoUrl = resolveBackendAssetUrl(r.photo_url);
+  return {
     id: r.id,
     shop_id: r.shop_id,
     name: r.name,
     code: r.code ?? null,
     unit: r.unit ?? null,
-    // Prefer kopeck columns (integer minor units) over float columns for precision
     cost_price: r.cost_price_kopecks != null ? fromKopecks(r.cost_price_kopecks) : Number(r.cost_price),
     sale_price: r.sale_price_kopecks != null ? fromKopecks(r.sale_price_kopecks) : Number(r.sale_price),
     pricing_mode: r.pricing_mode ?? "fixed",
@@ -205,15 +174,73 @@ export async function getLocalProducts(shop_id?: number, search?: string): Promi
     image_url: photoUrl,
     created_at: r.created_at ?? r.updated_at,
     updated_at: r.updated_at,
-    local_id: r.local_id ?? undefined,
     status: (r.status as LocalProduct["status"]) ?? "synced",
     sync_action: (r.sync_action as LocalProduct["sync_action"]) ?? "none",
     last_synced_at: r.last_synced_at ?? undefined,
-    };
-  });
+  };
 }
 
-export async function getLocalProductById(id: number): Promise<Product | null> {
+/**
+ * Build a safe FTS5 MATCH query from raw user input.
+ *
+ * - Splits on whitespace and drops short noise tokens.
+ * - Escapes embedded double quotes by doubling them (the FTS5 grammar's only
+ *   way to include a quote inside a phrase) and wraps each token as a phrase
+ *   to neutralize special characters like `-`, `:`, `*` in the input.
+ * - Appends a `*` after each phrase for prefix matching.
+ *
+ * Returns null when the cleaned input is empty (caller should fall back to
+ * a non-search query).
+ */
+function buildFtsMatchQuery(search: string): string | null {
+  const tokens = search
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return null;
+  return tokens.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" ");
+}
+
+export async function getLocalProducts(shop_id?: number, search?: string): Promise<LocalProduct[]> {
+  const db = getDb();
+  const trimmedSearch = search?.trim();
+
+  // Search path: use the FTS5 virtual table for token-based ranked matching.
+  // Falls back to a LIKE scan if the user input degenerates to an empty query.
+  if (trimmedSearch) {
+    const matchQuery = buildFtsMatchQuery(trimmedSearch);
+    if (matchQuery) {
+      const params: any[] = [matchQuery];
+      let sql = `
+        SELECT p.* FROM products p
+        JOIN products_fts f ON f.id = p.id
+        WHERE products_fts MATCH ?
+          AND (p.sync_action IS NULL OR p.sync_action != 'delete')
+      `;
+      if (shop_id) {
+        sql += " AND p.shop_id = ?";
+        params.push(shop_id);
+      }
+      sql += " ORDER BY rank";
+      const results = await db.getAllAsync<any>(sql, params);
+      return results.map(mapProductRow);
+    }
+  }
+
+  // Non-search path
+  let query = "SELECT * FROM products WHERE (sync_action IS NULL OR sync_action != 'delete')";
+  const params: any[] = [];
+  if (shop_id) {
+    query += " AND shop_id = ?";
+    params.push(shop_id);
+  }
+  query += " ORDER BY name ASC";
+
+  const results = await db.getAllAsync<any>(query, params);
+  return results.map(mapProductRow);
+}
+
+export async function getLocalProductById(id: string): Promise<Product | null> {
   const db = getDb();
   const r = await db.getFirstAsync<any>("SELECT * FROM products WHERE id = ? AND (sync_action IS NULL OR sync_action != 'delete')", [id]);
   if (!r) return null;
@@ -233,19 +260,16 @@ export async function getLocalProductById(id: number): Promise<Product | null> {
   };
 }
 
-export async function decrementLocalProductStock(id: number, quantity: number) {
+export async function decrementLocalProductStock(id: string, quantity: number) {
   const db = getDb();
-  // Decrement stock optimistically AND track delta for sync
-  // pending_stock_delta accumulates (multiple offline sales accumulate)
   await db.runAsync(
     "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?), pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
     [quantity, quantity, id]
   );
 }
 
-export async function incrementLocalProductStock(id: number, quantity: number) {
+export async function incrementLocalProductStock(id: string, quantity: number) {
   const db = getDb();
-  // Increment stock optimistically AND track delta for sync
   await db.runAsync(
     "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
     [quantity, quantity, id]
@@ -264,8 +288,7 @@ export async function incrementLocalProductStock(id: number, quantity: number) {
 // We must restore stock_quantity so inventory is accurate for next retry.
 //
 
-export async function onSaleSyncSuccess(productId: number, quantity: number): Promise<void> {
-  // Incrementally cancel the delta — safe for parallel offline sales
+export async function onSaleSyncSuccess(productId: string, quantity: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
@@ -273,7 +296,7 @@ export async function onSaleSyncSuccess(productId: number, quantity: number): Pr
   );
 }
 
-export async function onPurchaseSyncSuccess(productId: number, quantity: number): Promise<void> {
+export async function onPurchaseSyncSuccess(productId: string, quantity: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
@@ -281,8 +304,7 @@ export async function onPurchaseSyncSuccess(productId: number, quantity: number)
   );
 }
 
-export async function cancelPendingStockDelta(productId: number, quantity: number): Promise<void> {
-  // Server rejected / sale failed — restore stock_quantity AND cancel delta
+export async function cancelPendingStockDelta(productId: string, quantity: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
@@ -290,7 +312,7 @@ export async function cancelPendingStockDelta(productId: number, quantity: numbe
   );
 }
 
-export async function cancelPendingPurchaseStockDelta(productId: number, quantity: number): Promise<void> {
+export async function cancelPendingPurchaseStockDelta(productId: string, quantity: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?), pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
@@ -305,7 +327,7 @@ export async function cancelPendingPurchaseStockDelta(productId: number, quantit
  * pending delta for the corrected quantities so the new sale's sync success will
  * correctly cancel it.
  */
-export async function applyRecoveryStockDelta(productId: number, quantity: number): Promise<void> {
+export async function applyRecoveryStockDelta(productId: string, quantity: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "UPDATE products SET stock_quantity = stock_quantity - ?, pending_stock_delta = pending_stock_delta - ? WHERE id = ?",
@@ -393,28 +415,66 @@ export async function setPurchasesLastSyncedAt(timestamp: string): Promise<void>
   );
 }
 
+/**
+ * Generic accessor for arbitrary sync_metadata keys. Used for the
+ * "oldest_synced_at" boundary that lets capped initial syncs grow
+ * historically when the user scrolls past the local window.
+ */
+export async function getSyncMetadata(key: string): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = ?",
+    [key]
+  );
+  return row?.value ?? null;
+}
+
+export async function setSyncMetadata(key: string, value: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)",
+    [key, value]
+  );
+}
+
+export async function getShopsLastSyncedAt(): Promise<string | null> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM sync_metadata WHERE key = 'shops_last_synced_at'"
+  );
+  return row?.value ?? null;
+}
+
+export async function setShopsLastSyncedAt(timestamp: string): Promise<void> {
+  const db = getDb();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('shops_last_synced_at', ?)",
+    [timestamp]
+  );
+}
+
 // LocalProduct extends Product with offline-first sync metadata
 export interface LocalProduct extends Product {
-  local_id?: string;
   status?: "pending" | "synced" | "failed";
   sync_action?: "none" | "create" | "update" | "delete";
   last_synced_at?: string | null;
 }
 
-// Insert or update a single product (used for offline-created products)
-export async function insertOrUpdateProduct(product: Product, localId?: string, syncAction = "none") {
+// Insert or update a single product (used for offline-created products).
+// product.id must be a UUID generated client-side before calling this.
+export async function insertOrUpdateProduct(product: Product, syncAction = "none") {
   const db = getDb();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       `INSERT OR REPLACE INTO products (
-        id, local_id, shop_id, name, code, unit, cost_price, sale_price,
+        id, shop_id, name, code, unit, cost_price, sale_price,
         pricing_mode, markup_percent, bulk_price, bulk_threshold, stock_quantity,
         low_stock_alert, photo_url, version, updated_at, last_synced_at, sync_action, status,
         pending_stock_delta,
         cost_price_kopecks, sale_price_kopecks, bulk_price_kopecks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       [
-        product.id, localId ?? null, product.shop_id, product.name, product.code,
+        product.id, product.shop_id, product.name, product.code,
         product.unit, product.cost_price, product.sale_price,
         product.pricing_mode ?? "fixed",
         product.markup_percent ?? null, product.bulk_price ?? null,
@@ -436,6 +496,7 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
         syncAction === "create" ? "POST" : "PATCH",
         syncAction === "create" ? "/products" : `/products/${product.id}`,
         {
+          id: product.id,
           name: product.name,
           code: product.code,
           unit: product.unit,
@@ -450,131 +511,97 @@ export async function insertOrUpdateProduct(product: Product, localId?: string, 
           shop_id: product.shop_id,
           photo_url: product.photo_url,
           version: (product as any).version ?? 1,
-          _local_id: localId,
         },
-        { "Idempotency-Key": `local-prod-${localId}` },
-        `local-prod-${localId}`
+        { "Idempotency-Key": `prod-${product.id}` },
+        `prod-${product.id}`
       );
     }
   });
 }
 
-export async function updateProductStatus(localId: string, status: string, syncAction?: string) {
+export async function updateProductStatus(id: string, status: string, syncAction?: string) {
   const db = getDb();
   if (syncAction !== undefined) {
     await db.runAsync(
-      "UPDATE products SET status = ?, sync_action = ? WHERE local_id = ?",
-      [status, syncAction, localId]
+      "UPDATE products SET status = ?, sync_action = ? WHERE id = ?",
+      [status, syncAction, id]
     );
   } else {
-    await db.runAsync("UPDATE products SET status = ? WHERE local_id = ?", [status, localId]);
+    await db.runAsync("UPDATE products SET status = ? WHERE id = ?", [status, id]);
   }
 }
 
 /**
  * Marks a product as deleted locally and queues a DELETE sync action.
  *
- * - Server-synced product (id > 0): updates sync_action='delete', queues DELETE /products/{id}.
- *   Uses id as fallback when local_id is NULL (server-synced rows have local_id=NULL).
- * - Local-only product (id < 0): cancels the pending CREATE from sync_queue (never sent to
- *   server) and physically deletes the local row.
+ * - Synced product: mark sync_action='delete', queue DELETE /products/{id}.
+ * - Local-only (sync_action='create', never sent): cancel the pending CREATE and delete the row.
  */
-export async function markProductDeletedLocally(productId: number, localId?: string | null): Promise<void> {
+export async function markProductDeletedLocally(productId: string): Promise<void> {
   const db = getDb();
 
-  if (productId > 0) {
+  const existing = await db.getFirstAsync<{ sync_action: string; version: number | null }>(
+    "SELECT sync_action, version FROM products WHERE id = ?",
+    [productId]
+  );
+
+  if (existing?.sync_action === "create") {
+    // Never synced — cancel the pending CREATE and remove the row
+    await db.runAsync(
+      "DELETE FROM sync_queue WHERE idempotency_key = ?",
+      [`prod-${productId}`]
+    );
+    await db.runAsync("DELETE FROM products WHERE id = ?", [productId]);
+  } else {
     // Server product — mark dirty and queue DELETE
-    if (localId) {
-      await db.runAsync(
-        "UPDATE products SET status = 'pending', sync_action = 'delete' WHERE local_id = ?",
-        [localId]
-      );
-    } else {
-      // local_id is NULL for server-synced rows; fall back to id
-      await db.runAsync(
-        "UPDATE products SET status = 'pending', sync_action = 'delete' WHERE id = ?",
-        [productId]
-      );
-    }
-    const idempKey = `local-prod-delete-${localId ?? productId}`;
+    await db.runAsync(
+      "UPDATE products SET status = 'pending', sync_action = 'delete' WHERE id = ?",
+      [productId]
+    );
+    const idempKey = `prod-delete-${productId}`;
     await queueSyncAction(
       "DELETE",
       `/products/${productId}`,
-      {},
+      { version: existing?.version ?? 1 },
       { "Idempotency-Key": idempKey },
       idempKey
     );
-  } else {
-    // Local-only product — cancel pending CREATE from sync_queue, then delete locally.
-    // The sync_queue entry uses path='/products' and idempotency_key='local-prod-{localId}'.
-    // Delete by idempotency key to avoid cancelling other products' pending creates.
-    if (localId) {
-      await db.runAsync(
-        "DELETE FROM sync_queue WHERE idempotency_key = ?",
-        [`local-prod-${localId}`]
-      );
-    }
-    // Also clean up by payload local_id as fallback (handles edge case where idempotency
-    // key column is NULL but payload contains _local_id).
-    await db.runAsync(
-      `DELETE FROM sync_queue
-       WHERE method = 'POST' AND path = '/products'
-         AND payload LIKE ? AND idempotency_key IS NULL`,
-      [`%\"_local_id\":\"${localId ?? String(productId)}\"%`]
-    );
-    await db.runAsync("DELETE FROM products WHERE id = ?", [productId]);
   }
 }
 
 /**
  * Marks an expense as deleted locally and queues a DELETE sync action.
  *
- * - Server-synced expense (id > 0): updates sync_action='delete', queues DELETE /expenses/{id}.
- *   Uses local_id fallback when available.
- * - Local-only expense (id < 0): cancels the pending CREATE from sync_queue and physically
- *   deletes the local row.
+ * - Synced expense: mark sync_action='delete', queue DELETE /expenses/{id}.
+ * - Local-only (sync_action='create'): cancel pending CREATE and delete the row.
  */
-export async function markExpenseDeletedLocally(expenseId: number, localId?: string | null): Promise<void> {
+export async function markExpenseDeletedLocally(expenseId: string): Promise<void> {
   const db = getDb();
 
-  if (expenseId > 0) {
-    // Server expense — mark dirty and queue DELETE
-    if (localId) {
-      await db.runAsync(
-        "UPDATE expenses SET status = 'pending', sync_action = 'delete' WHERE local_id = ?",
-        [localId]
-      );
-    } else {
-      // local_id is NULL for server-synced rows; fall back to id
-      await db.runAsync(
-        "UPDATE expenses SET status = 'pending', sync_action = 'delete' WHERE id = ?",
-        [expenseId]
-      );
-    }
-    const idempKey = `local-exp-delete-${localId ?? expenseId}`;
+  const existing = await db.getFirstAsync<{ sync_action: string; version: number | null }>(
+    "SELECT sync_action, version FROM expenses WHERE id = ?",
+    [expenseId]
+  );
+
+  if (existing?.sync_action === "create") {
+    await db.runAsync(
+      "DELETE FROM sync_queue WHERE idempotency_key = ?",
+      [`exp-${expenseId}`]
+    );
+    await db.runAsync("DELETE FROM expenses WHERE id = ?", [expenseId]);
+  } else {
+    await db.runAsync(
+      "UPDATE expenses SET status = 'pending', sync_action = 'delete' WHERE id = ?",
+      [expenseId]
+    );
+    const idempKey = `exp-delete-${expenseId}`;
     await queueSyncAction(
       "DELETE",
       `/expenses/${expenseId}`,
-      {},
+      { version: existing?.version ?? 1 },
       { "Idempotency-Key": idempKey },
       idempKey
     );
-  } else {
-    // Local-only expense — cancel pending CREATE from sync_queue, then delete locally.
-    // Clean up by idempotency key and by payload local_id as fallback.
-    if (localId) {
-      await db.runAsync(
-        "DELETE FROM sync_queue WHERE idempotency_key = ?",
-        [`local-exp-${localId}`]
-      );
-    }
-    await db.runAsync(
-      `DELETE FROM sync_queue
-       WHERE method = 'POST' AND path = '/expenses'
-         AND (payload LIKE ? OR idempotency_key = ?)`,
-      [`%"local_id":"${localId ?? String(expenseId)}"%`, `local-exp-${localId ?? expenseId}`]
-    );
-    await db.runAsync("DELETE FROM expenses WHERE id = ?", [expenseId]);
   }
 }
 
@@ -593,7 +620,6 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
     name: r.name,
     code: r.code ?? null,
     unit: r.unit ?? null,
-    // Prefer kopeck columns for precision — consistent with getLocalProducts()
     cost_price: r.cost_price_kopecks != null ? fromKopecks(r.cost_price_kopecks) : Number(r.cost_price),
     sale_price: r.sale_price_kopecks != null ? fromKopecks(r.sale_price_kopecks) : Number(r.sale_price),
     pricing_mode: r.pricing_mode ?? "fixed",
@@ -606,7 +632,6 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
     image_url: photoUrl,
     created_at: r.created_at ?? r.updated_at,
     updated_at: r.updated_at,
-    local_id: r.local_id ?? undefined,
     status: (r.status as LocalProduct["status"]) ?? "pending",
     sync_action: (r.sync_action as LocalProduct["sync_action"]) ?? "none",
     last_synced_at: r.last_synced_at ?? undefined,
@@ -614,9 +639,9 @@ export async function getPendingSyncProducts(): Promise<LocalProduct[]> {
   });
 }
 
-export async function deleteLocalProduct(localId: string) {
+export async function deleteLocalProduct(id: string) {
   const db = getDb();
-  await db.runAsync("DELETE FROM products WHERE local_id = ?", [localId]);
+  await db.runAsync("DELETE FROM products WHERE id = ?", [id]);
 }
 
 // Debt Queries
@@ -624,61 +649,47 @@ export async function insertOrUpdateDebts(debts: Debt[], shopId?: number) {
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const d of debts) {
-      // Server tombstone: delete local record if deleted_at is set
       if ((d as any).deleted_at) {
-        await db.runAsync(
-          "DELETE FROM debts WHERE id = ? OR local_id = ?",
-          [d.id, (d as any).local_id ?? ""]
-        );
+        await db.runAsync("DELETE FROM debts WHERE id = ?", [d.id]);
         continue;
       }
 
-      // Skip if a local pending debt (never synced to server) already exists.
-      // This prevents server sync from overwriting unsent local changes.
-      const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
-        "SELECT sync_action, local_id FROM debts WHERE id = ? OR local_id = ?",
-        [d.id, (d as any).local_id ?? ""]
+      const existing = await db.getFirstAsync<{ sync_action: string }>(
+        "SELECT sync_action FROM debts WHERE id = ?",
+        [d.id]
       );
       if (existing && existing.sync_action && existing.sync_action !== "none") {
-        // Local pending change takes priority — don't overwrite
         continue;
       }
 
-      // Preserve existing local_id if any; local offline-created debts provide one.
-      const incomingLocalId = (d as any).local_id ?? null;
-      const existingLocalId = existing?.local_id ?? incomingLocalId;
       const incomingSyncAction = (d as any).sync_action ?? "none";
       const openingBalance = d.opening_balance ?? 0;
       await db.runAsync(
         `INSERT OR REPLACE INTO debts (
-          id, local_id, shop_id, user_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at,
+          id, shop_id, user_id, person_name, opening_balance, balance, direction, updated_at, last_synced_at,
           opening_balance_kopecks, balance_kopecks, sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          d.id, existingLocalId, shopId ?? d.shop_id ?? null, (d as any).user_id ?? null, d.person_name, openingBalance, d.balance,
+          d.id, shopId ?? d.shop_id ?? null, (d as any).user_id ?? null, d.person_name, openingBalance, d.balance,
           d.direction ?? "receivable", d.updated_at, new Date().toISOString(),
           toKopecks(openingBalance), toKopecks(d.balance), incomingSyncAction,
         ]
       );
       if (d.transactions) {
         for (const tx of d.transactions) {
-          const txLocalId = (tx as any).local_id ?? null;
-          // Check for pending local transaction before replacing.
-          // FIX: guard against NULL local_id to avoid matching unrelated rows.
           const existingTx = await db.getFirstAsync<{ sync_action: string }>(
-            "SELECT sync_action FROM debt_transactions WHERE id = ? OR (local_id IS NOT NULL AND local_id = ?)",
-            [tx.id, txLocalId ?? ""]
+            "SELECT sync_action FROM debt_transactions WHERE id = ?",
+            [tx.id]
           );
           if (existingTx && existingTx.sync_action && existingTx.sync_action !== "none") {
-            continue; // preserve local pending transaction
+            continue;
           }
           await db.runAsync(
             `INSERT OR REPLACE INTO debt_transactions (
-              id, local_id, debt_id, type, amount, note, created_at, amount_kopecks, sync_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              id, debt_id, type, amount, note, created_at, amount_kopecks, sync_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               tx.id,
-              txLocalId,
               tx.debt_id ?? d.id,
               localDebtTransactionType(tx.type, d.direction),
               tx.amount,
@@ -698,20 +709,18 @@ export async function insertOrUpdateDebtTransactions(transactions: DebtTransacti
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const tx of transactions) {
-      const txLocalId = (tx as any).local_id ?? null;
-      // Skip if a local pending transaction (never synced) already exists
       const existing = await db.getFirstAsync<{ sync_action: string }>(
-        "SELECT sync_action FROM debt_transactions WHERE id = ? OR (local_id IS NOT NULL AND local_id = ?)",
-        [tx.id, txLocalId ?? ""]
+        "SELECT sync_action FROM debt_transactions WHERE id = ?",
+        [tx.id]
       );
       if (existing && existing.sync_action && existing.sync_action !== "none") {
-        continue; // preserve local pending transaction
+        continue;
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO debt_transactions (
-          id, local_id, debt_id, type, amount, note, created_at, amount_kopecks, sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [tx.id, txLocalId, tx.debt_id, tx.type, tx.amount, tx.note ?? null, tx.created_at, toKopecks(tx.amount), "none"]
+          id, debt_id, type, amount, note, created_at, amount_kopecks, sync_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [tx.id, tx.debt_id, tx.type, tx.amount, tx.note ?? null, tx.created_at, toKopecks(tx.amount), "none"]
       );
     }
   });
@@ -734,7 +743,7 @@ export async function getLocalDebts(shop_id?: number, userId?: number | null): P
     query += " WHERE " + conditions.join(" AND ");
   }
   query += " ORDER BY updated_at DESC";
-  
+
   const results = await db.getAllAsync<any>(query, params);
   return results.map(r => ({
     id: r.id,
@@ -754,17 +763,14 @@ export async function getLocalDebts(shop_id?: number, userId?: number | null): P
   }));
 }
 
-export async function getLocalDebtById(id: number): Promise<Debt | null> {
+export async function getLocalDebtById(id: string): Promise<Debt | null> {
   const db = getDb();
-  // FIX: also search by local_id (string version of the tempId) so that after sync
-  // — when the debt's `id` column is overwritten with the real server id — navigation
-  // using the old tempId still resolves correctly.
   const r = await db.getFirstAsync<any>(
-    "SELECT * FROM debts WHERE id = ? OR local_id = ?",
-    [id, String(id)]
+    "SELECT * FROM debts WHERE id = ?",
+    [id]
   );
   if (!r) return null;
-  
+
   const txs = await getLocalDebtTransactions(r.id);
   return {
     id: r.id,
@@ -784,7 +790,7 @@ export async function getLocalDebtById(id: number): Promise<Debt | null> {
   };
 }
 
-export async function getLocalDebtTransactions(debt_id: number): Promise<DebtTransaction[]> {
+export async function getLocalDebtTransactions(debt_id: string): Promise<DebtTransaction[]> {
   const db = getDb();
   const results = await db.getAllAsync<any>(
     "SELECT * FROM debt_transactions WHERE debt_id = ? ORDER BY created_at DESC",
@@ -834,8 +840,6 @@ export async function claimPendingSyncActions(batchSize = 10): Promise<SyncActio
   const db = getDb();
   const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Atomic claim: mark rows as 'processing' with batch_id atomically.
-  // Only claim non-archived rows.
   await db.runAsync(
     `UPDATE sync_queue
      SET status = 'processing', batch_id = ?
@@ -850,7 +854,6 @@ export async function claimPendingSyncActions(batchSize = 10): Promise<SyncActio
     [batchId, batchSize]
   );
 
-  // Fetch all actions with this batch_id (only the ones we just claimed)
   return db.getAllAsync<SyncAction>(
     "SELECT * FROM sync_queue WHERE batch_id = ? ORDER BY id ASC",
     [batchId]
@@ -885,7 +888,6 @@ export async function getDeadSyncActionsCount(): Promise<number> {
 export async function markSyncActionStatus(id: number, status: "pending" | "processing" | "failed" | "completed" | "dead", incrementRetry = false, lastError?: string) {
   const db = getDb();
   if (status === "completed") {
-    // Soft-delete: mark archived so the row remains for idempotency audit and crash reconciliation.
     await db.runAsync(
       "UPDATE sync_queue SET status = 'completed', archived_at = ? WHERE id = ?",
       [new Date().toISOString(), id]
@@ -945,8 +947,7 @@ export async function archiveSyncActions(
 
 // Sale item stored as JSON in the items column
 interface SaleRow {
-  id: number;
-  local_id: string;
+  id: string;
   shop_id: number | null;
   user_id: number | null;
   customer_name: string | null;
@@ -971,7 +972,6 @@ interface SaleRow {
 
 // LocalSale extends Sale with offline-first sync metadata
 export interface LocalSale extends Sale {
-  local_id: string;
   shop_id?: number;
   user_id?: number;
   status: "pending" | "synced" | "failed";
@@ -979,16 +979,16 @@ export interface LocalSale extends Sale {
   last_synced_at?: string | null;
 }
 
-async function getSaleItemsForLocalId(localId: string): Promise<SaleItem[]> {
-  if (!localId) return [];
+async function getSaleItemsForId(saleId: string): Promise<SaleItem[]> {
+  if (!saleId) return [];
   const db = getDb();
   const rows = await db.getAllAsync<{
-    id: number; product_id: number | null; product_name: string | null;
+    id: string; product_id: string | null; product_name: string | null;
     unit: string | null; quantity: number; unit_price: number; total: number;
     unit_price_kopecks: number | null; total_kopecks: number | null;
   }>(
-    "SELECT id, product_id, product_name, unit, quantity, unit_price, total, unit_price_kopecks, total_kopecks FROM sale_items WHERE sale_local_id = ?",
-    [localId]
+    "SELECT id, product_id, product_name, unit, quantity, unit_price, total, unit_price_kopecks, total_kopecks FROM sale_items WHERE sale_id = ?",
+    [saleId]
   );
   return rows.map((row) => ({
     id: row.id,
@@ -996,21 +996,18 @@ async function getSaleItemsForLocalId(localId: string): Promise<SaleItem[]> {
     product_name: row.product_name,
     unit: row.unit ?? undefined,
     quantity: row.quantity,
-    // Prefer kopeck columns for precision
     price: row.unit_price_kopecks != null ? fromKopecks(row.unit_price_kopecks) : row.unit_price,
     total: row.total_kopecks != null ? fromKopecks(row.total_kopecks) : row.total,
   }));
 }
 
 async function mapRowToSale(r: SaleRow): Promise<Sale> {
-  const items = await getSaleItemsForLocalId(r.local_id);
-  // Fallback: parse items JSON when sale_items table is empty (remote-synced sales)
+  const items = await getSaleItemsForId(r.id);
   const saleItems = items.length > 0 ? items : parseSaleItemsJson(r.items);
   return {
     id: r.id,
     type: r.type as Sale["type"],
     customer_name: r.customer_name,
-    // Prefer kopeck columns for precision
     total: r.total_kopecks != null ? fromKopecks(r.total_kopecks) : (r.total ?? 0),
     discount: r.discount_kopecks != null ? fromKopecks(r.discount_kopecks) : (r.discount ?? 0),
     paid: r.paid_kopecks != null ? fromKopecks(r.paid_kopecks) : (r.paid ?? 0),
@@ -1036,7 +1033,6 @@ async function mapRowToLocalSale(r: SaleRow): Promise<LocalSale> {
   const base = await mapRowToSale(r);
   return {
     ...base,
-    local_id: r.local_id,
     shop_id: r.shop_id ?? undefined,
     user_id: r.user_id ?? undefined,
     status: r.status as LocalSale["status"],
@@ -1045,18 +1041,18 @@ async function mapRowToLocalSale(r: SaleRow): Promise<LocalSale> {
   };
 }
 
-export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: number, userId?: number) {
+// sale.id must be a UUID generated client-side before calling this.
+export async function insertOrUpdateSale(sale: Sale, shopId?: number, userId?: number) {
   const db = getDb();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       `INSERT OR REPLACE INTO sales (
-        id, local_id, shop_id, user_id, customer_name, type, total, discount, paid, debt,
+        id, shop_id, user_id, customer_name, type, total, discount, paid, debt,
         payment_type, notes, items, status, sync_action, created_at, updated_at, last_synced_at,
         total_kopecks, discount_kopecks, paid_kopecks, debt_kopecks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sale.id,
-        localId,
         shopId ?? null,
         userId ?? null,
         sale.customer_name,
@@ -1077,17 +1073,16 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
       ]
     );
 
-    // Write sale items to normalized sale_items table for queryability
-    await db.runAsync("DELETE FROM sale_items WHERE sale_local_id = ?", [localId]);
+    await db.runAsync("DELETE FROM sale_items WHERE sale_id = ?", [sale.id]);
     const now = new Date().toISOString();
     for (const item of sale.items ?? []) {
       await db.runAsync(
-        `INSERT INTO sale_items (sale_local_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
+        `INSERT INTO sale_items (sale_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          localId,
+          sale.id,
           item.product_id ?? null,
-          item.product_name ?? item.name ?? "",
+          item.product_name ?? (item as any).name ?? "",
           item.unit ?? null,
           item.quantity,
           item.price,
@@ -1099,11 +1094,11 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
       );
     }
 
-    // Queue for sync — the sync_queue loop handles HTTP replay with FIFO ordering
     await queueSyncAction(
       "POST",
       "/sales",
       {
+        id: sale.id,
         type: sale.type,
         customer_name: sale.customer_name,
         total: sale.total,
@@ -1114,13 +1109,11 @@ export async function insertOrUpdateSale(sale: Sale, localId: string, shopId?: n
         notes: sale.notes,
         items: sale.items,
         shop_id: shopId,
-        _local_id: localId,
       },
-      { "Idempotency-Key": `local-${localId}` },
-      `local-${localId}`
+      { "Idempotency-Key": `sale-${sale.id}` },
+      `sale-${sale.id}`
     );
 
-    // Invalidate dashboard cache so next load fetches fresh data
     await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
@@ -1129,32 +1122,25 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const sale of sales) {
-      // Server tombstone: delete local record if deleted_at is set
       if ((sale as any).deleted_at) {
-        await db.runAsync(
-          "DELETE FROM sales WHERE id = ? OR local_id = ?",
-          [sale.id, String(sale.id)]
-        );
+        await db.runAsync("DELETE FROM sales WHERE id = ?", [sale.id]);
         continue;
       }
-      // INSERT OR IGNORE: never overwrite a locally pending sale (sync_action != 'none')
-      const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
-        "SELECT sync_action, local_id FROM sales WHERE id = ? OR local_id = ?",
-        [sale.id, String(sale.id)]
+      const existing = await db.getFirstAsync<{ sync_action: string }>(
+        "SELECT sync_action FROM sales WHERE id = ?",
+        [sale.id]
       );
       if (existing && existing.sync_action !== "none") {
-        continue; // skip — local changes pending, will sync separately
+        continue;
       }
-      const saleLocalId = existing?.local_id ?? String(sale.id);
       await db.runAsync(
         `INSERT OR REPLACE INTO sales (
-          id, local_id, shop_id, user_id, customer_name, type, total, discount, paid, debt,
+          id, shop_id, user_id, customer_name, type, total, discount, paid, debt,
           payment_type, notes, items, status, sync_action, created_at, updated_at, last_synced_at,
           total_kopecks, discount_kopecks, paid_kopecks, debt_kopecks
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sale.id,
-          saleLocalId,
           shopId ?? null,
           sale.user_id ?? null,
           sale.customer_name,
@@ -1175,17 +1161,16 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
         ]
       );
 
-      // Populate sale_items from the server's items JSON so mapRowToSale never returns empty
-      await db.runAsync("DELETE FROM sale_items WHERE sale_local_id = ?", [saleLocalId]);
+      await db.runAsync("DELETE FROM sale_items WHERE sale_id = ?", [sale.id]);
       const now = new Date().toISOString();
       for (const item of sale.items ?? []) {
         await db.runAsync(
-          `INSERT INTO sale_items (sale_local_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
+          `INSERT INTO sale_items (sale_id, product_id, product_name, unit, quantity, unit_price, total, created_at, unit_price_kopecks, total_kopecks)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            saleLocalId,
+            sale.id,
             item.product_id ?? null,
-            item.product_name ?? item.name ?? "",
+            item.product_name ?? (item as any).name ?? "",
             item.unit ?? null,
             item.quantity,
             item.price,
@@ -1221,26 +1206,24 @@ export async function getLocalSales(shopId?: number, userId?: number): Promise<L
 
   if (results.length === 0) return [];
 
-  // Batch-fetch all sale_items for these sales in 1 query instead of N
-  const saleLocalIds = results.map(r => r.local_id).filter(Boolean);
-  const allItems = saleLocalIds.length > 0
+  const saleIds = results.map(r => r.id).filter(Boolean);
+  const allItems = saleIds.length > 0
     ? await db.getAllAsync<{
-        sale_local_id: string; id: number; product_id: number | null;
+        sale_id: string; id: string; product_id: string | null;
         product_name: string | null; unit: string | null;
         quantity: number; unit_price: number; total: number;
         unit_price_kopecks: number | null; total_kopecks: number | null;
       }>(
-        `SELECT sale_local_id, id, product_id, product_name, unit, quantity, unit_price, total,
+        `SELECT sale_id, id, product_id, product_name, unit, quantity, unit_price, total,
                 unit_price_kopecks, total_kopecks
-         FROM sale_items WHERE sale_local_id IN (${saleLocalIds.map(() => "?").join(", ")})`,
-        saleLocalIds
+         FROM sale_items WHERE sale_id IN (${saleIds.map(() => "?").join(", ")})`,
+        saleIds
       )
     : [];
 
-  // Group items by sale_local_id in memory
   const itemsBySale = new Map<string, SaleItem[]>();
   for (const item of allItems) {
-    const list = itemsBySale.get(item.sale_local_id) ?? [];
+    const list = itemsBySale.get(item.sale_id) ?? [];
     list.push({
       id: item.id,
       product_id: item.product_id,
@@ -1250,24 +1233,22 @@ export async function getLocalSales(shopId?: number, userId?: number): Promise<L
       price: item.unit_price_kopecks != null ? fromKopecks(item.unit_price_kopecks) : item.unit_price,
       total: item.total_kopecks != null ? fromKopecks(item.total_kopecks) : item.total,
     });
-    itemsBySale.set(item.sale_local_id, list);
+    itemsBySale.set(item.sale_id, list);
   }
 
   return results.map(r => ({
     id: r.id,
     type: r.type as Sale["type"],
     customer_name: r.customer_name,
-    // Prefer kopeck columns for precision — consistent with mapRowToSale()
     total: r.total_kopecks != null ? fromKopecks(r.total_kopecks) : (r.total ?? 0),
     discount: r.discount_kopecks != null ? fromKopecks(r.discount_kopecks) : (r.discount ?? 0),
     paid: r.paid_kopecks != null ? fromKopecks(r.paid_kopecks) : (r.paid ?? 0),
     debt: r.debt_kopecks != null ? fromKopecks(r.debt_kopecks) : (r.debt ?? 0),
     payment_type: (r.payment_type as Sale["payment_type"]) ?? "cash",
     notes: r.notes ?? undefined,
-    items: itemsBySale.get(r.local_id) ?? parseSaleItemsJson(r.items),
+    items: itemsBySale.get(r.id) ?? parseSaleItemsJson(r.items),
     created_at: r.created_at,
     updated_at: r.updated_at,
-    local_id: r.local_id,
     shop_id: r.shop_id ?? undefined,
     user_id: r.user_id ?? undefined,
     status: (r.status as LocalSale["status"]) ?? "synced",
@@ -1276,39 +1257,38 @@ export async function getLocalSales(shopId?: number, userId?: number): Promise<L
   }));
 }
 
-export async function getLocalSaleById(localIdOrNegId: string): Promise<LocalSale | null> {
+export async function getLocalSaleById(id: string): Promise<LocalSale | null> {
   const db = getDb();
-  // Also check `id` column for negative local ids (stored as id, not local_id)
   const r = await db.getFirstAsync<SaleRow>(
-    "SELECT * FROM sales WHERE local_id = ? OR (id = ? AND id < 0)",
-    [localIdOrNegId, localIdOrNegId]
+    "SELECT * FROM sales WHERE id = ?",
+    [id]
   );
   if (!r) return null;
   return await mapRowToLocalSale(r);
 }
 
 export async function updateSaleStatus(
-  localId: string,
+  id: string,
   status: string,
   syncAction?: string
 ) {
   const db = getDb();
   if (syncAction !== undefined) {
     await db.runAsync(
-      "UPDATE sales SET status = ?, sync_action = ? WHERE local_id = ?",
-      [status, syncAction, localId]
+      "UPDATE sales SET status = ?, sync_action = ? WHERE id = ?",
+      [status, syncAction, id]
     );
   } else {
     await db.runAsync(
-      "UPDATE sales SET status = ? WHERE local_id = ?",
-      [status, localId]
+      "UPDATE sales SET status = ? WHERE id = ?",
+      [status, id]
     );
   }
 }
 
-export async function deleteLocalSale(localId: string) {
+export async function deleteLocalSale(id: string) {
   const db = getDb();
-  await db.runAsync("DELETE FROM sales WHERE local_id = ?", [localId]);
+  await db.runAsync("DELETE FROM sales WHERE id = ?", [id]);
 }
 
 export async function getPendingSyncSales(): Promise<LocalSale[]> {
@@ -1322,8 +1302,7 @@ export async function getPendingSyncSales(): Promise<LocalSale[]> {
 // ─── Expenses ──────────────────────────────────────────────────────────────────
 
 interface ExpenseRow {
-  id: number;
-  local_id: string;
+  id: string;
   shop_id: number | null;
   user_id: number | null;
   name: string;
@@ -1342,7 +1321,6 @@ interface ExpenseRow {
 
 // LocalExpense extends Expense with offline-first sync metadata
 export interface LocalExpense extends Expense {
-  local_id: string;
   shop_id?: number;
   user_id?: number;
   status: "pending" | "synced" | "failed";
@@ -1355,7 +1333,6 @@ function mapRowToExpense(r: ExpenseRow): Expense {
     id: r.id,
     name: r.name,
     quantity: r.quantity ?? 0,
-    // Prefer kopeck columns for precision
     price: r.price_kopecks != null ? fromKopecks(r.price_kopecks) : (r.price ?? 0),
     total: r.total_kopecks != null ? fromKopecks(r.total_kopecks) : (r.total ?? 0),
     note: r.note,
@@ -1368,7 +1345,6 @@ function mapRowToLocalExpense(r: ExpenseRow): LocalExpense {
   const base = mapRowToExpense(r);
   return {
     ...base,
-    local_id: r.local_id,
     shop_id: r.shop_id ?? undefined,
     user_id: r.user_id ?? undefined,
     status: r.status as LocalExpense["status"],
@@ -1377,19 +1353,19 @@ function mapRowToLocalExpense(r: ExpenseRow): LocalExpense {
   };
 }
 
-export async function insertOrUpdateExpense(expense: Expense, localId: string, shopId?: number, userId?: number, syncAction: "create" | "update" | "none" = "create") {
+// expense.id must be a UUID generated client-side before calling this.
+export async function insertOrUpdateExpense(expense: Expense, shopId?: number, userId?: number, syncAction: "create" | "update" | "none" = "create") {
   const db = getDb();
   const now = new Date().toISOString();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       `INSERT OR REPLACE INTO expenses (
-        id, local_id, shop_id, user_id, name, quantity, price, total, note,
+        id, shop_id, user_id, name, quantity, price, total, note,
         status, sync_action, created_at, updated_at, last_synced_at,
         price_kopecks, total_kopecks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         expense.id,
-        localId,
         shopId ?? null,
         userId ?? null,
         expense.name,
@@ -1411,15 +1387,15 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         "POST",
         "/expenses",
         {
+          id: expense.id,
           name: expense.name,
           quantity: expense.quantity,
           price: expense.price,
           note: expense.note,
           shop_id: shopId,
-          _local_id: localId,
         },
-        { "Idempotency-Key": `local-exp-${localId}` },
-        `local-exp-${localId}`
+        { "Idempotency-Key": `exp-${expense.id}` },
+        `exp-${expense.id}`
       );
     } else if (syncAction === "update") {
       const patchPayload: Record<string, unknown> = {
@@ -1428,7 +1404,6 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         price: expense.price,
         note: expense.note,
         shop_id: shopId,
-        _local_id: localId,
       };
       if ((expense as any).version !== undefined) {
         patchPayload.version = (expense as any).version;
@@ -1438,11 +1413,10 @@ export async function insertOrUpdateExpense(expense: Expense, localId: string, s
         `/expenses/${expense.id}`,
         patchPayload,
         undefined,
-        `local-exp-update-${localId}`
+        `exp-update-${expense.id}`
       );
     }
 
-    // Invalidate dashboard cache so next load fetches fresh data
     await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
@@ -1462,28 +1436,24 @@ export async function getLocalExpenses(shopId?: number): Promise<LocalExpense[]>
   return results.map(mapRowToLocalExpense);
 }
 
-export async function updateExpenseStatus(localId: string, status: string, syncAction?: string) {
+export async function updateExpenseStatus(id: string, status: string, syncAction?: string) {
   const db = getDb();
   if (syncAction !== undefined) {
     await db.runAsync(
-      "UPDATE expenses SET status = ?, sync_action = ? WHERE local_id = ?",
-      [status, syncAction, localId]
+      "UPDATE expenses SET status = ?, sync_action = ? WHERE id = ?",
+      [status, syncAction, id]
     );
   } else {
     await db.runAsync(
-      "UPDATE expenses SET status = ? WHERE local_id = ?",
-      [status, localId]
+      "UPDATE expenses SET status = ? WHERE id = ?",
+      [status, id]
     );
   }
 }
 
-export async function deleteLocalExpense(localIdOrId: string | number) {
+export async function deleteLocalExpense(id: string) {
   const db = getDb();
-  const numericId = Number(localIdOrId);
-  await db.runAsync(
-    "DELETE FROM expenses WHERE local_id = ? OR id = ?",
-    [String(localIdOrId), Number.isFinite(numericId) ? numericId : -1]
-  );
+  await db.runAsync("DELETE FROM expenses WHERE id = ?", [id]);
 }
 
 export async function getPendingSyncExpenses(): Promise<LocalExpense[]> {
@@ -1498,31 +1468,33 @@ export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: numbe
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const e of expenses) {
-      // Server tombstone: delete local record if deleted_at is set
       if ((e as any).deleted_at) {
         await db.runAsync(
-          "DELETE FROM expenses WHERE id = ? OR local_id = ?",
-          [e.id, (e as any).local_id ?? ""]
+          `UPDATE expenses SET sync_action = 'delete', status = 'synced', updated_at = ?
+           WHERE id = ?`,
+          [new Date().toISOString(), e.id]
         );
         continue;
       }
 
-      // Skip if a local pending expense (never synced to server) already exists.
-      const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
-        "SELECT sync_action, local_id FROM expenses WHERE id = ? OR local_id = ?",
-        [e.id, (e as any).local_id ?? ""]
+      const existing = await db.getFirstAsync<{ sync_action: string; status: string }>(
+        "SELECT sync_action, status FROM expenses WHERE id = ?",
+        [e.id]
       );
+      if (existing?.sync_action === 'delete' && existing?.status === 'synced') {
+        continue;
+      }
       if (existing && existing.sync_action && existing.sync_action !== "none") {
-        continue; // preserve local pending expense
+        continue;
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO expenses (
-          id, local_id, shop_id, user_id, name, quantity, price, total, note,
+          id, shop_id, user_id, name, quantity, price, total, note,
           status, sync_action, created_at, updated_at, last_synced_at,
           price_kopecks, total_kopecks
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          e.id, existing?.local_id ?? null, shopId ?? null, null, e.name, e.quantity, e.price, e.total,
+          e.id, shopId ?? null, null, e.name, e.quantity, e.price, e.total,
           e.note ?? null, "synced", "none", e.created_at, e.updated_at, new Date().toISOString(),
           toKopecks(e.price), toKopecks(e.total),
         ]
@@ -1535,31 +1507,26 @@ export async function insertOrUpdatePurchases(purchases: Purchase[], shopId?: nu
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const p of purchases) {
-      // Server tombstone: delete local record if deleted_at is set
       if ((p as any).deleted_at) {
-        await db.runAsync(
-          "DELETE FROM purchases WHERE id = ? OR local_id = ?",
-          [p.id, (p as any).local_id ?? ""]
-        );
+        await db.runAsync("DELETE FROM purchases WHERE id = ?", [p.id]);
         continue;
       }
 
-      // Skip if a local pending purchase (never synced to server) already exists.
-      const existing = await db.getFirstAsync<{ sync_action: string; local_id: string | null }>(
-        "SELECT sync_action, local_id FROM purchases WHERE id = ? OR local_id = ?",
-        [p.id, (p as any).local_id ?? ""]
+      const existing = await db.getFirstAsync<{ sync_action: string }>(
+        "SELECT sync_action FROM purchases WHERE id = ?",
+        [p.id]
       );
       if (existing && existing.sync_action && existing.sync_action !== "none") {
-        continue; // preserve local pending purchase
+        continue;
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO purchases (
-          id, local_id, shop_id, supplier_name, total, items,
+          id, shop_id, supplier_name, total, items,
           status, sync_action, created_at, updated_at, last_synced_at,
           total_kopecks
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          p.id, existing?.local_id ?? null, shopId ?? null, p.supplier_name ?? null, p.total ?? 0,
+          p.id, shopId ?? null, p.supplier_name ?? null, p.total ?? 0,
           JSON.stringify(p.items ?? []),
           "synced", "none", p.created_at ?? "", p.updated_at ?? "", new Date().toISOString(),
           toKopecks(p.total),
@@ -1572,8 +1539,7 @@ export async function insertOrUpdatePurchases(purchases: Purchase[], shopId?: nu
 // ─── Purchases ──────────────────────────────────────────────────────────────────
 
 interface PurchaseRow {
-  id: number;
-  local_id: string | null;
+  id: string;
   shop_id: number | null;
   supplier_name: string | null;
   total: number | null;
@@ -1588,7 +1554,6 @@ interface PurchaseRow {
 
 // LocalPurchase extends Purchase with offline-first sync metadata
 export interface LocalPurchase extends Purchase {
-  local_id: string;
   shop_id?: number;
   status: "pending" | "synced" | "failed";
   sync_action: "none" | "create" | "update" | "delete";
@@ -1603,7 +1568,6 @@ function mapRowToPurchase(r: PurchaseRow): Purchase {
   return {
     id: r.id,
     supplier_name: r.supplier_name ?? null,
-    // Prefer kopeck column for precision
     total: r.total_kopecks != null ? fromKopecks(r.total_kopecks) : (r.total ?? 0),
     items,
     created_at: r.created_at ?? "",
@@ -1615,7 +1579,6 @@ function mapRowToLocalPurchase(r: PurchaseRow): LocalPurchase {
   const base = mapRowToPurchase(r);
   return {
     ...base,
-    local_id: r.local_id ?? "",
     shop_id: r.shop_id ?? undefined,
     status: (r.status as LocalPurchase["status"]) ?? "pending",
     sync_action: (r.sync_action as LocalPurchase["sync_action"]) ?? "none",
@@ -1623,18 +1586,18 @@ function mapRowToLocalPurchase(r: PurchaseRow): LocalPurchase {
   };
 }
 
-export async function insertOrUpdatePurchase(purchase: Purchase, localId: string, shopId?: number) {
+// purchase.id must be a UUID generated client-side before calling this.
+export async function insertOrUpdatePurchase(purchase: Purchase, shopId?: number) {
   const db = getDb();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       `INSERT OR REPLACE INTO purchases (
-        id, local_id, shop_id, supplier_name, total, items,
+        id, shop_id, supplier_name, total, items,
         status, sync_action, created_at, updated_at, last_synced_at,
         total_kopecks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         purchase.id,
-        localId,
         shopId ?? null,
         purchase.supplier_name ?? null,
         purchase.total ?? 0,
@@ -1652,17 +1615,15 @@ export async function insertOrUpdatePurchase(purchase: Purchase, localId: string
       "POST",
       "/purchases",
       {
+        id: purchase.id,
         supplier_name: purchase.supplier_name,
         items: purchase.items,
         shop_id: shopId,
-        _local_id: localId,
       },
-      { "Idempotency-Key": `local-pur-${localId}` },
-      `local-pur-${localId}`
+      { "Idempotency-Key": `pur-${purchase.id}` },
+      `pur-${purchase.id}`
     );
 
-    // Increment local stock for each purchase item — tracks pending_stock_delta
-    // so remote product pulls don't overwrite unconfirmed purchase stock increments.
     for (const item of purchase.items ?? []) {
       await db.runAsync(
         "UPDATE products SET stock_quantity = stock_quantity + ?, pending_stock_delta = pending_stock_delta + ? WHERE id = ?",
@@ -1670,7 +1631,6 @@ export async function insertOrUpdatePurchase(purchase: Purchase, localId: string
       );
     }
 
-    // Invalidate dashboard cache so next load fetches fresh data
     await db.runAsync("DELETE FROM dashboard_cache");
   });
 }
@@ -1690,24 +1650,24 @@ export async function getLocalPurchases(shopId?: number): Promise<LocalPurchase[
   return results.map(mapRowToLocalPurchase);
 }
 
-export async function updatePurchaseStatus(localId: string, status: string, syncAction?: string) {
+export async function updatePurchaseStatus(id: string, status: string, syncAction?: string) {
   const db = getDb();
   if (syncAction !== undefined) {
     await db.runAsync(
-      "UPDATE purchases SET status = ?, sync_action = ? WHERE local_id = ?",
-      [status, syncAction, localId]
+      "UPDATE purchases SET status = ?, sync_action = ? WHERE id = ?",
+      [status, syncAction, id]
     );
   } else {
     await db.runAsync(
-      "UPDATE purchases SET status = ? WHERE local_id = ?",
-      [status, localId]
+      "UPDATE purchases SET status = ? WHERE id = ?",
+      [status, id]
     );
   }
 }
 
-export async function deleteLocalPurchase(localId: string) {
+export async function deleteLocalPurchase(id: string) {
   const db = getDb();
-  await db.runAsync("DELETE FROM purchases WHERE local_id = ?", [localId]);
+  await db.runAsync("DELETE FROM purchases WHERE id = ?", [id]);
 }
 
 export async function getPendingSyncPurchases(): Promise<LocalPurchase[]> {
@@ -1756,13 +1716,12 @@ function mapRowToLocalShop(r: ShopRow): LocalShop {
 export async function insertOrUpdateShop(shop: Shop, localId: string) {
   const db = getDb();
 
-  // Skip if a local pending shop (never synced) already exists — don't overwrite local changes.
   const existing = await db.getFirstAsync<{ sync_action: string }>(
     "SELECT sync_action FROM shops WHERE id = ? OR local_id = ?",
     [shop.id, localId]
   );
   if (existing && existing.sync_action && existing.sync_action !== "none") {
-    return; // preserve local pending shop
+    return;
   }
 
   await db.runAsync(
@@ -1782,6 +1741,50 @@ export async function insertOrUpdateShop(shop: Shop, localId: string) {
       new Date().toISOString(),
     ]
   );
+}
+
+/**
+ * Batch upsert for delta-sync. Soft-deleted server records (deleted_at set)
+ * are removed locally so the mobile catalogue stays consistent.
+ */
+export async function insertOrUpdateShops(shops: Array<Shop & { deleted_at?: string | null }>): Promise<void> {
+  if (shops.length === 0) return;
+  const db = getDb();
+
+  await db.withTransactionAsync(async () => {
+    for (const shop of shops) {
+      if (shop.deleted_at) {
+        await db.runAsync("DELETE FROM shops WHERE id = ?", [shop.id]);
+        continue;
+      }
+
+      const existing = await db.getFirstAsync<{ sync_action: string }>(
+        "SELECT sync_action FROM shops WHERE id = ?",
+        [shop.id]
+      );
+      if (existing && existing.sync_action && existing.sync_action !== "none") {
+        continue;
+      }
+
+      await db.runAsync(
+        `INSERT OR REPLACE INTO shops (
+          id, local_id, name, is_active,
+          sync_action, status, created_at, updated_at, last_synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          shop.id,
+          String(shop.id),
+          shop.name,
+          shop.is_active ? 1 : 0,
+          "none",
+          "synced",
+          shop.created_at || new Date().toISOString(),
+          shop.updated_at || new Date().toISOString(),
+          new Date().toISOString(),
+        ]
+      );
+    }
+  });
 }
 
 export async function insertOrUpdateLocalShop(shop: Partial<Shop> & { id: number; name: string; is_active: boolean }, localId: string, syncAction: "create" | "update" | "delete" | "none") {
@@ -1966,8 +1969,6 @@ export async function markNotificationsRead(ids: number[]): Promise<void> {
   await db.runAsync(`UPDATE notifications SET read = 1 WHERE id IN (${placeholders})`, ids);
 }
 
-// ─── Low Stock Alerts ────────────────────────────────────────────────────────────
-
 // ─── Low Stock Notifications ───────────────────────────────────────────────────
 
 export async function checkAndNotifyLowStock(shopId: number): Promise<void> {
@@ -1995,7 +1996,6 @@ export async function checkAndNotifyLowStock(shopId: number): Promise<void> {
       );
       await markLowStockAlertSent(p.id, shopId);
 
-      // Show push notification on mobile
       try {
         const { showLocalNotification } = await import("@/lib/notifications");
         await showLocalNotification(title, body, { product_id: p.id, shop_id: shopId });
@@ -2004,7 +2004,7 @@ export async function checkAndNotifyLowStock(shopId: number): Promise<void> {
   }
 }
 
-export async function hasLowStockAlertBeenSent(productId: number, shopId: number): Promise<boolean> {
+export async function hasLowStockAlertBeenSent(productId: string, shopId: number): Promise<boolean> {
   const db = getDb();
   const row = await db.getFirstAsync<{ cnt: number }>(
     "SELECT COUNT(*) as cnt FROM low_stock_alerts_sent WHERE product_id = ? AND shop_id = ?",
@@ -2013,7 +2013,7 @@ export async function hasLowStockAlertBeenSent(productId: number, shopId: number
   return (row?.cnt ?? 0) > 0;
 }
 
-export async function markLowStockAlertSent(productId: number, shopId: number): Promise<void> {
+export async function markLowStockAlertSent(productId: string, shopId: number): Promise<void> {
   const db = getDb();
   await db.runAsync(
     "INSERT OR IGNORE INTO low_stock_alerts_sent (product_id, shop_id, sent_at) VALUES (?, ?, ?)",

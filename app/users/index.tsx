@@ -36,30 +36,37 @@ function UserCard({
   currentUserId,
   onEdit,
   onDelete,
+  onResetPin,
   canEdit,
   canDelete,
+  canResetPin,
 }: {
   item: AppUser;
   currentUserId?: number;
   onEdit: () => void;
   onDelete: () => void;
+  onResetPin?: () => void;
   canEdit: boolean;
   canDelete: boolean;
+  canResetPin?: boolean;
 }) {
   const isSelf = item.id === currentUserId;
 
   function handleLongPress() {
     const actions: { text: string; style?: "destructive" | "cancel"; onPress?: () => void }[] = [];
     if (canEdit) actions.push({ text: "Изменить", onPress: onEdit });
+    if (canResetPin && onResetPin) actions.push({ text: "Сбросить PIN", onPress: onResetPin });
     if (canDelete) actions.push({ text: "Удалить", style: "destructive", onPress: onDelete });
     actions.push({ text: "Отмена", style: "cancel" });
     Alert.alert(item.name, "Выберите действие", actions);
   }
 
+  const hasMenuActions = (canEdit || canDelete || (canResetPin && !!onResetPin));
+
   return (
     <TouchableOpacity
       onPress={canEdit && !isSelf ? onEdit : undefined}
-      onLongPress={(canEdit || canDelete) && !isSelf ? handleLongPress : undefined}
+      onLongPress={hasMenuActions && !isSelf ? handleLongPress : undefined}
       activeOpacity={canEdit && !isSelf ? 0.7 : 1}
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800"
     >
@@ -509,6 +516,32 @@ export default function UsersScreen() {
     );
   }
 
+  async function handleResetPin(id: number, name: string) {
+    Alert.alert(
+      "Сбросить PIN сотрудника",
+      `Сбросить PIN у ${name}? После этого сотруднику придётся заново войти и задать новый PIN.`,
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Сбросить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.users.resetPin(id, token!);
+              showToast({ message: "PIN сброшен. Сотрудник задаст новый при следующем входе.", variant: "success" });
+            } catch (e) {
+              if (e instanceof ApiError && e.status === 0) {
+                showToast({ message: "Нет сети. Сброс PIN требует подключения к интернету.", variant: "warning" });
+              } else {
+                showToast({ message: e instanceof ApiError ? e.message : "Не удалось сбросить PIN.", variant: "error" });
+              }
+            }
+          },
+        },
+      ]
+    );
+  }
+
   function handleDelete(id: number, name: string) {
     Alert.alert(
       "Удалить сотрудника",
@@ -580,8 +613,10 @@ export default function UsersScreen() {
               currentUserId={user?.id}
               onEdit={() => { setEditingUser(item); setEditVisible(true); }}
               onDelete={() => handleDelete(item.id, item.name)}
+              onResetPin={() => handleResetPin(item.id, item.name)}
               canEdit={can(user?.role, "users:edit")}
               canDelete={can(user?.role, "users:delete")}
+              canResetPin={user?.role === "super_admin"}
             />
           )}
         />

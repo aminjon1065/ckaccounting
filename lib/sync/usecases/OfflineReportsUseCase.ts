@@ -193,15 +193,15 @@ export async function computeLocalProfitReport(
   );
 
   // Batch-fetch all sale items and product costs to avoid N+1 queries
-  const productSaleLocalIds = filteredSales
+  const productSaleIds = filteredSales
     .filter(s => s.type === "product")
-    .map(s => s.local_id ?? String(s.id));
+    .map(s => String(s.id));
 
   let allSaleItems: any[] = [];
-  if (productSaleLocalIds.length > 0) {
+  if (productSaleIds.length > 0) {
     allSaleItems = await db.getAllAsync<any>(
-      `SELECT * FROM sale_items WHERE sale_local_id IN (${productSaleLocalIds.map(() => "?").join(",")})`,
-      productSaleLocalIds
+      `SELECT * FROM sale_items WHERE sale_id IN (${productSaleIds.map(() => "?").join(",")})`,
+      productSaleIds
     );
   }
 

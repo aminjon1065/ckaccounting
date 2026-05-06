@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Alert } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import {
@@ -23,6 +23,14 @@ interface SyncContextType {
   refreshProducts: (forceFullSync?: boolean) => Promise<void>;
   fetchRemoteDebts: () => Promise<void>;
   fetchRemoteShops: () => Promise<void>;
+  /** Pull older sales beyond the local window. Returns true if more remain. */
+  fetchOlderSales: (pages?: number) => Promise<boolean>;
+  fetchOlderExpenses: (pages?: number) => Promise<boolean>;
+  fetchOlderPurchases: (pages?: number) => Promise<boolean>;
+  /** Drain all historical pages for sales / expenses / purchases. */
+  fetchAllHistory: (
+    onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void
+  ) => Promise<void>;
   refreshPendingActions: () => Promise<void>;
   clearFailedActions: () => Promise<void>;
 }
@@ -39,6 +47,10 @@ const SyncContext = createContext<SyncContextType>({
   refreshProducts: async () => {},
   fetchRemoteDebts: async () => {},
   fetchRemoteShops: async () => {},
+  fetchOlderSales: async () => false,
+  fetchOlderExpenses: async () => false,
+  fetchOlderPurchases: async () => false,
+  fetchAllHistory: async () => {},
   refreshPendingActions: async () => {},
   clearFailedActions: async () => {},
 });
@@ -90,6 +102,12 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
 
   // ─── Core sync runner (shared by reconnect effect, periodic timer, manual trigger) ─
 
+  // Skip the heavy remote-fetch leg if a successful sync just happened.
+  // Reconnect events on flaky networks would otherwise trigger a full
+  // pull every few seconds.
+  const FULL_SYNC_COOLDOWN_MS = 30_000;
+  const lastFullSyncAtRef = useRef<number>(0);
+
   // FIX (Bug 1): Single sync runner that drains pending reconnect requests
   const runSync = useCallback(async (forceFullSync = false) => {
     if (syncLock.current) {
@@ -101,7 +119,16 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     syncLock.current = true;
     setIsSyncing(true);
     try {
-      await orchestrator.current.syncAll(forceFullSync);
+      const sinceLast = Date.now() - lastFullSyncAtRef.current;
+      const shouldDoFullSync = forceFullSync || sinceLast >= FULL_SYNC_COOLDOWN_MS;
+      if (shouldDoFullSync) {
+        await orchestrator.current.syncAll(forceFullSync);
+        lastFullSyncAtRef.current = Date.now();
+      } else {
+        // Cheap path: just drain the outbox so user-created data ships out,
+        // skip the 6-fetcher remote pull until cooldown expires.
+        await orchestrator.current.syncOutbox();
+      }
       consecutiveFailuresRef.current = 0;
       setLastSyncedAt(new Date());
     } catch (e) {
@@ -157,9 +184,9 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   // ─── Individual fetcher wrappers (for context consumers) ───────────────────
 
   const refreshProducts = useCallback(async (forceFullSync = false) => {
-    if (!isOnline || !token || tokenExpired) return;
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
     await orchestrator.current.refreshAll(forceFullSync);
-  }, [isOnline, token, tokenExpired]);
+  }, []);
 
   const fetchRemoteDebts = useCallback(async () => {
     if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
@@ -170,6 +197,29 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
     await orchestrator.current.refreshShops();
   }, []);
+
+  const fetchOlderSales = useCallback(async (pages = 5): Promise<boolean> => {
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return false;
+    return orchestrator.current.fetchOlderSales(pages);
+  }, []);
+
+  const fetchOlderExpenses = useCallback(async (pages = 5): Promise<boolean> => {
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return false;
+    return orchestrator.current.fetchOlderExpenses(pages);
+  }, []);
+
+  const fetchOlderPurchases = useCallback(async (pages = 5): Promise<boolean> => {
+    if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return false;
+    return orchestrator.current.fetchOlderPurchases(pages);
+  }, []);
+
+  const fetchAllHistory = useCallback(
+    async (onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void) => {
+      if (!isOnlineRef.current || !tokenRef.current || tokenExpiredRef.current) return;
+      await orchestrator.current.fetchAllHistory(onProgress);
+    },
+    []
+  );
 
   // ─── Mount: NetInfo subscription ────────────────────────────────────────────
 
@@ -220,31 +270,55 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   }, [isOnline, token, tokenExpired, runSync]);
 
   // ─── Context value ──────────────────────────────────────────────────────────
+  // Memoize so consumers (every screen via useSync) don't re-render on
+  // unrelated provider re-renders.
 
-  return (
-    <SyncContext.Provider
-      value={{
-        isOnline,
-        isSyncing,
-        lastSyncedAt,
-        pendingActionsCount,
-        deadActionsCount,
-        failedActionsCount: failedActions.length,
-        failedActions,
-        triggerSync,
-        refreshProducts,
-        fetchRemoteDebts,
-        fetchRemoteShops,
-        refreshPendingActions,
-        clearFailedActions: async () => {
-          await archiveSyncActions(["failed", "dead"]);
-          setFailedActions([]);
-        },
-      }}
-    >
-      {children}
-    </SyncContext.Provider>
+  const clearFailedActions = useCallback(async () => {
+    await archiveSyncActions(["failed", "dead"]);
+    setFailedActions([]);
+  }, []);
+
+  const value = useMemo<SyncContextType>(
+    () => ({
+      isOnline,
+      isSyncing,
+      lastSyncedAt,
+      pendingActionsCount,
+      deadActionsCount,
+      failedActionsCount: failedActions.length,
+      failedActions,
+      triggerSync,
+      refreshProducts,
+      fetchRemoteDebts,
+      fetchRemoteShops,
+      fetchOlderSales,
+      fetchOlderExpenses,
+      fetchOlderPurchases,
+      fetchAllHistory,
+      refreshPendingActions,
+      clearFailedActions,
+    }),
+    [
+      isOnline,
+      isSyncing,
+      lastSyncedAt,
+      pendingActionsCount,
+      deadActionsCount,
+      failedActions,
+      triggerSync,
+      refreshProducts,
+      fetchRemoteDebts,
+      fetchRemoteShops,
+      fetchOlderSales,
+      fetchOlderExpenses,
+      fetchOlderPurchases,
+      fetchAllHistory,
+      refreshPendingActions,
+      clearFailedActions,
+    ]
   );
+
+  return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;
 }
 
 export function useSync() {

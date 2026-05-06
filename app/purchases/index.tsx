@@ -154,7 +154,10 @@ export default function PurchasesScreen() {
           }
           ListFooterComponent={
             loadingMore ? (
-              <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
+              <View className="flex-row items-center justify-center gap-2 py-4">
+                <ActivityIndicator size="small" color="#0a7ea4" />
+                <Text variant="muted">Загружается история…</Text>
+              </View>
             ) : null
           }
           renderItem={({ item }) => (

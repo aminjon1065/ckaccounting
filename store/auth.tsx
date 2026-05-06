@@ -127,10 +127,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const [token, userJson, suspendedFlag] = await Promise.all([
+        const [token, userJson, suspendedFlag, pinHash] = await Promise.all([
           SecureStore.getItemAsync(TOKEN_KEY),
           SecureStore.getItemAsync(USER_KEY),
           SecureStore.getItemAsync(SHOP_SUSPENDED_KEY),
+          SecureStore.getItemAsync(PIN_KEY),
         ]);
 
         const wasShopSuspended = suspendedFlag === "1";
@@ -144,7 +145,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const cachedUser: User | null = userJson
           ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
           : null;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
+        // If we have a token but no PIN saved, force the PIN setup flow before
+        // letting the user reach the app — PIN is mandatory for every account.
+        const pinPending = !pinHash;
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -175,7 +179,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const salt = await generateSalt();
     const passwordHash = await hashPassword(payload.password, salt);
 
-    // Store credentials for offline login; clear any prior suspension flag
+    // Server-initiated PIN reset: drop the local PIN hash so the next
+    // setup flow starts clean. The login response only carries this flag
+    // once — the server consumes it on success.
+    if (user?.pin_reset_required) {
+      await Promise.all([
+        SecureStore.deleteItemAsync(PIN_KEY),
+        SecureStore.deleteItemAsync(PIN_SALT_KEY),
+      ]);
+    }
+
+    // Re-check PIN presence after the optional reset above.
     const pin = await SecureStore.getItemAsync(PIN_KEY);
     const pinPending = !pin;
 

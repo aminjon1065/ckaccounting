@@ -23,6 +23,7 @@ import {
 
 import { ErrorBoundary } from "@/components/error-boundary";
 import { BiometricGuard } from "@/components/auth/BiometricGuard";
+import { OfflineBanner } from "@/components/OfflineBanner";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
 import { ConflictProvider } from "@/lib/sync/ConflictContext";
@@ -39,6 +40,18 @@ LogBox.ignoreLogs([
 
 SplashScreen.preventAutoHideAsync();
 
+const SPLASH_MIN_DURATION_MS = 2500;
+const APP_START_AT = Date.now();
+
+async function hideSplashAfterMinDuration() {
+  const elapsed = Date.now() - APP_START_AT;
+  const remaining = SPLASH_MIN_DURATION_MS - elapsed;
+  if (remaining > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remaining));
+  }
+  await SplashScreen.hideAsync().catch(() => {});
+}
+
 // Removed SyncGuard in favor of SyncProvider and Background syncing.
 
 function AuthGuard() {
@@ -48,7 +61,7 @@ function AuthGuard() {
 
   useEffect(() => {
     if (!isLoaded) return;
-    SplashScreen.hideAsync();
+    hideSplashAfterMinDuration();
 
     // Shop suspended takes priority
     if (token && shopSuspended) {
@@ -65,7 +78,10 @@ function AuthGuard() {
       return;
     }
 
-    if (!token && !inAuthGroup) router.replace("/(auth)/login");
+    // PIN setup is mandatory — once a session token exists but PIN is not set,
+    // keep the user inside the (auth) group until they complete setup.
+    if (token && pinSetupPending && !inAuthGroup) router.replace("/(auth)/login");
+    else if (!token && !inAuthGroup) router.replace("/(auth)/login");
     else if (token && inAuthGroup && !pinSetupPending) router.replace("/(tabs)");
     else if (!token && inSuspendedScreen) router.replace("/(auth)/login");
     else if (token && !shopSuspended && inSuspendedScreen) router.replace("/(tabs)");
@@ -92,9 +108,14 @@ export default function RootLayout() {
 
   const fontsLoaded = interLoaded && jakartaLoaded;
 
-  // Request notification permissions on app start
+  // Request notification permissions in the background. Defer past first
+  // paint so the user sees UI immediately — the OS prompt would otherwise
+  // tax JS thread during mount.
   useEffect(() => {
-    requestNotificationPermissions();
+    const handle = setTimeout(() => {
+      requestNotificationPermissions().catch(() => {});
+    }, 1000);
+    return () => clearTimeout(handle);
   }, []);
 
   // Initialize DB before rendering any providers that depend on it
@@ -121,6 +142,7 @@ export default function RootLayout() {
               <SyncProvider>
                 <ConflictProvider>
                   <BiometricGuard>
+                  <OfflineBanner />
                   <Stack>
                   <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                   <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

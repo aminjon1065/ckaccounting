@@ -36,7 +36,7 @@ export default function PurchaseDetailScreen() {
   React.useEffect(() => {
     if (!token || !id) return;
     api.purchases
-      .get(Number(id), token)
+      .get(id, token)
       .then(setPurchase)
       .catch(console.error)
       .finally(() => setLoading(false));

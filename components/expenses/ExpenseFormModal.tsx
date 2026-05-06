@@ -15,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button, Input, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense } from "@/lib/api";
 import { insertOrUpdateExpense } from "@/lib/db";
+import { generateUUID } from "@/lib/uuid";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
 import type { LocalExpense } from "@/lib/db";
@@ -89,12 +90,9 @@ export function ExpenseFormModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = editing
-          ? ((editing as LocalExpense).local_id ?? `expense-${editing.id}`)
-          : await Crypto.randomUUID();
         const now = new Date().toISOString();
         const localExpense: Expense = {
-          id: editing ? editing.id : -Date.now(),
+          id: editing ? editing.id : generateUUID(),
           name: name.trim(),
           quantity: parseFloat(quantity),
           price: parseFloat(price),
@@ -104,8 +102,8 @@ export function ExpenseFormModal({
           updated_at: now,
           version: (editing as Expense | null)?.version,
         };
-        await insertOrUpdateExpense(localExpense, localId, user?.shop_id, user?.id, editing ? "update" : "create");
-        onSaved({ ...localExpense, local_id: localId, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
+        await insertOrUpdateExpense(localExpense, user?.shop_id, user?.id, editing ? "update" : "create");
+        onSaved({ ...localExpense, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
         showToast({ message: "Нет сети. Расход сохранен локально.", variant: "warning" });
         onClose();
       } else {

@@ -10,7 +10,6 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
   const [products, setProducts] = useState<LocalProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
@@ -18,44 +17,77 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
   const [error, setError] = useState("");
   const [isOffline, setIsOffline] = useState(false);
 
+  // useRef for page so fetchProducts never reads a stale closure value.
+  // `page` state caused fetchProducts to recreate on every page change,
+  // and triggered wrong-page fetches when called before state updated.
+  const pageRef = useRef(1);
+
   const fetchProducts = useCallback(async (reset = false, searchVal = search) => {
     if (!token) return;
-    const pg = reset ? 1 : page;
     setError("");
 
-    // Always load local first — instant, always works
-    const localData = await getLocalProducts(shopId, searchVal || undefined);
+    if (reset) {
+      // ── Initial load / refresh ─────────────────────────────────────────────
+      // 1. Show local DB data instantly so the user sees something immediately,
+      //    even while the network request is in flight.
+      const localData = await getLocalProducts(shopId, searchVal || undefined);
+      setProducts(localData);
+      setHasMore(true); // Reset so we can paginate again after coming back online
 
-    try {
-      const res = await api.products.list(token, {
-        page: pg,
-        search: searchVal || undefined,
-      });
-      setIsOffline(false);
-
-      if (reset) {
-        const merged = mergeProducts(localData, res.data);
-        setProducts(merged);
-        setPage(2);
-      } else {
-        setProducts((prev) => {
-          const merged = mergeProducts(prev, res.data);
-          return merged;
+      try {
+        const res = await api.products.list(token, {
+          page: 1,
+          search: searchVal || undefined,
         });
-        setPage(pg + 1);
+        setIsOffline(false);
+        // Merge: replace synced local items with fresh server data, but keep any
+        // locally-pending items (creates/updates/deletes not yet synced).
+        setProducts(mergeProducts(localData, res.data));
+        pageRef.current = 2;
+        setHasMore(res.meta.current_page < res.meta.last_page);
+      } catch (e: any) {
+        const offline = e?.status === 0 || !e?.message?.includes("status");
+        if (offline) {
+          setIsOffline(true);
+          setHasMore(false);
+          // localData is already set above — nothing more to do
+        } else {
+          setError("Не удалось загрузить товары.");
+        }
       }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        setProducts(localData);
-        setHasMore(false);
-      } else {
-        if (reset) setError("Не удалось загрузить товары.");
+    } else {
+      // ── Load more (append next page) ───────────────────────────────────────
+      // BUG FIX: the previous code called mergeProducts(prev, res.data) here,
+      // which iterated `prev` and only kept items found in the new page's
+      // serverMap — dropping ALL already-loaded page 1 items.
+      // Correct approach: simply append new items that aren't already shown.
+      const pg = pageRef.current;
+
+      try {
+        const res = await api.products.list(token, {
+          page: pg,
+          search: searchVal || undefined,
+        });
+        setIsOffline(false);
+        setProducts((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          const newItems = res.data
+            .filter((p) => !existingIds.has(p.id))
+            .map((p) => p as LocalProduct);
+          return [...prev, ...newItems];
+        });
+        pageRef.current = pg + 1;
+        setHasMore(res.meta.current_page < res.meta.last_page);
+      } catch (e: any) {
+        const offline = e?.status === 0 || !e?.message?.includes("status");
+        if (offline) {
+          setIsOffline(true);
+          setHasMore(false);
+        }
+        // On load-more error, leave the existing list intact — don't clear it.
       }
     }
-  }, [token, page, search, shopId]);
+  }, [token, search, shopId]); // `page` removed from deps — we use pageRef now
 
   useEffect(() => {
     if (token) {
@@ -77,13 +109,16 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
   const handleSearchChange = useCallback((text: string) => {
     setSearch(text);
     if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    // 600ms gives the user time to type a few characters before we burn
+    // a network round-trip — under flaky links this prevents 3-5 stacked
+    // requests for a single search.
     searchDebounce.current = setTimeout(() => {
       setLoading(true);
       fetchProducts(true, text).finally(() => setLoading(false));
-    }, 400);
+    }, 600);
   }, [fetchProducts]);
 
-  const handleDelete = useCallback((id: number) => {
+  const handleDelete = useCallback((id: string) => {
     Alert.alert("Удалить товар", "Товар будет удалён безвозвратно.", [
       { text: "Отмена", style: "cancel" },
       {
@@ -91,21 +126,12 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
         style: "destructive",
         onPress: async () => {
           try {
-            const product = products.find((p) => p.id === id);
-            const localId = product?.local_id ?? String(id);
-            await api.products.delete(id, token!, `local-prod-delete-${localId}`);
+            await api.products.delete(id, token!, `prod-delete-${id}`);
             setProducts((prev) => prev.filter((p) => p.id !== id));
             showToast({ message: "Товар удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              // Offline: find the product to get its local_id and server id
-              const product = products.find((p) => p.id === id);
-              if (!product) return;
-
-              // markProductDeletedLocally handles both server-synced (id > 0) and
-              // local-only (id < 0) products correctly, including the local_id=NULL case.
-              await markProductDeletedLocally(id, product.local_id);
-
+              await markProductDeletedLocally(id);
               setProducts((prev) => {
                 const idx = prev.findIndex((p) => p.id === id);
                 if (idx >= 0) {
@@ -123,15 +149,11 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
         },
       },
     ]);
-  }, [token, showToast]);
+  }, [token, products, showToast]);
 
   const handleSaved = useCallback((saved: Product | LocalProduct, wasEditing: boolean) => {
     setProducts((prev) => {
-      // Find by id (server id) or local_id
-      const id = (saved as LocalProduct).local_id
-        ? (saved as LocalProduct).local_id
-        : saved.id;
-      const idx = prev.findIndex((p) => p.id === saved.id || (p as LocalProduct).local_id === id);
+      const idx = prev.findIndex((p) => p.id === saved.id);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = saved as LocalProduct;
@@ -169,12 +191,18 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
 }
 
 /**
- * Merge local products with server products.
- * Server products (positive id) replace any local with the same id.
- * Local products with sync_action != 'none' are kept as pending.
+ * Merge local products with server products (used for initial load / refresh only).
+ *
+ * Rules:
+ * - Server products replace their local counterparts (same id).
+ * - Local products with pending sync_action (create/update/delete) are kept as-is
+ *   so offline changes remain visible before sync completes.
+ * - Local-only products (negative id, never sent to server) are preserved.
+ * - Synced local products NOT present in server page are dropped — they will
+ *   appear when the user scrolls to their respective server page.
  */
 function mergeProducts(local: LocalProduct[], server: Product[]): LocalProduct[] {
-  const serverMap = new Map<number, Product>();
+  const serverMap = new Map<string, Product>();
   for (const s of server) {
     serverMap.set(s.id, s);
   }
@@ -182,20 +210,22 @@ function mergeProducts(local: LocalProduct[], server: Product[]): LocalProduct[]
   const result: LocalProduct[] = [];
 
   for (const l of local) {
-    if (l.id > 0 && serverMap.has(l.id)) {
-      // Server has this product — use server version
-      result.push({ ...serverMap.get(l.id)!, local_id: l.local_id, status: l.status, sync_action: l.sync_action } as LocalProduct);
+    if (serverMap.has(l.id)) {
+      // Server has this product — use the fresh server version, preserving sync metadata
+      result.push({
+        ...serverMap.get(l.id)!,
+        status: l.status,
+        sync_action: l.sync_action,
+      } as LocalProduct);
       serverMap.delete(l.id);
     } else if (l.sync_action && l.sync_action !== "none") {
-      // Local pending (create/update/delete) — keep it
-      result.push(l);
-    } else if (l.id < 0) {
-      // Local with negative id (not yet synced) — keep it
+      // Pending local change (create/update/delete not yet synced) — keep it visible
       result.push(l);
     }
+    // Otherwise: synced product not on this server page → omit (will load on scroll)
   }
 
-  // Add remaining server records
+  // Append server products that weren't in local DB at all
   for (const s of serverMap.values()) {
     result.push(s as LocalProduct);
   }

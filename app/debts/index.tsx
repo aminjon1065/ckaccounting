@@ -18,6 +18,7 @@ import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { getLocalDebts, getLocalShops, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { generateUUID } from "@/lib/uuid";
 import { useSync } from "@/lib/sync/SyncContext";
 import { can } from "@/lib/permissions";
 
@@ -170,12 +171,11 @@ function CreateDebtModal({
         return;
       }
       const signedOpeningBalance = direction === "receivable" ? amount : -amount;
-      const tempId = -Date.now();
-      const localId = String(tempId);
-      const payload: CreateDebtPayload & { _local_id?: string; _temp_id?: number } = {
+      const debtId = generateUUID();
+      const payload: CreateDebtPayload & { id: string } = {
+        id: debtId,
         person_name: personName.trim(),
         direction,
-        _local_id: localId,
       };
       if (selectedShopId) {
         payload.shop_id = selectedShopId;
@@ -183,12 +183,9 @@ function CreateDebtModal({
       if (amount > 0) {
         payload.opening_balance = amount;
       }
-      
-      payload._temp_id = tempId;
 
-      const newDebt: Debt & { local_id: string; sync_action: "create" } = {
-        id: tempId,
-        local_id: localId,
+      const newDebt: Debt & { sync_action: "create" } = {
+        id: debtId,
         shop_id: selectedShopId,
         user_id: userId ?? undefined,
         person_name: payload.person_name,
@@ -205,8 +202,8 @@ function CreateDebtModal({
         "POST",
         "/debts",
         payload,
-        { "Idempotency-Key": `local-debt-${localId}` },
-        `local-debt-${localId}`
+        { "Idempotency-Key": `debt-${debtId}` },
+        `debt-${debtId}`
       );
       await refreshPendingActions();
 

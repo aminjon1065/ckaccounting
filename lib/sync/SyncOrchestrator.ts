@@ -60,30 +60,32 @@ export class SyncOrchestrator {
   }
 
   /**
-   * Pull all remote entities.
+   * Pull all remote entities. Network requests run in parallel — each fetcher
+   * already wraps its DB writes in withTransactionAsync, which expo-sqlite
+   * serializes internally, so parallel fetches are safe and dramatically
+   * faster on cold start (1 round-trip instead of 6 sequential).
    */
   async refreshAll(forceFullSync = false): Promise<void> {
-    // Run sequentially to completely avoid "cannot start a transaction within a transaction"
-    // SQLite locking crashes when overlapping async operations trigger withTransactionAsync
     const isSeller = this.getDeps().role === "seller";
-    const fetchTasks = [
+    const fetchTasks: Array<{ name: string; task: () => Promise<unknown> }> = [
       { name: "products", task: () => this.productFetcher.fetch(forceFullSync) },
       { name: "debts", task: () => this.debtFetcher.fetch(forceFullSync) },
-      { name: "shops", task: () => this.shopFetcher.fetch() },
+      { name: "shops", task: () => this.shopFetcher.fetch(forceFullSync) },
       { name: "sales", task: () => this.saleFetcher.fetch(forceFullSync) },
-      ...(!isSeller ? [
-        { name: "expenses", task: () => this.expenseFetcher.fetch(forceFullSync) },
-        { name: "purchases", task: () => this.purchaseFetcher.fetch(forceFullSync) },
-      ] : []),
     ];
-
-    for (const { name, task } of fetchTasks) {
-      try {
-        await task();
-      } catch (error) {
-        console.error(`Failed to fetch remote ${name}:`, error);
-      }
+    if (!isSeller) {
+      fetchTasks.push(
+        { name: "expenses", task: () => this.expenseFetcher.fetch(forceFullSync) },
+        { name: "purchases", task: () => this.purchaseFetcher.fetch(forceFullSync) }
+      );
     }
+
+    const results = await Promise.allSettled(fetchTasks.map(({ task }) => task()));
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.error(`Failed to fetch remote ${fetchTasks[i].name}:`, r.reason);
+      }
+    });
   }
 
   /**
@@ -118,11 +120,59 @@ export class SyncOrchestrator {
     }
   }
 
-  async refreshShops(): Promise<void> {
+  async refreshShops(forceFullSync = false): Promise<void> {
     try {
-      await this.shopFetcher.fetch();
+      await this.shopFetcher.fetch(forceFullSync);
     } catch (e) {
       console.warn("shopFetcher failed:", e);
     }
+  }
+
+  /**
+   * Pull historical pages below the current local window. Used by lists
+   * that hit the bottom of locally-synced data — extends the window
+   * without re-running the full sync cycle.
+   */
+  async fetchOlderSales(pages = 5): Promise<boolean> {
+    return this.saleFetcher.fetchOlder(pages);
+  }
+
+  async fetchOlderExpenses(pages = 5): Promise<boolean> {
+    return this.expenseFetcher.fetchOlder(pages);
+  }
+
+  async fetchOlderPurchases(pages = 5): Promise<boolean> {
+    return this.purchaseFetcher.fetchOlder(pages);
+  }
+
+  /**
+   * Drain all remaining historical pages for sales / expenses / purchases.
+   * Used by the "load full history" settings action so the user can have
+   * the entire dataset locally without scrolling page-by-page.
+   *
+   * Calls onProgress({ entity, pagesPulled }) after every chunk so the UI
+   * can render a live counter. Stops when each fetcher reports no more
+   * data on the server.
+   */
+  async fetchAllHistory(onProgress?: (s: { entity: "sales" | "expenses" | "purchases"; pagesPulled: number }) => void): Promise<void> {
+    const PAGE_CHUNK = 5;
+    const MAX_CHUNKS = 200; // safety cap: 200 * 5 * 100 = 100k records per entity
+
+    const drain = async (
+      entity: "sales" | "expenses" | "purchases",
+      fn: (pages: number) => Promise<boolean>,
+    ) => {
+      let pagesPulled = 0;
+      for (let i = 0; i < MAX_CHUNKS; i++) {
+        const more = await fn(PAGE_CHUNK);
+        pagesPulled += PAGE_CHUNK;
+        onProgress?.({ entity, pagesPulled });
+        if (!more) break;
+      }
+    };
+
+    await drain("sales", (p) => this.saleFetcher.fetchOlder(p));
+    await drain("expenses", (p) => this.expenseFetcher.fetchOlder(p));
+    await drain("purchases", (p) => this.purchaseFetcher.fetchOlder(p));
   }
 }

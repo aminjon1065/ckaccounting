@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState, useCallback } from "react";
+import React, { useContext, useEffect, useState, useCallback, useMemo } from "react";
 
 export type ConflictEntity = "product" | "sale" | "expense" | "purchase" | "debt";
 
@@ -78,20 +78,20 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
           if (choice === "server") {
             // Server wins: overwrite local row and mark as clean
             await db.runAsync(
-              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'none' WHERE local_id = ? OR id = ?`,
-              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId, conflict.localId]
+              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'none' WHERE id = ?`,
+              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId]
             );
             if (conflict.entityType === "product") {
               await db.runAsync(
-                "UPDATE products SET pending_stock_delta = 0 WHERE local_id = ? OR id = ?",
-                [conflict.localId, conflict.localId]
+                "UPDATE products SET pending_stock_delta = 0 WHERE id = ?",
+                [conflict.localId]
               );
             }
           } else {
             // Local wins: keep local data, mark as dirty, re-queue PATCH to server
             await db.runAsync(
-              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'update' WHERE local_id = ? OR id = ?`,
-              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId, conflict.localId]
+              `UPDATE ${table} SET ${sanitized.sets}, sync_action = 'update' WHERE id = ?`,
+              [...(sanitized.values as (string | number | null | boolean)[]), conflict.localId]
             );
 
             // Re-queue PATCH so the local version gets pushed to the server.
@@ -124,18 +124,19 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
     setConflicts((prev) => prev.filter((c) => c.id !== conflictId));
   }, []);
 
+  const value = useMemo(
+    () => ({
+      conflicts,
+      addConflict,
+      resolveConflict,
+      dismissConflict,
+      hasConflicts: conflicts.length > 0,
+    }),
+    [conflicts, addConflict, resolveConflict, dismissConflict]
+  );
+
   return (
-    <ConflictContext.Provider
-      value={{
-        conflicts,
-        addConflict,
-        resolveConflict,
-        dismissConflict,
-        hasConflicts: conflicts.length > 0,
-      }}
-    >
-      {children}
-    </ConflictContext.Provider>
+    <ConflictContext.Provider value={value}>{children}</ConflictContext.Provider>
   );
 }
 

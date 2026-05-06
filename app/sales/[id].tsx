@@ -139,23 +139,17 @@ export default function SaleDetailScreen() {
     if (!token || !id) return;
     setError("");
 
-    // Always load local first — works for pending local sales with negative id as local_id
     const local = await getLocalSaleById(id);
     if (local) setSale(local);
 
-    // Offline sales have negative ids (local temp ids like -1745000000000)
-  const isOfflineId = id.startsWith("-") || Number(id) < 0;
-
-  // For offline sales, only load from local — api.sales.get would fail
-  if (isOfflineId) {
-    const local = await getLocalSaleById(id);
-    if (local) setSale(local);
-    setLoading(false);
-    return;
-  }
+    // Pending-sync sales exist only locally — attempting api.sales.get would fail
+    if (local?.sync_action === "create") {
+      setLoading(false);
+      return;
+    }
 
   try {
-    const s = await api.sales.get(Number(id), token);
+    const s = await api.sales.get(id, token);
     setSale(s);
     setIsOffline(false);
   } catch (e: any) {

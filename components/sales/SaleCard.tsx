@@ -5,12 +5,18 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { type Sale } from "@/lib/api";
 import { fmt, fmtDate, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 
-export function SaleCard({ item, onPress }: { item: Sale; onPress: () => void }) {
+interface SaleCardProps {
+  item: Sale;
+  onSelect: (id: string) => void;
+}
+
+function SaleCardImpl({ item, onSelect }: SaleCardProps) {
   const hasDebt = item.debt > 0;
+  const handlePress = React.useCallback(() => onSelect(item.id), [onSelect, item.id]);
 
   return (
     <TouchableOpacity
-      onPress={onPress}
+      onPress={handlePress}
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-start justify-between mb-2">
@@ -53,3 +59,20 @@ export function SaleCard({ item, onPress }: { item: Sale; onPress: () => void })
     </TouchableOpacity>
   );
 }
+
+export const SaleCard = React.memo(SaleCardImpl, (prev, next) => {
+  if (prev.onSelect !== next.onSelect) return false;
+  const a = prev.item;
+  const b = next.item;
+  return (
+    a.id === b.id
+    && a.total === b.total
+    && a.debt === b.debt
+    && a.discount === b.discount
+    && a.customer_name === b.customer_name
+    && a.payment_type === b.payment_type
+    && a.type === b.type
+    && a.created_at === b.created_at
+    && a.items.length === b.items.length
+  );
+});

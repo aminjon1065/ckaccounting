@@ -2,6 +2,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
 import * as React from "react";
 import {
+  ActivityIndicator,
   Alert,
   ScrollView,
   TouchableOpacity,
@@ -12,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar, Card, CardContent, Separator, Text } from "@/components/ui";
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 import { SettingsRow } from "@/components/settings/SettingsRow";
 import { ShopSettingsModal } from "@/components/settings/ShopSettingsModal";
@@ -27,7 +29,48 @@ export default function SettingsScreen() {
   const [shopSettingsVisible, setShopSettingsVisible] = React.useState(false);
   const [editProfileVisible, setEditProfileVisible] = React.useState(false);
   const { colorScheme, toggleColorScheme } = useColorScheme();
-  const { failedActionsCount } = useSync();
+  const { failedActionsCount, fetchAllHistory, isOnline } = useSync();
+  const { showToast } = useToast();
+
+  // Full-history backfill state — shown inline so the user sees per-entity progress.
+  const [historyLoading, setHistoryLoading] = React.useState(false);
+  const [historyProgress, setHistoryProgress] = React.useState<{ sales: number; expenses: number; purchases: number }>({
+    sales: 0,
+    expenses: 0,
+    purchases: 0,
+  });
+
+  const handleLoadAllHistory = React.useCallback(() => {
+    if (historyLoading) return;
+    if (!isOnline) {
+      showToast({ message: "Нет сети. Подключитесь к интернету.", variant: "warning" });
+      return;
+    }
+    Alert.alert(
+      "Загрузить всю историю?",
+      "Будут скачаны все продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Загрузить",
+          onPress: async () => {
+            setHistoryLoading(true);
+            setHistoryProgress({ sales: 0, expenses: 0, purchases: 0 });
+            try {
+              await fetchAllHistory(({ entity, pagesPulled }) => {
+                setHistoryProgress((prev) => ({ ...prev, [entity]: pagesPulled }));
+              });
+              showToast({ message: "История загружена.", variant: "success" });
+            } catch {
+              showToast({ message: "Не удалось загрузить всю историю.", variant: "error" });
+            } finally {
+              setHistoryLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [historyLoading, isOnline, fetchAllHistory, showToast]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -195,6 +238,35 @@ export default function SettingsScreen() {
               onPress={toggleColorScheme}
               rightText="Изменить"
             />
+          </CardContent>
+        </Card>
+
+        {/* Data */}
+        <Text variant="small" className="ml-2 uppercase tracking-wide text-slate-500 font-semibold mb-[-8px]">
+          Данные
+        </Text>
+        <Card>
+          <CardContent className="p-0 pt-0 pb-0">
+            <SettingsRow
+              icon="cloud-download"
+              label="Загрузить всю историю"
+              description="Скачать все продажи, расходы и закупки локально"
+              onPress={handleLoadAllHistory}
+              rightText={historyLoading ? undefined : "Запустить"}
+            />
+            {historyLoading && (
+              <View className="px-5 pb-4">
+                <View className="flex-row items-center gap-2 mb-2">
+                  <ActivityIndicator size="small" color="#0a7ea4" />
+                  <Text variant="muted">Идёт загрузка истории…</Text>
+                </View>
+                <Text variant="small" className="text-slate-500">
+                  Продажи: {historyProgress.sales} стр.{"  ·  "}
+                  Расходы: {historyProgress.expenses} стр.{"  ·  "}
+                  Закупки: {historyProgress.purchases} стр.
+                </Text>
+              </View>
+            )}
           </CardContent>
         </Card>
 

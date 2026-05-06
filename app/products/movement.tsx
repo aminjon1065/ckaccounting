@@ -156,7 +156,7 @@ export default function ProductMovementScreen() {
     if (!token || !id) return;
     setError("");
     try {
-      const data = await api.products.movements(Number(id), token, { cursor });
+      const data = await api.products.movements(id, token, { cursor });
       setCurrentStock(data.current_stock);
       setNextCursor(data.next_cursor ?? null);
       setHasMore(!!data.next_cursor);

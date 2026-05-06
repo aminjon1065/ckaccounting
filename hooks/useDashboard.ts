@@ -1,9 +1,11 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { api, type DashboardPeriod, type DashboardSummary, type Shop } from "@/lib/api";
 import { getDashboardCache, setDashboardCache } from "@/lib/db";
 
+const FILTER_DEBOUNCE_MS = 250;
+
 export function useDashboard({ token, isSuperAdmin }: { token: string | null; isSuperAdmin: boolean }) {
-  const [period, setPeriod] = useState<DashboardPeriod>("month");
+  const [period, setPeriod] = useState<DashboardPeriod>("day");
   const [activeShopId, setActiveShopId] = useState<number | null>(null);
   const [shops, setShops] = useState<Shop[]>([]);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -16,7 +18,12 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
   const [dateFrom, setDateFrom] = useState<string | null>(null);
   const [dateTo, setDateTo] = useState<string | null>(null);
 
-  const cacheKey = `dashboard_${period}_${activeShopId ?? "all"}_${dateFrom ?? ""}_${dateTo ?? ""}`;
+  // Stable cache key — useMemo so reference equality holds across renders
+  // when filter inputs haven't changed (prevents needless fetches).
+  const cacheKey = useMemo(
+    () => `dashboard_${period}_${activeShopId ?? "all"}_${dateFrom ?? ""}_${dateTo ?? ""}`,
+    [period, activeShopId, dateFrom, dateTo]
+  );
 
   useEffect(() => {
     if (isSuperAdmin && token) {
@@ -66,8 +73,17 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
     }
   }, [token, period, activeShopId, dateFrom, dateTo, cacheKey]);
 
+  // Debounce filter changes so rapid taps (period / shop / date pickers)
+  // collapse into a single network request.
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    fetchDashboard();
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+      fetchDashboard();
+    }, FILTER_DEBOUNCE_MS);
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
   }, [fetchDashboard]);
 
   return {

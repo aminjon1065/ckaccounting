@@ -336,13 +336,9 @@ export function ProductFormModal({
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         // Offline: save locally, queue for sync
-        // For existing (server-synced) products: preserve their real server ID and local_id.
-        // For new products: use a negative timestamp as temp ID and a fresh UUID as local_id.
-        const localId = editing ? (editing as LocalProduct).local_id : generateUUID();
         const now = new Date().toISOString();
         const productPayload = {
-          // Preserve server ID so the queued PATCH path is /products/{real_id}, not /products/{negative}
-          id: editing ? editing.id : -Date.now(),
+          id: editing ? editing.id : generateUUID(),
           shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : null,
           name: name.trim(),
           code: code.trim() || null,
@@ -360,10 +356,9 @@ export function ProductFormModal({
           updated_at: now,
         } as Product;
 
-        await insertOrUpdateProduct(productPayload, localId, editing ? "update" : "create");
+        await insertOrUpdateProduct(productPayload, editing ? "update" : "create");
         const optimisticProduct: LocalProduct = {
           ...productPayload,
-          local_id: localId,
           status: "pending",
           sync_action: editing ? "update" : "create",
         } as LocalProduct;

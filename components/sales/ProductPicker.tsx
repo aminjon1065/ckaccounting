@@ -15,6 +15,7 @@ export function ProductPicker({
   loadingMore = false,
   hasMore = false,
   onLoadMore,
+  loading = false,
 }: {
   visible: boolean;
   products: Product[];
@@ -23,6 +24,7 @@ export function ProductPicker({
   loadingMore?: boolean;
   hasMore?: boolean;
   onLoadMore?: () => void;
+  loading?: boolean;
 }) {
   const [search, setSearch] = React.useState("");
   const [showScanner, setShowScanner] = React.useState(false);
@@ -107,7 +109,11 @@ export function ProductPicker({
           )}
           ListEmptyComponent={
             <Text variant="muted" className="text-center py-10">
-              Товары не найдены.
+              {loading
+                ? "Загрузка каталога…"
+                : search
+                  ? "По запросу ничего не найдено."
+                  : "Каталог пуст. Добавьте товары."}
             </Text>
           }
           onEndReached={hasMore ? onLoadMore : undefined}

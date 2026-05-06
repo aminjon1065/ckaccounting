@@ -20,6 +20,7 @@ import {
   type DebtTransaction,
 } from "@/lib/api";
 import { getLocalDebtById, insertOrUpdateDebtTransactions, queueSyncAction } from "@/lib/db";
+import { generateUUID } from "@/lib/uuid";
 import { useSync } from "@/lib/sync/SyncContext";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
@@ -147,20 +148,16 @@ function AddTransactionModal({
     setSubmitting(true);
     try {
       const serverType: TransactionType = type === "take" ? "give" : type;
-      const tempId = -Date.now();
-      const localId = String(tempId);
-      const payload: CreateDebtTransactionPayload & { _local_id: string } = {
+      const txId = generateUUID();
+      const payload: CreateDebtTransactionPayload & { id: string } = {
+        id: txId,
         type: serverType,
         amount: numericAmount,
-        // FIX (transaction duplication): _local_id lets OutboxProcessor update
-        // debt_transactions.id after sync, preventing server pull from inserting duplicates.
-        _local_id: localId,
       };
       if (note.trim()) payload.note = note.trim();
 
-      const tx: DebtTransaction & { local_id: string } = {
-        id: tempId,
-        local_id: localId,
+      const tx: DebtTransaction = {
+        id: txId,
         debt_id: debtId,
         type,
         amount: payload.amount,
@@ -184,8 +181,8 @@ function AddTransactionModal({
         balance: number | null;
         balance_kopecks: number | null;
       }>(
-        "SELECT direction, balance, balance_kopecks FROM debts WHERE id = ? OR local_id = ?",
-        [debtId, String(debtId)]
+        "SELECT direction, balance, balance_kopecks FROM debts WHERE id = ?",
+        [debtId]
       );
       const rawBalance = row?.balance_kopecks != null
         ? row.balance_kopecks / 100
@@ -197,16 +194,16 @@ function AddTransactionModal({
         `UPDATE debts
          SET balance = balance + ?,
              balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100)) + ?
-         WHERE id = ? OR local_id = ?`,
-        [rawDelta, Math.round(rawDelta * 100), debtId, String(debtId)]
+         WHERE id = ?`,
+        [rawDelta, Math.round(rawDelta * 100), debtId]
       );
 
       await queueSyncAction(
         "POST",
         `/debts/${debtId}/transactions`,
         payload,
-        { "Idempotency-Key": `local-debt-tx-${tempId}` },
-        `local-debt-tx-${tempId}`
+        { "Idempotency-Key": `debt-tx-${txId}` },
+        `debt-tx-${txId}`
       );
       await refreshPendingActions();
 
@@ -346,7 +343,7 @@ export default function DebtDetailScreen() {
   React.useEffect(() => {
     if (!id) return;
 
-    getLocalDebtById(Number(id))
+    getLocalDebtById(id)
       .then(setDebt)
       .catch(console.error)
       .finally(() => setLoading(false));

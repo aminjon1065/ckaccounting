@@ -1,7 +1,32 @@
+import NetInfo from "@react-native-community/netinfo";
 import { API_URL, AUTH_ENDPOINTS, BACKEND_URL, TIMEOUTS } from "@/constants/config";
 import { triggerSuspension } from "@/store/suspension";
 import { triggerTokenExpiry } from "@/lib/sync/TokenExpiryBridge";
 import { attemptTokenRefresh } from "@/lib/sync/TokenRefreshBridge";
+
+// Cache the last known online state; NetInfo updates this on its own listener.
+// Refreshed at the start of every request via the cached state to avoid an
+// extra event-loop wait when the OS already knows the answer.
+let _isOnlineCache: boolean | null = null;
+NetInfo.addEventListener((state) => {
+  _isOnlineCache = !!state.isConnected && state.isInternetReachable !== false;
+});
+
+async function isOnline(): Promise<boolean> {
+  if (_isOnlineCache !== null) return _isOnlineCache;
+  try {
+    const state = await Promise.race([
+      NetInfo.fetch(),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), TIMEOUTS.reachability)
+      ),
+    ]);
+    if (!state) return true; // probe timed out — let fetch decide
+    return !!state.isConnected && state.isInternetReachable !== false;
+  } catch {
+    return true;
+  }
+}
 
 const BASE_URL = API_URL;
 
@@ -14,6 +39,8 @@ export interface User {
   role: "super_admin" | "owner" | "seller";
   shop_id?: number;
   shop_name?: string;
+  /** When true, the server demands a PIN re-setup on this device. */
+  pin_reset_required?: boolean;
 }
 
 export interface LoginPayload {
@@ -79,7 +106,7 @@ export function normalizeShopsPage(page: Paginated<any>): Paginated<Shop> {
 // ─── Products ─────────────────────────────────────────────────────────────────
 
 export interface Product {
-  id: number;
+  id: string;
   shop_id: number;
   name: string;
   code: string | null;
@@ -101,6 +128,7 @@ export interface Product {
 }
 
 export interface CreateProductPayload {
+  id?: string;
   name: string;
   code?: string;
   unit?: string;
@@ -214,7 +242,7 @@ function normalizeProductsPage(page: Paginated<Product>): Paginated<Product> {
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 
 export interface Expense {
-  id: number;
+  id: string;
   name: string;
   quantity: number;
   price: number;
@@ -236,8 +264,8 @@ export interface CreateExpensePayload {
 // ─── Debts ────────────────────────────────────────────────────────────────────
 
 export interface DebtTransaction {
-  id: number;
-  debt_id: number;
+  id: string;
+  debt_id: string;
   type: "give" | "take" | "repay";
   amount: number;
   note: string | null;
@@ -245,7 +273,7 @@ export interface DebtTransaction {
 }
 
 export interface Debt {
-  id: number;
+  id: string;
   shop_id?: number;
   user_id?: number | null;
   person_name: string;
@@ -275,8 +303,8 @@ export interface CreateDebtTransactionPayload {
 // ─── Purchases ────────────────────────────────────────────────────────────────
 
 export interface PurchaseItem {
-  id: number;
-  product_id: number;
+  id: string;
+  product_id: string;
   product_name: string;
   quantity: number;
   price: number;
@@ -284,7 +312,7 @@ export interface PurchaseItem {
 }
 
 export interface Purchase {
-  id: number;
+  id: string;
   supplier_name: string | null;
   total: number;
   items: PurchaseItem[];
@@ -294,9 +322,10 @@ export interface Purchase {
 }
 
 export interface CreatePurchasePayload {
+  id?: string;
   supplier_name?: string;
   shop_id?: number;
-  items: { product_id: number; quantity: number; price: number; markup_percent?: number }[];
+  items: { product_id: string; quantity: number; price: number; markup_percent?: number }[];
 }
 
 // ─── Sales ────────────────────────────────────────────────────────────────────
@@ -304,8 +333,8 @@ export interface CreatePurchasePayload {
 export type SaleType = "product" | "service";
 
 export interface SaleItem {
-  id: number;
-  product_id: number | null;
+  id: string;
+  product_id: string | null;
   name?: string | null;
   product_name: string | null;
   /** Populated for service-type sales */
@@ -317,7 +346,7 @@ export interface SaleItem {
 }
 
 export interface Sale {
-  id: number;
+  id: string;
   type?: SaleType;
   user_id?: number | null;
   customer_name: string | null;
@@ -336,7 +365,7 @@ export interface Sale {
 
 // Item shapes for the two sale types
 export interface ProductSaleItemPayload {
-  product_id: number;
+  product_id: string;
   quantity: number;
   price?: number;
 }
@@ -349,6 +378,7 @@ export interface ServiceSaleItemPayload {
 }
 
 export interface CreateSalePayload {
+  id?: string;
   type?: SaleType;
   customer_name?: string;
   discount?: number;
@@ -421,7 +451,7 @@ export interface StockReport {
   low_stock: number;
   out_of_stock: number;
   data: {
-    id: number;
+    id: string;
     name: string;
     stock_quantity: number;
     sale_price: number;
@@ -436,7 +466,7 @@ function normalizeStockReport(report: any): StockReport {
   const outOfStock = Number(report?.out_of_stock ?? report?.out_of_stock_products_count ?? 0);
   const data = Array.isArray(report?.data)
     ? report.data.map((item: any) => ({
-        id: Number(item?.id ?? 0),
+        id: String(item?.id ?? ""),
         name: String(item?.name ?? ""),
         stock_quantity: Number(item?.stock_quantity ?? 0),
         sale_price: Number(item?.sale_price ?? 0),
@@ -480,7 +510,7 @@ export interface ProductMovementsResponse {
 export type DashboardPeriod = "day" | "week" | "month" | "year" | "custom";
 
 export interface LowStockItem {
-  id: number;
+  id: string;
   name: string;
   code: string;
   stock_quantity: number;
@@ -489,7 +519,7 @@ export interface LowStockItem {
 }
 
 export interface RecentSaleItem {
-  id: number;
+  id: string;
   total: number;
   paid: number;
   debt: number;
@@ -501,7 +531,7 @@ export interface RecentSaleItem {
 
 // Recent expense item on the dashboard
 export interface RecentExpenseItem {
-  id: number;
+  id: string;
   name: string;
   total: number;
   created_at: string;
@@ -509,8 +539,8 @@ export interface RecentExpenseItem {
 
 // Recent debt transaction on the dashboard
 export interface RecentDebtTransactionItem {
-  id: number;
-  debt_id: number;
+  id: string;
+  debt_id: string;
   person_name: string;
   amount: number;
   type: "give" | "take" | "repay";
@@ -519,7 +549,7 @@ export interface RecentDebtTransactionItem {
 
 // Unpaid/overdue debt summary item
 export interface UnpaidDebtItem {
-  id: number;
+  id: string;
   person_name: string;
   balance: number;
   direction: "receivable" | "payable";
@@ -609,6 +639,11 @@ async function withRetry<T>(
         if (!isRetryableStatus(err.status)) {
           throw err;
         }
+        // If the OS reports we're offline now, don't waste backoff time —
+        // the next attempt would just hit the same offline guard and fail.
+        if (err.status === 0 && !(await isOnline())) {
+          throw err;
+        }
         await new Promise((r) => setTimeout(r, Math.min(RETRY_BASE_DELAY * Math.pow(2, attempt), 30_000)));
         continue;
       }
@@ -652,6 +687,12 @@ async function request<T>(
 
     // Read from holder so retries after token refresh pick up the new token.
     if (tokenHolder.current) headers["Authorization"] = `Bearer ${tokenHolder.current}`;
+
+    // Fail fast when the OS already knows we're offline — avoids burning
+    // the full request timeout (and retry backoff) on a guaranteed failure.
+    if (!(await isOnline())) {
+      throw new ApiError("Нет соединения с сервером. Проверьте интернет.", 0);
+    }
 
     const controller = new AbortController();
     // Use longer timeout for photo uploads (FormData) vs regular JSON requests
@@ -799,7 +840,7 @@ export const api = {
         { token }
       ).then(normalizeProductsPage),
 
-    get: (id: number, token: string) =>
+    get: (id: string, token: string) =>
       request<Product>(`/products/${id}`, { token }).then(normalizeProductImageUrls),
 
     create: (payload: CreateProductPayload, token: string, photoUri?: string) =>
@@ -811,7 +852,7 @@ export const api = {
         token,
       }).then(normalizeProductImageUrls),
 
-    update: (id: number, payload: Partial<CreateProductPayload>, token: string, photoUri?: string) =>
+    update: (id: string, payload: Partial<CreateProductPayload>, token: string, photoUri?: string) =>
       request<Product>(`/products/${id}`, {
         method: "PATCH",
         body: photoUri
@@ -820,14 +861,14 @@ export const api = {
         token,
       }).then(normalizeProductImageUrls),
 
-    delete: (id: number, token: string, idempotencyKey?: string) =>
+    delete: (id: string, token: string, idempotencyKey?: string) =>
       request<void>(`/products/${id}`, {
         method: "DELETE",
         token,
         headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
       }),
 
-    movements: (id: number, token: string, params: { cursor?: string; limit?: number } = {}) =>
+    movements: (id: string, token: string, params: { cursor?: string; limit?: number } = {}) =>
       request<ProductMovementsResponse>(
         `/products/${id}/movements${qs({ cursor: params.cursor, limit: params.limit })}`,
         { token }
@@ -845,7 +886,7 @@ export const api = {
         { token }
       ),
 
-    get: (id: number, token: string) =>
+    get: (id: string, token: string) =>
       request<Expense>(`/expenses/${id}`, { token }),
 
     create: (payload: CreateExpensePayload, token: string, idempotencyKey?: string) =>
@@ -856,14 +897,14 @@ export const api = {
         token,
       }),
 
-    update: (id: number, payload: Partial<CreateExpensePayload>, token: string) =>
+    update: (id: string, payload: Partial<CreateExpensePayload>, token: string) =>
       request<Expense>(`/expenses/${id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
         token,
       }),
 
-    delete: (id: number, token: string) =>
+    delete: (id: string, token: string) =>
       request<void>(`/expenses/${id}`, { method: "DELETE", token }),
   },
 
@@ -878,7 +919,7 @@ export const api = {
         { token }
       ),
 
-    get: (id: number, token: string) =>
+    get: (id: string, token: string) =>
       request<Debt>(`/debts/${id}`, { token }),
 
     create: (payload: CreateDebtPayload, token: string) =>
@@ -889,7 +930,7 @@ export const api = {
       }),
 
     addTransaction: (
-      id: number,
+      id: string,
       payload: CreateDebtTransactionPayload,
       token: string
     ) =>
@@ -911,7 +952,7 @@ export const api = {
         { token }
       ),
 
-    get: (id: number, token: string) =>
+    get: (id: string, token: string) =>
       request<Purchase>(`/purchases/${id}`, { token }),
 
     create: (payload: CreatePurchasePayload, token: string, idempotencyKey?: string) =>
@@ -934,7 +975,7 @@ export const api = {
         { token }
       ),
 
-    get: (id: number, token: string) =>
+    get: (id: string, token: string) =>
       request<Sale>(`/sales/${id}`, { token }),
 
     create: (payload: CreateSalePayload, token: string, idempotencyKey?: string) =>
@@ -946,7 +987,7 @@ export const api = {
       }),
 
     return: (
-      id: number,
+      id: string,
       token: string,
       payload?: { items?: Array<{ product_id: number; quantity: number }>; reason?: string; refund_method?: string }
     ) =>
@@ -1017,13 +1058,26 @@ export const api = {
 
     delete: (id: number, token: string) =>
       request<void>(`/users/${id}`, { method: "DELETE", token }),
+
+    /**
+     * Super-admin only: queue a PIN reset for the target user.
+     * The server invalidates the user's tokens; on next login the mobile
+     * client clears its cached PIN and forces a fresh setup.
+     */
+    resetPin: (id: number, token: string) =>
+      request<AppUser>(`/users/${id}/reset-pin`, { method: "POST", token }),
   },
 
   // ─── Shops ──────────────────────────────────────────────────────────────────
   shops: {
-    list: (token: string, params: { page?: number; limit?: number } = {}) =>
+    list: (token: string, params: { page?: number; limit?: number; updated_since?: string; updated_before?: string } = {}) =>
       request<Paginated<any>>(
-        `/shops${qs({ page: params.page, limit: params.limit ?? 100 })}`,
+        `/shops${qs({
+          page: params.page,
+          limit: params.limit ?? 100,
+          updated_since: params.updated_since,
+          updated_before: params.updated_before,
+        })}`,
         { token }
       ).then(normalizeShopsPage),
 

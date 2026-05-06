@@ -74,8 +74,11 @@ export function CreateSaleModal({
 
   const loadProductsForSale = React.useCallback(async (selectedShopId?: number, cursor?: string) => {
     setProductsLoading(true);
-    const localProducts = cursor ? products : await getLocalProducts(selectedShopId);
-    if (!cursor) setProducts(localProducts);
+    // Show cached results immediately so the picker is never empty when a cache exists.
+    if (!cursor) {
+      const localProducts = await getLocalProducts(selectedShopId);
+      setProducts(localProducts);
+    }
 
     try {
       const remoteProducts = await api.products.list(token, {
@@ -93,14 +96,16 @@ export function CreateSaleModal({
       }
       setProductsNextCursor(remoteProducts.next_cursor ?? null);
       setProductsHasMore(!!remoteProducts.next_cursor);
-    } catch (e) {
-      if (localProducts.length === 0) {
+    } catch (e: any) {
+      // Offline / network failure is expected here — fall back silently to local cache.
+      // Only log unexpected (non-network) failures.
+      if (e?.status && e.status !== 0) {
         console.error("Failed to load products for sale:", e);
       }
     } finally {
       setProductsLoading(false);
     }
-  }, [token, products]);
+  }, [token]);
 
   const loadMoreProducts = React.useCallback(() => {
     if (!productsHasMore || productsLoading) return;
@@ -432,11 +437,10 @@ export function CreateSaleModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = generateUUID();
         const now = new Date().toISOString();
         const shopIdForSale = isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0);
         const localSale: Sale = {
-          id: -Date.now(),
+          id: generateUUID(),
           type: saleType,
           customer_name: customerName.trim() || null,
           total,
@@ -472,7 +476,7 @@ export function CreateSaleModal({
         };
 
         // Save locally and decrement stock immediately
-        await insertOrUpdateSale(localSale, localId, shopIdForSale, user?.id);
+        await insertOrUpdateSale(localSale, shopIdForSale, user?.id);
         for (const c of cart) {
           await decrementLocalProductStock(c.product.id, c.quantity);
           // Check low stock and notify
@@ -932,7 +936,8 @@ export function CreateSaleModal({
           products={products}
           onSelect={addToCart}
           onClose={() => setPickerVisible(false)}
-          loadingMore={productsLoading}
+          loading={productsLoading && products.length === 0}
+          loadingMore={productsLoading && products.length > 0}
           hasMore={productsHasMore}
           onLoadMore={loadMoreProducts}
         />

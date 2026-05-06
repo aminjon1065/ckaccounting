@@ -1,74 +1,79 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, type Purchase } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type Purchase } from "@/lib/api";
 import { getLocalPurchases, type LocalPurchase } from "@/lib/db";
+import { useSync } from "@/lib/sync/SyncContext";
 
+/**
+ * Local-first purchases feed. SQLite is source of truth; SyncProvider
+ * delta-sync brings new server records in; load-more extends history
+ * via fetchOlderPurchases.
+ */
 export function usePurchases({ token, shopId }: { token: string | null; shopId?: number | null }) {
+  const { triggerSync, fetchOlderPurchases, isSyncing } = useSync();
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [isOffline, setIsOffline] = useState(false);
+  const isOffline = false;
 
-  const fetchPurchases = useCallback(async (reset = false) => {
+  const wasSyncingRef = useRef(false);
+
+  const loadFromLocal = useCallback(async () => {
     if (!token) return;
-    const pg = reset ? 1 : page;
-    setError("");
-
-    // Always load local purchases first — instant, always works
-    const localPurchases = await getLocalPurchases(shopId ?? undefined);
-
-    try {
-      const res = await api.purchases.list(token, { page: pg });
-      setIsOffline(false);
-
-      if (reset) {
-        const merged = mergePurchases(localPurchases, res.data);
-        setPurchases(merged);
-        setPage(2);
-      } else {
-        setPurchases((prev) => {
-          const merged = mergePurchases(prev, res.data);
-          return merged;
-        });
-        setPage(pg + 1);
-      }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        setPurchases(dedupePurchases(localPurchases as Purchase[]));
-        setHasMore(false);
-      } else {
-        if (reset) setError("Не удалось загрузить закупки.");
-      }
-    }
-  }, [token, page]);
+    const local = await getLocalPurchases(shopId ?? undefined);
+    setPurchases(dedupePurchases(local as Purchase[]));
+  }, [token, shopId]);
 
   useEffect(() => {
-    if (token) {
-      fetchPurchases(true).finally(() => setLoading(false));
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      await loadFromLocal();
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [token, loadFromLocal]);
+
+  useEffect(() => {
+    if (wasSyncingRef.current && !isSyncing) {
+      loadFromLocal().catch(() => {});
     }
-  }, [token]);
+    wasSyncingRef.current = isSyncing;
+  }, [isSyncing, loadFromLocal]);
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    fetchPurchases(true).finally(() => setRefreshing(false));
-  }, [fetchPurchases]);
+    setError("");
+    try {
+      await triggerSync();
+      await loadFromLocal();
+    } catch {
+      setError("Не удалось обновить закупки.");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [triggerSync, loadFromLocal]);
 
-  const handleLoadMore = useCallback(() => {
+  const handleLoadMore = useCallback(async () => {
     if (!hasMore || loadingMore) return;
     setLoadingMore(true);
-    fetchPurchases(false).finally(() => setLoadingMore(false));
-  }, [hasMore, loadingMore, fetchPurchases]);
+    try {
+      const moreAvailable = await fetchOlderPurchases(1);
+      await loadFromLocal();
+      setHasMore(moreAvailable);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, fetchOlderPurchases, loadFromLocal]);
 
-  const retryFetch = useCallback(() => {
+  const retryFetch = useCallback(async () => {
     setLoading(true);
-    fetchPurchases(true).finally(() => setLoading(false));
-  }, [fetchPurchases]);
+    setError("");
+    await loadFromLocal();
+    setLoading(false);
+  }, [loadFromLocal]);
 
   return {
     purchases,
@@ -85,58 +90,8 @@ export function usePurchases({ token, shopId }: { token: string | null; shopId?:
   };
 }
 
-/**
- * Merge local purchases with server purchases.
- * - Server purchases (positive id) replace any local with the same id
- * - Local purchases with negative id (pending sync) that don't exist on server are kept
- */
-function mergePurchases(local: Purchase[], server: Purchase[]): Purchase[] {
-  const serverMap = new Map<number, Purchase>();
-  for (const s of server) {
-    serverMap.set(s.id, s);
-  }
-
-  const result: Purchase[] = [];
-  for (const l of local as LocalPurchase[]) {
-    if (l.id < 0) {
-      // Local pending — check if server has a matching record
-      const absId = Math.abs(l.id);
-      if (serverMap.has(absId)) {
-        // Server version supersedes local pending
-        result.push(serverMap.get(absId)!);
-        serverMap.delete(absId);
-      } else {
-        // No server counterpart yet — keep local pending
-        result.push(l);
-      }
-    } else {
-      // Local with positive id mirrors a server record. Prefer the fresh server
-      // copy when present and consume it so FlatList never receives duplicates.
-      const serverPurchase = serverMap.get(l.id);
-      if (serverPurchase) {
-        result.push(serverPurchase);
-        serverMap.delete(l.id);
-      } else {
-        result.push(l);
-      }
-    }
-  }
-
-  // Add remaining server records
-  for (const s of serverMap.values()) {
-    result.push(s);
-  }
-
-  // Sort by created_at desc
-  result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  return dedupePurchases(result);
-}
-
 function purchaseKey(purchase: Purchase): string {
-  const localId = (purchase as LocalPurchase).local_id;
-  if (purchase.id > 0) return `id:${purchase.id}`;
-  if (localId) return `local:${localId}`;
-  return `temp:${purchase.id}:${purchase.created_at}`;
+  return `id:${purchase.id}`;
 }
 
 function dedupePurchases(purchases: Purchase[]): Purchase[] {

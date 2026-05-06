@@ -1,64 +1,53 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import { api, type Expense } from "@/lib/api";
 import { useToast } from "@/store/toast";
 import { getLocalExpenses, markExpenseDeletedLocally, deleteLocalExpense } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
+import { useSync } from "@/lib/sync/SyncContext";
 
+/**
+ * Local-first expenses feed. Mirrors useSales: SQLite is the source of
+ * truth for the UI; SyncProvider's delta-sync feeds new server records
+ * in, and load-more extends the historical window via fetchOlderExpenses.
+ */
 export function useExpenses({ token, shopId }: { token: string | null; shopId?: number }) {
   const { showToast } = useToast();
+  const { triggerSync, fetchOlderExpenses, isSyncing } = useSync();
   const [expenses, setExpenses] = useState<LocalExpense[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [isOffline, setIsOffline] = useState(false);
+  const isOffline = false;
 
-  const fetchExpenses = useCallback(async (reset = false) => {
+  const wasSyncingRef = useRef(false);
+
+  const loadFromLocal = useCallback(async () => {
     if (!token) return;
-    const pg = reset ? 1 : page;
-    setError("");
-
-    // Always load local first — instant
     const localData = await getLocalExpenses(shopId);
-
-    try {
-      const res = await api.expenses.list(token, { page: pg });
-      setIsOffline(false);
-
-      if (reset) {
-        const merged = mergeExpenses(localData, res.data);
-        setExpenses(merged);
-        setPage(2);
-      } else {
-        setExpenses((prev) => {
-          const merged = mergeExpenses(prev, res.data);
-          return merged;
-        });
-        setPage(pg + 1);
-      }
-      setHasMore(res.meta.current_page < res.meta.last_page);
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        setExpenses(localData);
-        setHasMore(false);
-      } else {
-        if (reset) setError("Не удалось загрузить расходы.");
-      }
-    }
-  }, [token, page, shopId]);
+    setExpenses(localData);
+  }, [token, shopId]);
 
   useEffect(() => {
-    if (token) {
-      fetchExpenses(true).finally(() => setLoading(false));
-    }
-  }, [token]);
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      await loadFromLocal();
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [token, loadFromLocal]);
 
-  const handleDelete = useCallback((id: number) => {
+  useEffect(() => {
+    if (wasSyncingRef.current && !isSyncing) {
+      loadFromLocal().catch(() => {});
+    }
+    wasSyncingRef.current = isSyncing;
+  }, [isSyncing, loadFromLocal]);
+
+  const handleDelete = useCallback((id: string) => {
     Alert.alert("Удалить расход", "Расход будет удалён безвозвратно.", [
       { text: "Отмена", style: "cancel" },
       {
@@ -67,16 +56,12 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
         onPress: async () => {
           try {
             await api.expenses.delete(id, token!);
-            const expense = expenses.find((e) => e.id === id);
-            const localId = (expense as LocalExpense)?.local_id;
-            await deleteLocalExpense(localId ?? id);
+            await deleteLocalExpense(id);
             setExpenses((prev) => prev.filter((e) => e.id !== id));
             showToast({ message: "Расход удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              const expense = expenses.find((e) => e.id === id);
-              const localId = (expense as LocalExpense)?.local_id;
-              await markExpenseDeletedLocally(id, localId);
+              await markExpenseDeletedLocally(id);
               setExpenses((prev) => prev.filter((e) => e.id !== id));
               showToast({ message: "Удалено локально. Будет удалено после синхронизации.", variant: "warning" });
             } else {
@@ -90,8 +75,7 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
 
   const handleSaved = useCallback((saved: Expense | LocalExpense, wasEditing: boolean) => {
     setExpenses((prev) => {
-      const id = (saved as LocalExpense).local_id ? (saved as LocalExpense).local_id : saved.id;
-      const idx = prev.findIndex((e) => e.id === saved.id || (e as LocalExpense).local_id === id);
+      const idx = prev.findIndex((e) => e.id === saved.id);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = saved as LocalExpense;
@@ -105,21 +89,37 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
     });
   }, [showToast]);
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    fetchExpenses(true).finally(() => setRefreshing(false));
-  }, [fetchExpenses]);
+    setError("");
+    try {
+      await triggerSync();
+      await loadFromLocal();
+    } catch {
+      setError("Не удалось обновить расходы.");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [triggerSync, loadFromLocal]);
 
-  const handleLoadMore = useCallback(() => {
+  const handleLoadMore = useCallback(async () => {
     if (!hasMore || loadingMore) return;
     setLoadingMore(true);
-    fetchExpenses(false).finally(() => setLoadingMore(false));
-  }, [hasMore, loadingMore, fetchExpenses]);
+    try {
+      const moreAvailable = await fetchOlderExpenses(1);
+      await loadFromLocal();
+      setHasMore(moreAvailable);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, fetchOlderExpenses, loadFromLocal]);
 
-  const retryFetch = useCallback(() => {
+  const retryFetch = useCallback(async () => {
     setLoading(true);
-    fetchExpenses(true).finally(() => setLoading(false));
-  }, [fetchExpenses]);
+    setError("");
+    await loadFromLocal();
+    setLoading(false);
+  }, [loadFromLocal]);
 
   return {
     expenses,
@@ -135,31 +135,4 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
     handleLoadMore,
     retryFetch,
   };
-}
-
-function mergeExpenses(local: LocalExpense[], server: Expense[]): LocalExpense[] {
-  const serverMap = new Map<number, Expense>();
-  for (const s of server) {
-    serverMap.set(s.id, s);
-  }
-
-  const result: LocalExpense[] = [];
-
-  for (const l of local) {
-    if (l.id > 0 && serverMap.has(l.id)) {
-      result.push({ ...serverMap.get(l.id)!, local_id: l.local_id, status: l.status, sync_action: l.sync_action } as LocalExpense);
-      serverMap.delete(l.id);
-    } else if (l.sync_action && l.sync_action !== "none") {
-      result.push(l);
-    } else if (l.id < 0) {
-      result.push(l);
-    }
-  }
-
-  for (const s of serverMap.values()) {
-    result.push(s as LocalExpense);
-  }
-
-  result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  return result;
 }

@@ -17,7 +17,7 @@ import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 
 export default function LoginScreen() {
-  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending } = useAuth();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, token } = useAuth();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 
@@ -27,6 +27,12 @@ export default function LoginScreen() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
   const [showPinSetup, setShowPinSetup] = React.useState(false);
+
+  // If we already have a session token but PIN is missing (e.g. fresh install
+  // restoring a token, or a server-initiated PIN reset), force the setup flow.
+  React.useEffect(() => {
+    if (token && pinSetupPending) setShowPinSetup(true);
+  }, [token, pinSetupPending]);
   const [pinValue, setPinValue] = React.useState("");
   const [pinConfirm, setPinConfirm] = React.useState("");
   const [pinError, setPinError] = React.useState("");
@@ -133,8 +139,8 @@ export default function LoginScreen() {
   }
 
   async function handlePinSubmit() {
-    if (pinValue.length < 4 || pinValue.length > 6) {
-      setPinError("PIN должен быть от 4 до 6 цифр.");
+    if (pinValue.length !== 4) {
+      setPinError("PIN должен быть из 4 цифр.");
       return;
     }
     if (pinValue !== pinConfirm) {
@@ -196,10 +202,10 @@ export default function LoginScreen() {
                 placeholder="****"
                 placeholderTextColor="gray"
                 keyboardType="number-pad"
-                maxLength={6}
+                maxLength={4}
                 secureTextEntry
                 value={pinVerifyValue}
-                onChangeText={setPinVerifyValue}
+                onChangeText={(t) => setPinVerifyValue(t.replace(/\D/g, "").slice(0, 4))}
               />
               <Button onPress={handlePinVerifySubmit}>
                 Войти
@@ -241,10 +247,10 @@ export default function LoginScreen() {
                 <MaterialIcons name="lock" size={28} color="#fff" />
               </View>
               <Text variant="h2" className="text-center">
-                Защитите аккаунт
+                Создайте PIN-код
               </Text>
               <Text variant="muted" className="text-center mt-2 text-center">
-                Создайте PIN-код для быстрого входа. Используется как резервный способ, если биометрия недоступна.
+                4-значный PIN обязателен для входа в приложение. Он используется при каждом запуске и в офлайн-режиме.
               </Text>
             </View>
 
@@ -260,15 +266,15 @@ export default function LoginScreen() {
             <View className="gap-4">
               <Input
                 label="PIN-код"
-                placeholder="4–6 цифр"
+                placeholder="4 цифры"
                 value={pinValue}
                 onChangeText={(t) => {
-                  setPinValue(t.replace(/\D/g, "").slice(0, 6));
+                  setPinValue(t.replace(/\D/g, "").slice(0, 4));
                   if (pinError) setPinError("");
                 }}
                 keyboardType="number-pad"
                 secureTextEntry
-                maxLength={6}
+                maxLength={4}
                 leftIcon={
                   <MaterialIcons name="pin" size={18} color="#94a3b8" />
                 }
@@ -279,12 +285,12 @@ export default function LoginScreen() {
                 placeholder="Повторите PIN"
                 value={pinConfirm}
                 onChangeText={(t) => {
-                  setPinConfirm(t.replace(/\D/g, "").slice(0, 6));
+                  setPinConfirm(t.replace(/\D/g, "").slice(0, 4));
                   if (pinError) setPinError("");
                 }}
                 keyboardType="number-pad"
                 secureTextEntry
-                maxLength={6}
+                maxLength={4}
                 leftIcon={
                   <MaterialIcons name="pin" size={18} color="#94a3b8" />
                 }
@@ -294,25 +300,10 @@ export default function LoginScreen() {
                 className="mt-2"
                 size="lg"
                 onPress={handlePinSubmit}
-                disabled={pinValue.length < 4 || pinConfirm.length < 4}
+                disabled={pinValue.length !== 4 || pinConfirm.length !== 4}
               >
                 Сохранить PIN
               </Button>
-
-              <Pressable
-                className="items-center mt-2"
-                onPress={() => {
-                  setPinSetupPending(false);
-                  setShowPinSetup(false);
-                  setPinValue("");
-                  setPinConfirm("");
-                  setPinError("");
-                }}
-              >
-                <Text variant="small" className="text-slate-400">
-                  Пропустить
-                </Text>
-              </Pressable>
             </View>
           </ScrollView>
         </KeyboardAvoidingView>

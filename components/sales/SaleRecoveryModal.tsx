@@ -119,7 +119,7 @@ export function SaleRecoveryModal({ action, onClose }: SaleRecoveryModalProps) {
 
       await insertOrUpdateSale(
         {
-          id: -Date.now(),
+          id: localId,
           type: parsedPayload.type,
           customer_name: parsedPayload.customer_name,
           total: newTotal,
@@ -132,7 +132,6 @@ export function SaleRecoveryModal({ action, onClose }: SaleRecoveryModalProps) {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
-        localId,
         shopId,
         user?.id
       );

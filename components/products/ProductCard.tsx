@@ -1,6 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
-import { Alert, Image, type ImageSourcePropType, TouchableOpacity, View } from "react-native";
+import { Alert, TouchableOpacity, View } from "react-native";
+import { Image } from "expo-image";
 import { Badge, Text } from "@/components/ui";
 import { resolveBackendAssetUrl, type Product } from "@/lib/api";
 
@@ -43,7 +44,7 @@ interface ProductCardProps {
   token?: string | null;
 }
 
-export function ProductCard({
+function ProductCardImpl({
   item,
   onViewDetail,
   onEdit,
@@ -56,10 +57,6 @@ export function ProductCard({
   const isOut = item.stock_quantity === 0;
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(item.photo_url ?? item.image_url ?? null);
-  const imageSource = React.useMemo<ImageSourcePropType | undefined>(() => {
-    if (!imageUri) return undefined;
-    return { uri: imageUri };
-  }, [imageUri]);
 
   React.useEffect(() => {
     setImageFailed(false);
@@ -81,11 +78,13 @@ export function ProductCard({
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 shadow-sm border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-center gap-3 mb-2">
-        {imageSource && !imageFailed ? (
+        {imageUri && !imageFailed ? (
           <Image
-            source={imageSource}
+            source={{ uri: imageUri }}
             style={{ width: 52, height: 52, borderRadius: 10 }}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={120}
             onError={() => setImageFailed(true)}
           />
         ) : (
@@ -142,3 +141,31 @@ export function ProductCard({
     </TouchableOpacity>
   );
 }
+
+/**
+ * Memoized so a 100-item FlatList doesn't re-render every card on each scroll
+ * tick or parent state change. Callbacks are intentionally excluded from the
+ * comparator — parents wrap them in useCallback or, more often, the visual
+ * output doesn't depend on callback identity.
+ */
+export const ProductCard = React.memo(ProductCardImpl, (prev, next) => {
+  if (prev.canEdit !== next.canEdit) return false;
+  if (prev.token !== next.token) return false;
+  const a = prev.item;
+  const b = next.item;
+  return (
+    a.id === b.id
+    && a.name === b.name
+    && a.code === b.code
+    && a.unit === b.unit
+    && a.cost_price === b.cost_price
+    && a.sale_price === b.sale_price
+    && a.stock_quantity === b.stock_quantity
+    && a.low_stock_alert === b.low_stock_alert
+    && a.pricing_mode === b.pricing_mode
+    && a.markup_percent === b.markup_percent
+    && a.bulk_price === b.bulk_price
+    && a.bulk_threshold === b.bulk_threshold
+    && (a.photo_url ?? a.image_url) === (b.photo_url ?? b.image_url)
+  );
+});

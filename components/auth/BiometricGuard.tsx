@@ -55,13 +55,30 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   const [pinError, setPinError] = useState("");
   const [isVerifyingPin, setIsVerifyingPin] = useState(false);
   const [pinAvailable, setPinAvailable] = useState(false);
+  // Tracks whether the PIN must be entered on cold start when biometrics
+  // are unavailable. Cleared after a successful PIN verification.
+  const [pinOnlyLocked, setPinOnlyLocked] = useState(false);
 
-  // Check if PIN is available when biometric fails
+  // Check PIN availability whenever the biometric layer reports a state
+  // where a PIN may be needed (failed / cancelled / unavailable).
   useEffect(() => {
-    if ((status === "failed" || status === "cancelled") && isEnabled) {
+    if (!isEnabled) return;
+    if (status === "failed" || status === "cancelled" || status === "unavailable") {
       hasPin().then(setPinAvailable);
     }
   }, [status, isEnabled]);
+
+  // No biometrics enrolled → require PIN on cold start (and force the user
+  // to set one if missing — handled by the AuthGuard via pinSetupPending).
+  useEffect(() => {
+    if (!isEnabled || inAuthGroup) {
+      setPinOnlyLocked(false);
+      return;
+    }
+    if (status === "unavailable" && pinAvailable) {
+      setPinOnlyLocked(true);
+    }
+  }, [status, pinAvailable, isEnabled, inAuthGroup]);
 
   // Auto-trigger the system biometric prompt whenever the guard enters the
   // locked state (initial launch AND every foreground resume).
@@ -84,13 +101,15 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   }, [status]);
 
   const handlePinSubmit = useCallback(async () => {
-    if (pinValue.length < 4) return;
+    if (pinValue.length !== 4) return;
     setIsVerifyingPin(true);
     setPinError("");
     const valid = await verifyPin(pinValue);
     if (valid) {
       setPinValue("");
       setPinError("");
+      setPinOnlyLocked(false);
+      setShowPinFallback(false);
     } else {
       setPinError("Неверный PIN-код");
       setPinValue("");
@@ -107,7 +126,21 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   // The lock screen will appear once the probe resolves to "locked".
   if (status === "checking") return <>{children}</>;
 
-  // Biometrics unavailable (no hardware / not enrolled): pass through.
+  // No biometrics, but the user has a PIN — require it before showing the app.
+  if (pinOnlyLocked) {
+    return (
+      <PinFallbackScreen
+        pinValue={pinValue}
+        setPinValue={setPinValue}
+        pinError={pinError}
+        isVerifying={isVerifyingPin}
+        onSubmit={handlePinSubmit}
+        onBack={() => { /* nothing to fall back to — biometrics aren't available */ }}
+      />
+    );
+  }
+
+  // Biometrics unavailable (no hardware / not enrolled) and no PIN → pass through.
   // Sensitive data is still protected by the server-side token.
   if (status === "unavailable") return <>{children}</>;
 

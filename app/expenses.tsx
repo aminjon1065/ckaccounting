@@ -41,6 +41,17 @@ export default function ExpensesScreen() {
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);
 
+  const handleEditExpense = React.useCallback((expense: Expense) => {
+    setEditing(expense);
+    setFormVisible(true);
+  }, []);
+  const renderExpense = React.useCallback(
+    ({ item }: { item: Expense }) => (
+      <ExpenseCard item={item} onEdit={handleEditExpense} onDelete={handleDelete} />
+    ),
+    [handleEditExpense, handleDelete]
+  );
+
   if (!can(user?.role, "expenses:view")) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
@@ -95,6 +106,10 @@ export default function ExpensesScreen() {
           data={expenses}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews
           refreshing={refreshing}
           onRefresh={handleRefresh}
           onEndReached={handleLoadMore}
@@ -109,19 +124,13 @@ export default function ExpensesScreen() {
           }
           ListFooterComponent={
             loadingMore ? (
-              <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
+              <View className="flex-row items-center justify-center gap-2 py-4">
+                <ActivityIndicator size="small" color="#0a7ea4" />
+                <Text variant="muted">Загружается история…</Text>
+              </View>
             ) : null
           }
-          renderItem={({ item }) => (
-            <ExpenseCard
-              item={item}
-              onEdit={() => {
-                setEditing(item);
-                setFormVisible(true);
-              }}
-              onDelete={() => handleDelete(item.id)}
-            />
-          )}
+          renderItem={renderExpense}
         />
       )}
 

@@ -41,6 +41,18 @@ export default function SalesScreen() {
 
   const [createVisible, setCreateVisible] = React.useState(false);
 
+  // Stable callback so memoized SaleCard doesn't break its prop equality.
+  const handleSelectSale = React.useCallback(
+    (id: string) => router.push(`/sales/${id}`),
+    [router]
+  );
+  const renderSale = React.useCallback(
+    ({ item }: { item: import("@/lib/api").Sale }) => (
+      <SaleCard item={item} onSelect={handleSelectSale} />
+    ),
+    [handleSelectSale]
+  );
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
@@ -125,10 +137,7 @@ export default function SalesScreen() {
       ) : (
         <FlatList
           data={sales}
-          keyExtractor={(item) => {
-            const localId = (item as { local_id?: string | null }).local_id;
-            return localId ? `local:${localId}` : `id:${String(item.id)}`;
-          }}
+          keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           initialNumToRender={10}
           maxToRenderPerBatch={10}
@@ -148,15 +157,13 @@ export default function SalesScreen() {
           }
           ListFooterComponent={
             loadingMore ? (
-              <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
+              <View className="flex-row items-center justify-center gap-2 py-4">
+                <ActivityIndicator size="small" color="#0a7ea4" />
+                <Text variant="muted">Загружается история…</Text>
+              </View>
             ) : null
           }
-          renderItem={({ item }) => (
-            <SaleCard
-              item={item}
-              onPress={() => router.push(`/sales/${item.id}`)}
-            />
-          )}
+          renderItem={renderSale}
         />
       )}
 

@@ -261,10 +261,9 @@ export function CreatePurchaseModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = generateUUID();
         const now = new Date().toISOString();
         const localPurchase: Purchase = {
-          id: -Date.now(),
+          id: generateUUID(),
           supplier_name: supplierName.trim() || null,
           total,
           items: cart.map((c) => ({
@@ -278,8 +277,8 @@ export function CreatePurchaseModal({
           created_at: now,
           updated_at: now,
         };
-        await insertOrUpdatePurchase(localPurchase, localId);
-        onCreated({ ...localPurchase, local_id: localId, status: "pending", sync_action: "create" } as LocalPurchase);
+        await insertOrUpdatePurchase(localPurchase, payload.shop_id);
+        onCreated({ ...localPurchase, status: "pending", sync_action: "create" } as LocalPurchase);
         showToast({ message: "Нет сети. Закупка сохранена локально.", variant: "warning" });
         onClose();
       } else {
