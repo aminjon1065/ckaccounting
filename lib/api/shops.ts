@@ -10,7 +10,10 @@ export interface Shop {
   id: number;
   name: string;
   is_active: boolean;
+  /** Multi-shop ownership: the user that owns this shop. Null = unassigned. */
   owner_id?: number | null;
+  /** Legacy free-form text label (display-only). */
+  owner_name?: string | null;
   created_at: string;
   updated_at?: string;
   deleted_at?: string | null;

@@ -21,7 +21,7 @@ import { getLocalDebts, getLocalShops, insertOrUpdateDebts, localScope, queueSyn
 import { generateUUID } from "@/lib/uuid";
 import { useSyncMethods } from "@/lib/sync/SyncContext";
 import { useLastSyncedAt } from "@/lib/sync/syncStore";
-import { can } from "@/lib/permissions";
+import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
 
 function fmt(n: number) {
@@ -117,15 +117,17 @@ function CreateDebtModal({
   visible,
   onClose,
   onCreated,
-  isSuperAdmin,
-  currentShopId,
+  showShopPicker,
+  implicitShopId,
   userId,
 }: {
   visible: boolean;
   onClose: () => void;
   onCreated: (d: Debt) => void;
-  isSuperAdmin: boolean;
-  currentShopId?: number | null;
+  /** Render shop picker when true. super_admin and multi-shop owner. */
+  showShopPicker: boolean;
+  /** Implicit shop for sellers / single-shop owners. */
+  implicitShopId?: number | null;
   userId?: number | null;
 }) {
   const [shopId, setShopId] = React.useState("");
@@ -140,19 +142,21 @@ function CreateDebtModal({
 
   React.useEffect(() => {
     if (visible) {
-      setShopId(currentShopId ? String(currentShopId) : "");
+      setShopId("");
       setPersonName("");
       setDirection("receivable");
       setOpeningBalance("");
       setError("");
 
-      if (isSuperAdmin) {
+      if (showShopPicker) {
+        // getLocalShops returns shops the user can access (server-scoped
+        // when synced; for owners that's their owned set).
         getLocalShops()
           .then((local) => setShops(local.map((shop) => ({ id: shop.id, name: shop.name }))))
           .catch(() => {});
       }
     }
-  }, [currentShopId, isSuperAdmin, visible]);
+  }, [showShopPicker, visible]);
 
   async function handleSubmit() {
     setError("");
@@ -160,9 +164,15 @@ function CreateDebtModal({
       setError("Введите имя.");
       return;
     }
-    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
-    if (isSuperAdmin && !selectedShopId) {
+    const selectedShopId = showShopPicker
+      ? (shopId ? Number(shopId) : undefined)
+      : (implicitShopId ?? undefined);
+    if (showShopPicker && !selectedShopId) {
       setError("Выберите магазин.");
+      return;
+    }
+    if (!showShopPicker && !selectedShopId) {
+      setError("Магазин не назначен.");
       return;
     }
     setSubmitting(true);
@@ -259,7 +269,7 @@ function CreateDebtModal({
             )}
 
             <View className="gap-4">
-              {isSuperAdmin && (
+              {showShopPicker && (
                 <Select
                   label="Магазин"
                   required
@@ -474,8 +484,8 @@ export default function DebtsScreen() {
           setDebts((prev) => [d, ...prev]);
           showToast({ message: "Запись добавлена", variant: "success" });
         }}
-        isSuperAdmin={user?.role === "super_admin"}
-        currentShopId={user?.shop_id}
+        showShopPicker={needsShopPicker(user)}
+        implicitShopId={effectiveShopId(user)}
         userId={user?.id}
       />
     </SafeAreaView>

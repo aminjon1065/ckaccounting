@@ -3,10 +3,11 @@ import { Tabs } from "expo-router";
 import { Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { can } from "@/lib/permissions";
+import { can, hasNoAccessibleShops } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { usePendingActionsCount } from "@/lib/sync/syncStore";
 import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
+import { NoShopsAssignedScreen } from "@/components/NoShopsAssignedScreen";
 
 const PRIMARY = "#0a7ea4";
 const MUTED = "#94a3b8";
@@ -48,6 +49,14 @@ export default function TabLayout() {
   const bottomInset = Platform.OS === "android" ? insets.bottom : Math.max(insets.bottom, 20);
   const tabBarPaddingBottom = Math.max(bottomInset, Platform.OS === "ios" ? 20 : 10);
   const tabBarHeight = 56 + tabBarPaddingBottom;
+
+  // Owner without any assigned shops can't meaningfully use any tab
+  // (every list would be empty, every form blocked at validation).
+  // Replace the tabs with a clear "wait for admin" state until the
+  // assignment lands.
+  if (hasNoAccessibleShops(user)) {
+    return <NoShopsAssignedScreen />;
+  }
 
   return (
     <>

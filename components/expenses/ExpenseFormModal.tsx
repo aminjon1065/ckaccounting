@@ -12,13 +12,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Text } from "@/components/ui";
-import { api, ApiError, type CreateExpensePayload, type Expense } from "@/lib/api";
+import { Button, Input, Select, Text } from "@/components/ui";
+import { api, ApiError, type CreateExpensePayload, type Expense, type Shop } from "@/lib/api";
 import { insertOrUpdateExpense } from "@/lib/db";
 import { generateUUID } from "@/lib/uuid";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
 import type { LocalExpense } from "@/lib/db";
+import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { reportError } from "@/lib/observability/reporter";
 
 export function ExpenseFormModal({
   visible,
@@ -42,6 +44,19 @@ export function ExpenseFormModal({
   const { showToast } = useToast();
   const { user } = useAuth();
 
+  const showShopPicker = needsShopPicker(user);
+  const implicitShopId = effectiveShopId(user);
+  const [shopId, setShopId] = React.useState<string>("");
+  const [shops, setShops] = React.useState<Shop[]>([]);
+
+  React.useEffect(() => {
+    if (visible && showShopPicker) {
+      api.shops.list(token)
+        .then((res) => setShops(res.data ?? []))
+        .catch((e) => reportError(e, { tag: "expense-modal-shops-load" }));
+    }
+  }, [visible, showShopPicker, token]);
+
   const qtyRef = React.useRef<RNTextInput>(null);
   const priceRef = React.useRef<RNTextInput>(null);
   const noteRef = React.useRef<RNTextInput>(null);
@@ -54,6 +69,7 @@ export function ExpenseFormModal({
       setNote(editing.note ?? "");
     } else if (visible && !editing) {
       setName(""); setQuantity("1"); setPrice(""); setNote("");
+      setShopId("");
     }
     setError("");
   }, [visible, editing]);
@@ -73,12 +89,28 @@ export function ExpenseFormModal({
       return;
     }
 
-    const payload: CreateExpensePayload = {
+    // Resolve target shop. shop_id is optional in the API payload (server
+    // forces it to user's accessible shops via repo scoping for sellers /
+    // single-shop owners), but multi-shop owners must pick.
+    const targetShopId = !editing
+      ? (showShopPicker
+          ? (shopId ? Number(shopId) : null)
+          : implicitShopId)
+      : null;
+    if (!editing && showShopPicker && !shopId) {
+      setError("Выберите магазин."); return;
+    }
+    if (!editing && !showShopPicker && implicitShopId === null) {
+      setError("Магазин не назначен."); return;
+    }
+
+    const payload: CreateExpensePayload & { shop_id?: number } = {
       name: name.trim(),
       quantity: parseFloat(quantity),
       price: parseFloat(price),
     };
     if (note.trim()) payload.note = note.trim();
+    if (targetShopId !== null) payload.shop_id = targetShopId;
 
     setSubmitting(true);
     const idempotencyKey = await Crypto.randomUUID();
@@ -102,7 +134,8 @@ export function ExpenseFormModal({
           updated_at: now,
           version: (editing as Expense | null)?.version,
         };
-        await insertOrUpdateExpense(localExpense, user?.shop_id, user?.id, editing ? "update" : "create");
+        const offlineShopId = targetShopId ?? user?.shop_id ?? undefined;
+        await insertOrUpdateExpense(localExpense, offlineShopId, user?.id, editing ? "update" : "create");
         onSaved({ ...localExpense, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
         showToast({ message: "Нет сети. Расход сохранен локально.", variant: "warning" });
         onClose();
@@ -159,6 +192,19 @@ export function ExpenseFormModal({
             )}
 
             <View className="gap-4">
+              {/* Shop picker — shown for super_admin and multi-shop owners */}
+              {/* on create only. Editing keeps the existing shop assignment. */}
+              {showShopPicker && !editing && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map((s) => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
+              )}
+
               <Input
                 label="Название расхода"
                 required

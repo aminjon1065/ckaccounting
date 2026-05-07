@@ -21,7 +21,8 @@ import {
   Skeleton,
   Text,
 } from "@/components/ui";
-import { api, ApiError, type Shop, type CreateShopPayload } from "@/lib/api";
+import { api, ApiError, type AppUser, type Shop, type CreateShopPayload } from "@/lib/api";
+import { reportError } from "@/lib/observability/reporter";
 import { queueSyncAction, insertOrUpdateLocalShop, type LocalShop } from "@/lib/db";
 import { useShops } from "@/hooks/useShops";
 import { useAuth } from "@/store/auth";
@@ -119,24 +120,34 @@ function CreateShopModal({
   showToast: ReturnType<typeof useToast>["showToast"];
 }) {
   const [name, setName] = React.useState("");
+  const [ownerId, setOwnerId] = React.useState<string>("");
+  const [owners, setOwners] = React.useState<AppUser[]>([]);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (visible) {
       setName("");
+      setOwnerId("");
       setError("");
+      // Load owners for the assignment dropdown. Server-side filter
+      // returns only users with role=owner; client-side filter as belt
+      // & braces in case the endpoint changes.
+      api.users.list(token, { limit: 100 })
+        .then((data) => setOwners(data.filter((u) => u.role === "owner")))
+        .catch((e) => reportError(e, { tag: "shop-create-owners-load" }));
     }
-  }, [visible]);
+  }, [visible, token]);
 
   async function handleSubmit() {
     setError("");
     if (!name.trim()) { setError("Введите название магазина."); return; }
     setSubmitting(true);
-    const payload: CreateShopPayload = {
+    const payload: CreateShopPayload & { owner_id?: number } = {
       name: name.trim(),
       is_active: true,
     };
+    if (ownerId) payload.owner_id = parseInt(ownerId, 10);
     try {
       const created = await api.shops.create(payload, token);
       onCreated(created);
@@ -203,6 +214,16 @@ function CreateShopModal({
                 value={name}
                 onChangeText={setName}
               />
+              <Select
+                label="Владелец"
+                value={ownerId}
+                onValueChange={setOwnerId}
+                options={[
+                  { label: "Без владельца (назначить позже)", value: "" },
+                  ...owners.map((o) => ({ label: `${o.name} (${o.email})`, value: String(o.id) })),
+                ]}
+                placeholder="Не назначен"
+              />
             </View>
 
             <Button
@@ -240,6 +261,8 @@ function EditShopModal({
 }) {
   const [name, setName] = React.useState("");
   const [isActive, setIsActive] = React.useState<"active" | "suspended">("active");
+  const [ownerId, setOwnerId] = React.useState<string>("");
+  const [owners, setOwners] = React.useState<AppUser[]>([]);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -247,17 +270,27 @@ function EditShopModal({
     if (visible && editingShop) {
       setName(editingShop.name);
       setIsActive(editingShop.is_active ? "active" : "suspended");
+      // Pre-fill from the shop's current owner_id (server returns it on
+      // ShopResource). Empty string = "не назначен" in the dropdown.
+      const currentOwnerId = (editingShop as Shop & { owner_id?: number | null }).owner_id;
+      setOwnerId(currentOwnerId != null ? String(currentOwnerId) : "");
       setError("");
+      api.users.list(token, { limit: 100 })
+        .then((data) => setOwners(data.filter((u) => u.role === "owner")))
+        .catch((e) => reportError(e, { tag: "shop-edit-owners-load" }));
     }
-  }, [visible, editingShop]);
+  }, [visible, editingShop, token]);
 
   async function handleSubmit() {
     setError("");
     if (!name.trim()) { setError("Введите название."); return; }
     setSubmitting(true);
-    const payload: Partial<CreateShopPayload> = {
+    const payload: Partial<CreateShopPayload> & { owner_id?: number | null } = {
       name: name.trim(),
       is_active: isActive === "active",
+      // Empty string in the picker = explicit "unassign" — send null to
+      // the server so the shop is detached from its current owner.
+      owner_id: ownerId ? parseInt(ownerId, 10) : null,
     };
     try {
       const updated = await api.shops.update(editingShop!.id, payload, token);
@@ -333,6 +366,16 @@ function EditShopModal({
                   { label: "Активен", value: "active" },
                   { label: "Приостановлен", value: "suspended" },
                 ]}
+              />
+              <Select
+                label="Владелец"
+                value={ownerId}
+                onValueChange={setOwnerId}
+                options={[
+                  { label: "Без владельца", value: "" },
+                  ...owners.map((o) => ({ label: `${o.name} (${o.email})`, value: String(o.id) })),
+                ]}
+                placeholder="Не назначен"
               />
             </View>
 

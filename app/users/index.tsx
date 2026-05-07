@@ -29,6 +29,7 @@ import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { useUsers } from "@/hooks/useUsers";
 import { reportError } from "@/lib/observability/reporter";
+import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 
 // ─── User card ────────────────────────────────────────────────────────────────
 
@@ -128,7 +129,8 @@ function CreateUserModal({
   token,
   isSuperAdmin,
   showToast,
-  currentShopId,
+  ownerImplicitShopId,
+  ownerNeedsShopPicker,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -136,7 +138,10 @@ function CreateUserModal({
   token: string;
   isSuperAdmin: boolean;
   showToast: ReturnType<typeof useToast>["showToast"];
-  currentShopId?: number;
+  /** For owner role only — their single shop, or null when picker is needed. */
+  ownerImplicitShopId: number | null;
+  /** For owner role only — true when they need to pick from owned set. */
+  ownerNeedsShopPicker: boolean;
 }) {
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -147,12 +152,21 @@ function CreateUserModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
+  // super_admin can create owners (no shop) or sellers (with shop). Owners
+  // can only create sellers in their own shops.
   const roleOptions = isSuperAdmin
     ? [
         { label: ROLE_LABELS["owner"], value: "owner" as const },
         { label: ROLE_LABELS["seller"], value: "seller" as const },
       ]
     : [{ label: ROLE_LABELS["seller"], value: "seller" as const }];
+
+  // Picker is needed for super_admin creating a seller, or owner with
+  // multiple owned shops. super_admin creating an owner — no picker
+  // (server forces shop_id=null for owners; admin assigns shop later via
+  // shop edit).
+  const shopPickerVisible = role === "seller"
+    && (isSuperAdmin || ownerNeedsShopPicker);
 
   React.useEffect(() => {
     if (visible) {
@@ -162,13 +176,14 @@ function CreateUserModal({
       setRole("seller");
       setShopId("");
       setError("");
-      if (isSuperAdmin) {
+      if (isSuperAdmin || ownerNeedsShopPicker) {
+        // Server-side scoping in api.shops.list — owners get only their owned shops.
         api.shops.list(token)
           .then((res) => setShops(res.data ?? []))
           .catch((e) => reportError(e, { tag: "users-create-shops-load" }));
       }
     }
-  }, [visible, isSuperAdmin, token]);
+  }, [visible, isSuperAdmin, ownerNeedsShopPicker, token]);
 
   async function handleSubmit() {
     setError("");
@@ -178,19 +193,30 @@ function CreateUserModal({
       setError("Пароль должен быть не менее 8 символов.");
       return;
     }
-    setSubmitting(true);
-    if (isSuperAdmin && !shopId) {
-      setError("Выберите магазин.");
-      setSubmitting(false);
-      return;
+
+    // Resolve target shop_id.
+    let resolvedShopId: number | null = null;
+    if (role === "seller") {
+      if (shopPickerVisible) {
+        if (!shopId) { setError("Выберите магазин."); return; }
+        resolvedShopId = parseInt(shopId, 10);
+      } else if (!isSuperAdmin) {
+        // Owner with single shop — implicit.
+        resolvedShopId = ownerImplicitShopId;
+        if (resolvedShopId === null) {
+          setError("Магазин не назначен."); return;
+        }
+      }
     }
+
+    setSubmitting(true);
     const payload: CreateUserPayload = {
       name: name.trim(),
       email: email.trim().toLowerCase(),
       password,
       role,
     };
-    if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
+    if (resolvedShopId !== null) payload.shop_id = resolvedShopId;
     try {
       const created = await api.users.create(payload, token);
       onCreated(created);
@@ -203,7 +229,7 @@ function CreateUserModal({
           name: name.trim(),
           email: email.trim().toLowerCase(),
           role,
-          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : (currentShopId ?? 0),
+          shop_id: resolvedShopId ?? 0,
           created_at: new Date().toISOString(),
         };
         onCreated(localUser);
@@ -275,24 +301,30 @@ function CreateUserModal({
                 onChangeText={setPassword}
                 secureTextEntry
               />
+              {/* Role picker only for super_admin (owners can only create sellers). */}
               {isSuperAdmin && (
-                <>
-                  <Select
-                    label="Магазин"
-                    required
-                    value={shopId}
-                    onValueChange={setShopId}
-                    options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
-                    placeholder="Выберите магазин"
-                  />
-                  <Select
-                    label="Роль"
-                    value={role}
-                    onValueChange={(v) => setRole(v as "owner" | "seller")}
-                    options={roleOptions}
-                    placeholder="Выберите роль"
-                  />
-                </>
+                <Select
+                  label="Роль"
+                  value={role}
+                  onValueChange={(v) => setRole(v as "owner" | "seller")}
+                  options={roleOptions}
+                  placeholder="Выберите роль"
+                />
+              )}
+              {/* Shop picker:                                                  */}
+              {/*   • super_admin + role=seller — pick any shop                  */}
+              {/*   • owner + multi-shop          — pick from owned set           */}
+              {/* No picker when super_admin creates owner (server null'd) or    */}
+              {/* owner has just one shop (implicit).                            */}
+              {shopPickerVisible && (
+                <Select
+                  label="Магазин"
+                  required
+                  value={shopId}
+                  onValueChange={setShopId}
+                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
+                  placeholder="Выберите магазин"
+                />
               )}
             </View>
 
@@ -322,6 +354,7 @@ function EditUserModal({
   token,
   isSuperAdmin,
   showToast,
+  ownerNeedsShopPicker,
 }: {
   visible: boolean;
   editingUser: AppUser | null;
@@ -330,6 +363,8 @@ function EditUserModal({
   token: string;
   isSuperAdmin: boolean;
   showToast: ReturnType<typeof useToast>["showToast"];
+  /** Owner editing seller — show picker only when owner has multiple shops. */
+  ownerNeedsShopPicker: boolean;
 }) {
   const [name, setName] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -346,6 +381,12 @@ function EditUserModal({
       ]
     : [{ label: ROLE_LABELS["seller"], value: "seller" as const }];
 
+  // Picker visible for super_admin editing seller, or owner with multi-shop
+  // editing seller. Editing an owner — no picker (server keeps shop_id null).
+  const editingSelf = editingUser?.role === "seller";
+  const shopPickerVisible = editingSelf
+    && (isSuperAdmin || ownerNeedsShopPicker);
+
   React.useEffect(() => {
     if (visible && editingUser) {
       setName(editingUser.name);
@@ -353,13 +394,13 @@ function EditUserModal({
       setShopId(editingUser.shop_id ? String(editingUser.shop_id) : "");
       setPassword("");
       setError("");
-      if (isSuperAdmin) {
+      if (isSuperAdmin || ownerNeedsShopPicker) {
         api.shops.list(token)
           .then((res) => setShops(res.data ?? []))
           .catch((e) => reportError(e, { tag: "users-edit-shops-load" }));
       }
     }
-  }, [visible, editingUser, isSuperAdmin, token]);
+  }, [visible, editingUser, isSuperAdmin, ownerNeedsShopPicker, token]);
 
   async function handleSubmit() {
     setError("");
@@ -369,13 +410,13 @@ function EditUserModal({
       return;
     }
     setSubmitting(true);
-    if (isSuperAdmin && !shopId) {
+    if (shopPickerVisible && !shopId) {
       setError("Выберите магазин.");
       setSubmitting(false);
       return;
     }
     const payload: Partial<CreateUserPayload> = { name: name.trim(), role };
-    if (isSuperAdmin && shopId) payload.shop_id = parseInt(shopId, 10);
+    if (shopPickerVisible && shopId) payload.shop_id = parseInt(shopId, 10);
     if (password) payload.password = password;
     try {
       const updated = await api.users.update(editingUser!.id, payload, token);
@@ -388,7 +429,7 @@ function EditUserModal({
           ...editingUser!,
           name: name.trim(),
           role,
-          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : editingUser!.shop_id,
+          shop_id: shopPickerVisible && shopId ? parseInt(shopId, 10) : editingUser!.shop_id,
         };
         onSaved(updatedUser);
         showToast({ message: "Нет сети. Изменения сохранены локально.", variant: "warning" });
@@ -450,7 +491,7 @@ function EditUserModal({
                 secureTextEntry
                 hint="Минимум 8 символов"
               />
-              {isSuperAdmin && (
+              {shopPickerVisible && (
                 <Select
                   label="Магазин"
                   required
@@ -647,7 +688,8 @@ export default function UsersScreen() {
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
         showToast={showToast}
-        currentShopId={user?.shop_id}
+        ownerImplicitShopId={effectiveShopId(user)}
+        ownerNeedsShopPicker={user?.role === "owner" && needsShopPicker(user)}
       />
 
       <EditUserModal
@@ -660,6 +702,7 @@ export default function UsersScreen() {
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
         showToast={showToast}
+        ownerNeedsShopPicker={user?.role === "owner" && needsShopPicker(user)}
       />
     </SafeAreaView>
   );
