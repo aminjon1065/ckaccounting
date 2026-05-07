@@ -31,7 +31,7 @@ export default function NotificationsScreen() {
     setRefreshing(false);
   }
 
-  function getIcon(type: string) {
+  function getIcon(type: string): React.ComponentProps<typeof MaterialIcons>["name"] {
     if (type === "low_stock") return "warning-amber";
     if (type === "sync_error") return "sync-problem";
     return "notifications";
@@ -72,7 +72,7 @@ export default function NotificationsScreen() {
             className="w-10 h-10 rounded-full items-center justify-center"
             style={{ backgroundColor: getIconColor(item.type) + "20" }}
           >
-            <MaterialIcons name={getIcon(item.type) as any} size={20} color={getIconColor(item.type)} />
+            <MaterialIcons name={getIcon(item.type)} size={20} color={getIconColor(item.type)} />
           </View>
           <View className="flex-1">
             <View className="flex-row items-center gap-2">

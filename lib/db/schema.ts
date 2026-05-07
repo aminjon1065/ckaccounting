@@ -46,11 +46,56 @@ async function performInitDbWithRetry() {
 async function performInitDb() {
   const db = getDb();
 
-  // Improve concurrent access resilience across foreground/background connections.
+  // PRAGMA tuning. Three are persistent / connection-shared (WAL is sticky in
+  // the DB header; busy_timeout + foreign_keys persist for the connection),
+  // the rest are per-connection knobs that have to be re-applied here on
+  // every cold open. Both the foreground app and the OS background-fetch
+  // task call initDb() so this block runs in both contexts.
+  //
+  // Concurrency:
+  //   journal_mode = WAL          — readers don't block the writer (the
+  //                                 outbox processor runs alongside list
+  //                                 reads on the dashboard).
+  //   busy_timeout = 5000         — let SQLite spin up to 5 s on lock
+  //                                 contention before throwing SQLITE_BUSY.
+  //                                 Crash recovery + the cross-process
+  //                                 sync-lock retry loop both rely on this.
+  //   foreign_keys = ON           — explicit, since the default is OFF in
+  //                                 every SQLite shipped with expo-sqlite.
+  //
+  // Performance (added phase 6.1):
+  //   synchronous = NORMAL        — pairs with WAL: durable across app /
+  //                                 process crashes, only loses commits on
+  //                                 OS / power crash. The outbox pattern
+  //                                 makes that bound acceptable — anything
+  //                                 lost locally either never reached the
+  //                                 server (and the user retries) or already
+  //                                 reached it (and the next pull restores
+  //                                 it). FULL is overkill on a battery
+  //                                 device and ~2-5x slower on writes.
+  //   cache_size = -32000         — 32 MB page cache (negative value = KB,
+  //                                 not pages). Default 2 MB is too small
+  //                                 for the dashboard's parallel SELECTs
+  //                                 over sales / debts / products at once.
+  //   temp_store = MEMORY         — keep temp B-trees / sort buffers in RAM
+  //                                 instead of spilling to disk. Material
+  //                                 win for FTS5 product search and
+  //                                 GROUP BY on the daily-aggregation
+  //                                 reports.
+  //   mmap_size = 67108864        — 64 MB memory-mapped read window. Hot
+  //                                 catalogue pages stay in the OS page
+  //                                 cache rather than being read() through
+  //                                 the syscall boundary on every SELECT.
+  //                                 Falls back to standard I/O above the
+  //                                 limit, so larger DBs still work.
   db.execSync(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA cache_size = -32000;
+      PRAGMA temp_store = MEMORY;
+      PRAGMA mmap_size = 67108864;
     `);
 
   db.execSync(`
@@ -320,6 +365,12 @@ async function performInitDb() {
     {
       version: 24,
       migrate: (db) => {
+        // Refuse to run if the user still has unsynced offline writes —
+        // this migration wipes sync_queue (line ~end of execSync below) and
+        // would silently drop them. Block here, let the user come online,
+        // let the outbox drain, then retry on next launch.
+        assertSyncQueueDrained(db, "v24 (UUID PK conversion)");
+
         db.execSync(`
           DROP TABLE IF EXISTS sale_items;
           DROP TABLE IF EXISTS purchases;
@@ -556,6 +607,109 @@ async function performInitDb() {
         return (row?.count ?? 0) === 0;
       },
     },
+    // Migration v27: cross-process advisory lock for the sync coordinator.
+    // Single-row table; foreground SyncCoordinator and the OS background-fetch
+    // task both attempt to claim it before running. TTL-based so a crashed
+    // holder cannot deadlock peers.
+    {
+      version: 27,
+      sql: `
+        CREATE TABLE IF NOT EXISTS sync_lock (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          holder TEXT,
+          acquired_at TEXT,
+          expires_at TEXT
+        );
+        INSERT OR IGNORE INTO sync_lock (id, holder, acquired_at, expires_at)
+          VALUES (1, NULL, NULL, NULL);
+      `,
+      check: (db) => !tableExists(db, "sync_lock"),
+    },
+    // Migration v28: sync_queue.claimed_at — timestamp when a row entered
+    // the 'processing' state. Enables a sweeper to detect rows whose claim
+    // was orphaned by a crashed processor (foreground or background) and
+    // return them to 'pending' so a subsequent outbox cycle retries them.
+    {
+      version: 28,
+      sql: `
+        ALTER TABLE sync_queue ADD COLUMN claimed_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_sync_queue_processing_claimed
+          ON sync_queue(status, claimed_at) WHERE status = 'processing';
+      `,
+      check: (db) => !columnExists(db, "sync_queue", "claimed_at"),
+    },
+    // Migration v29: kopecks-only money columns.
+    //
+    // Until now every money field had two columns side by side: a REAL
+    // (rubles, the legacy storage) and an INTEGER (`*_kopecks`, minor units).
+    // Readers preferred kopecks but fell back to REAL; writers wrote both;
+    // every code review since the audit had to remember the dual-column
+    // dance. After phase 2.4's reader/writer canonicalization, REAL columns
+    // are no longer touched by code — this migration drops them so the
+    // schema can no longer drift back into the dual state.
+    //
+    // Order matters: backfill any kopecks values still NULL from the REAL
+    // column FIRST, then drop the REAL column. SQLite ≥ 3.35 supports
+    // `ALTER TABLE … DROP COLUMN`; expo-sqlite ships SQLite ≥ 3.45 in this
+    // SDK so the syntax is safe.
+    {
+      version: 29,
+      migrate: dropRealMoneyColumns,
+      check: (db) => columnExists(db, "products", "cost_price"),
+    },
+    // Migration v30: shops PK fix.
+    //
+    // The v24 rewrite recreated the shops table without a PRIMARY KEY or
+    // UNIQUE constraint on `id`, so `INSERT OR REPLACE` had nothing to
+    // match and every fetcher pull appended duplicate rows (3 → 6 → 9 …).
+    // This rebuilds the table with `id INTEGER PRIMARY KEY` and dedupes
+    // existing rows by keeping the latest write per id.
+    //
+    // local_id stays UNIQUE because the offline-created path uses it as
+    // the stable handle until the server hands back the real id.
+    {
+      version: 30,
+      migrate: (db) => {
+        db.execSync(`
+          CREATE TABLE shops_new (
+            id INTEGER PRIMARY KEY,
+            local_id TEXT UNIQUE,
+            name TEXT,
+            is_active INTEGER DEFAULT 1,
+            sync_action TEXT DEFAULT 'none',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            updated_at TEXT,
+            last_synced_at TEXT
+          );
+
+          INSERT INTO shops_new
+          SELECT id, local_id, name, is_active, sync_action, status,
+                 created_at, updated_at, last_synced_at
+          FROM shops s
+          WHERE rowid = (SELECT MAX(rowid) FROM shops WHERE id IS s.id);
+
+          DROP TABLE shops;
+          ALTER TABLE shops_new RENAME TO shops;
+        `);
+      },
+      // Run if `id` is not the PK yet. PRAGMA index_list / table_info can
+      // tell us; cheaper to just check that rebuilding is needed by looking
+      // for any duplicate ids that snuck in.
+      check: (db) => {
+        const dupes = db.getFirstSync<{ c: number }>(
+          "SELECT COUNT(*) AS c FROM (SELECT id FROM shops GROUP BY id HAVING COUNT(*) > 1)"
+        );
+        if ((dupes?.c ?? 0) > 0) return true;
+        // Also run if the table exists but has no PK on id (zero-dup case
+        // on a fresh install — still need to add the constraint).
+        const info = db.getAllSync<{ name: string; pk: number }>(
+          "PRAGMA table_info(shops)"
+        );
+        const idCol = info.find((c) => c.name === "id");
+        return !!idCol && idCol.pk === 0;
+      },
+    },
   ];
 
   db.execSync(`
@@ -590,11 +744,33 @@ async function performInitDb() {
   ensureAccountingSyncColumns(db);
   ensureSaleItemsColumns(db);
 
-    // Reset any rows stuck as 'processing' from a previous crashed session.
-    // This must run after sync_queue repair because older DBs may not have batch_id.
+  // Recover any rows stuck as 'processing' from a previous crashed session.
+  // We only release them back to 'pending' here — the runtime sweeper
+  // (`releaseStuckSyncActions`) is responsible for promoting truly broken
+  // rows to 'dead' and unwinding any pending_stock_delta they leaked.
+  // Doing the dead-promotion here is unsafe because it would skip the
+  // stock-unwind path (which is async, not callable from the synchronous
+  // migration runner). Sellers would see phantom inventory until next sync.
   db.runSync(
-    "UPDATE sync_queue SET status = 'pending', batch_id = NULL WHERE status = 'processing'"
+    `UPDATE sync_queue
+     SET status = 'pending',
+         batch_id = NULL,
+         claimed_at = NULL,
+         retries = retries + 1,
+         last_error = COALESCE(last_error, '') || ' | launch: stuck in processing'
+     WHERE status = 'processing'`
   );
+
+  // Clear any *expired* sync_lock left behind by a previous crashed session.
+  // We only clear locks whose expires_at has already passed — never an active
+  // lock, since the OS background-fetch task may legitimately be holding one
+  // while the foreground process is starting.
+  if (tableExists(db, "sync_lock")) {
+    db.runSync(
+      "UPDATE sync_lock SET holder = NULL, acquired_at = NULL, expires_at = NULL " +
+        "WHERE id = 1 AND (expires_at IS NULL OR datetime(expires_at) < datetime('now'))"
+    );
+  }
 }
 
 function isDatabaseLockedError(error: unknown): boolean {
@@ -630,10 +806,66 @@ function ensureSyncQueueColumns(db: SQLite.SQLiteDatabase): void {
   addColumnIfMissing(db, "sync_queue", "batch_id", "TEXT");
   addColumnIfMissing(db, "sync_queue", "idempotency_key", "TEXT");
   addColumnIfMissing(db, "sync_queue", "archived_at", "TEXT");
+  addColumnIfMissing(db, "sync_queue", "claimed_at", "TEXT");
   db.execSync(`
     CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_archived_status ON sync_queue(archived_at, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sync_queue_processing_claimed ON sync_queue(status, claimed_at) WHERE status = 'processing';
   `);
+}
+
+/**
+ * Thrown when a destructive migration (one that wipes `sync_queue`) is asked
+ * to run while pending offline writes still exist on the device. Aborting
+ * the migration this way preserves the user's unsynced data — the schema
+ * stays at the prior version, the user is told to come online and let the
+ * outbox drain, and only then upgrade.
+ *
+ * The error caries the unsynced row count for diagnostics. The caller (the
+ * migration runner inside `withTransactionSync`) re-throws it; SQLite rolls
+ * back the partial migration and `schema_version` is not bumped, so the
+ * next launch retries.
+ */
+export class OutboxNotDrainedError extends Error {
+  constructor(
+    public readonly migrationLabel: string,
+    public readonly unsyncedRows: number
+  ) {
+    super(
+      `Destructive migration "${migrationLabel}" refused to run: ${unsyncedRows} unsynced ` +
+        "outbox row(s) would be lost. Connect the device to the network, let the outbox drain, " +
+        "and re-launch the app to retry."
+    );
+    this.name = "OutboxNotDrainedError";
+  }
+}
+
+/**
+ * Pre-flight guard for any migration that wipes or replaces `sync_queue`.
+ * Counts non-archived rows in pending/processing/failed/dead states — any
+ * row that has not yet been delivered to the server. If non-zero, aborts.
+ *
+ * RULE: every future migration that does `DELETE FROM sync_queue` (or
+ * structurally rebuilds the table) must call this helper first. The audit
+ * surfaced exactly this gap in v24 — that migration silently dropped
+ * unsynced offline writes.
+ */
+export function assertSyncQueueDrained(
+  db: SQLite.SQLiteDatabase,
+  migrationLabel: string
+): void {
+  if (!tableExists(db, "sync_queue")) {
+    return;
+  }
+  const row = db.getFirstSync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM sync_queue
+     WHERE archived_at IS NULL
+       AND status IN ('pending', 'processing', 'failed', 'dead')`
+  );
+  const unsynced = Number(row?.n ?? 0);
+  if (unsynced > 0) {
+    throw new OutboxNotDrainedError(migrationLabel, unsynced);
+  }
 }
 
 function ensureAccountingMoneyColumns(db: SQLite.SQLiteDatabase): void {
@@ -671,6 +903,114 @@ function ensureAccountingDirtyStateColumns(db: SQLite.SQLiteDatabase): void {
 function ensureSaleItemsColumns(db: SQLite.SQLiteDatabase): void {
   if (tableExists(db, "sale_items")) {
     addColumnIfMissing(db, "sale_items", "unit", "TEXT");
+  }
+}
+
+/**
+ * Drop the legacy REAL money columns. Two-step:
+ *   1. Backfill any *_kopecks values that are still NULL by rounding the
+ *      paired REAL value × 100 — this catches rows synced before the
+ *      kopecks-only writer landed.
+ *   2. DROP each REAL column. SQLite happily drops columns referenced by
+ *      indexes only; views/triggers must be recreated, but we have neither
+ *      on these tables for money fields.
+ *
+ * If a REAL column was already dropped on a previous (failed) attempt, the
+ * `dropColumnIfExists` helper makes the migration idempotent.
+ */
+function dropRealMoneyColumns(db: SQLite.SQLiteDatabase): void {
+  // Step 1: backfill NULLs from REAL where present.
+  if (columnExists(db, "products", "cost_price")) {
+    db.execSync(`
+      UPDATE products
+      SET cost_price_kopecks = COALESCE(cost_price_kopecks, ROUND(cost_price * 100)),
+          sale_price_kopecks = COALESCE(sale_price_kopecks, ROUND(sale_price * 100)),
+          bulk_price_kopecks = CASE
+            WHEN bulk_price IS NULL THEN bulk_price_kopecks
+            ELSE COALESCE(bulk_price_kopecks, ROUND(bulk_price * 100))
+          END
+      WHERE cost_price_kopecks IS NULL
+         OR sale_price_kopecks IS NULL
+         OR (bulk_price IS NOT NULL AND bulk_price_kopecks IS NULL);
+    `);
+  }
+  if (columnExists(db, "debts", "balance")) {
+    db.execSync(`
+      UPDATE debts
+      SET opening_balance_kopecks = COALESCE(opening_balance_kopecks, ROUND(opening_balance * 100)),
+          balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100))
+      WHERE opening_balance_kopecks IS NULL OR balance_kopecks IS NULL;
+    `);
+  }
+  if (columnExists(db, "debt_transactions", "amount")) {
+    db.execSync(`
+      UPDATE debt_transactions
+      SET amount_kopecks = COALESCE(amount_kopecks, ROUND(amount * 100))
+      WHERE amount_kopecks IS NULL;
+    `);
+  }
+  if (columnExists(db, "sales", "total")) {
+    db.execSync(`
+      UPDATE sales
+      SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100)),
+          discount_kopecks = COALESCE(discount_kopecks, ROUND(discount * 100)),
+          paid_kopecks = COALESCE(paid_kopecks, ROUND(paid * 100)),
+          debt_kopecks = COALESCE(debt_kopecks, ROUND(debt * 100))
+      WHERE total_kopecks IS NULL OR discount_kopecks IS NULL
+         OR paid_kopecks IS NULL OR debt_kopecks IS NULL;
+    `);
+  }
+  if (columnExists(db, "expenses", "price")) {
+    db.execSync(`
+      UPDATE expenses
+      SET price_kopecks = COALESCE(price_kopecks, ROUND(price * 100)),
+          total_kopecks = COALESCE(total_kopecks, ROUND(total * 100))
+      WHERE price_kopecks IS NULL OR total_kopecks IS NULL;
+    `);
+  }
+  if (columnExists(db, "purchases", "total")) {
+    db.execSync(`
+      UPDATE purchases
+      SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100))
+      WHERE total_kopecks IS NULL;
+    `);
+  }
+  if (tableExists(db, "sale_items") && columnExists(db, "sale_items", "unit_price")) {
+    db.execSync(`
+      UPDATE sale_items
+      SET unit_price_kopecks = COALESCE(unit_price_kopecks, ROUND(unit_price * 100)),
+          total_kopecks = COALESCE(total_kopecks, ROUND(total * 100))
+      WHERE unit_price_kopecks IS NULL OR total_kopecks IS NULL;
+    `);
+  }
+
+  // Step 2: drop the REAL columns. Each drop is independently idempotent.
+  dropColumnIfExists(db, "products", "cost_price");
+  dropColumnIfExists(db, "products", "sale_price");
+  dropColumnIfExists(db, "products", "bulk_price");
+  dropColumnIfExists(db, "debts", "opening_balance");
+  dropColumnIfExists(db, "debts", "balance");
+  dropColumnIfExists(db, "debt_transactions", "amount");
+  dropColumnIfExists(db, "sales", "total");
+  dropColumnIfExists(db, "sales", "discount");
+  dropColumnIfExists(db, "sales", "paid");
+  dropColumnIfExists(db, "sales", "debt");
+  dropColumnIfExists(db, "expenses", "price");
+  dropColumnIfExists(db, "expenses", "total");
+  dropColumnIfExists(db, "purchases", "total");
+  if (tableExists(db, "sale_items")) {
+    dropColumnIfExists(db, "sale_items", "unit_price");
+    dropColumnIfExists(db, "sale_items", "total");
+  }
+}
+
+function dropColumnIfExists(
+  db: SQLite.SQLiteDatabase,
+  table: string,
+  column: string
+): void {
+  if (columnExists(db, table, column)) {
+    db.execSync(`ALTER TABLE ${table} DROP COLUMN ${column};`);
   }
 }
 

@@ -1,4 +1,5 @@
 import React, { useContext, useEffect, useState, useCallback, useMemo } from "react";
+import { reportError } from "@/lib/observability/reporter";
 
 export type ConflictEntity = "product" | "sale" | "expense" | "purchase" | "debt";
 
@@ -98,10 +99,19 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
             // Use the server's real ID if available, otherwise fall back to localId.
             const serverId = conflict.serverData.id ?? conflict.localId;
             const entityPath = entityPathForType(conflict.entityType);
-            const patchPayload = {
+            // Optimistic locking: when the user picks "local wins" they
+            // accept the server's current state as the baseline they're
+            // overwriting. Send that exact version so the server only
+            // applies the patch if nothing else has bumped past it
+            // between the conflict surfacing and the user's decision.
+            const baselineVersion = (conflict.serverData as { version?: number }).version;
+            const patchPayload: Record<string, unknown> = {
               ...sanitizePatchPayload(conflict.entityType, conflict.localData, conflict.serverData),
               _local_id: conflict.localId,
             };
+            if (typeof baselineVersion === "number") {
+              patchPayload.version = baselineVersion;
+            }
             const idempotencyKey = `conflict-resolve-local-${conflict.id}`;
             await queueSyncAction(
               "PATCH",
@@ -114,7 +124,7 @@ export function ConflictProvider({ children }: { children: React.ReactNode }) {
         }
       }
     } catch (e) {
-      console.error("Failed to apply conflict resolution", e);
+      reportError(e, { tag: "conflict-resolve" });
     }
 
     setConflicts((prev) => prev.filter((c) => c.id !== conflictId));

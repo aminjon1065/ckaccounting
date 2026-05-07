@@ -1,18 +1,22 @@
 import * as React from "react";
 import * as Crypto from "expo-crypto";
-import { Modal, TouchableOpacity, View, TextInput as RNTextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
+import { Modal, TouchableOpacity, View, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text, Button, Input, Select } from "@/components/ui";
 import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
-import { defaultPriceMode, deriveProductPrice, fmt, PRICE_MODE_LABELS, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
+import { defaultPriceMode, deriveProductPrice, fmt, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
-import { getLocalProducts, insertOrUpdateProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById } from "@/lib/db";
+import { CartRow } from "./CartRow";
+import { ServiceItemRow } from "./ServiceItemRow";
+import { getLocalProducts, insertOrUpdateProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById, localScope } from "@/lib/db";
 import { useToast } from "@/store/toast";
+import { reportError } from "@/lib/observability/reporter";
+import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 
 function generateUUID() {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -34,11 +38,15 @@ export function CreateSaleModal({
   token: string;
 }) {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  // Multi-shop UX: super_admin and multi-shop owners pick a shop in the
+  // form; sellers and single-shop owners get an implicit shop and no
+  // picker.
+  const showShopPicker = needsShopPicker(user);
+  const implicitShopId = effectiveShopId(user);
   const canEditPrice = user?.role !== "seller";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
   const { showToast } = useToast();
-  const { refreshPendingActions } = useSync();
+  const { refreshPendingActions } = useSyncMethods();
 
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
@@ -65,18 +73,24 @@ export function CreateSaleModal({
   const [productsHasMore, setProductsHasMore] = React.useState(false);
   const [productsNextCursor, setProductsNextCursor] = React.useState<string | null>(null);
 
-  // Load Shops for SuperAdmin
+  // Load shops when a picker is needed. Server-side scoping ensures
+  // owners get only their owned shops, super_admin gets the full list.
   React.useEffect(() => {
-    if (visible && isSuperAdmin) {
-      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    if (visible && showShopPicker) {
+      api.shops.list(token)
+        .then((res) => setShops(res.data ?? []))
+        .catch((e) => reportError(e, { tag: "sale-modal-shops-load" }));
     }
-  }, [visible, isSuperAdmin, token]);
+  }, [visible, showShopPicker, token]);
 
   const loadProductsForSale = React.useCallback(async (selectedShopId?: number, cursor?: string) => {
     setProductsLoading(true);
+    // SuperAdmin uses the explicit shop selector; everyone else is bound to
+    // their own shop. localScope(user, selectedShopId) handles both paths.
+    const scope = localScope(user, selectedShopId ?? null);
     // Show cached results immediately so the picker is never empty when a cache exists.
     if (!cursor) {
-      const localProducts = await getLocalProducts(selectedShopId);
+      const localProducts = await getLocalProducts(scope);
       setProducts(localProducts);
     }
 
@@ -87,7 +101,7 @@ export function CreateSaleModal({
         cursor: cursor ?? undefined,
       });
       await insertOrUpdateProducts(remoteProducts.data, selectedShopId);
-      const refreshedLocalProducts = await getLocalProducts(selectedShopId);
+      const refreshedLocalProducts = await getLocalProducts(scope);
       const newProducts = refreshedLocalProducts.length > 0 ? refreshedLocalProducts : remoteProducts.data;
       if (cursor) {
         setProducts((prev) => [...prev, ...newProducts]);
@@ -96,11 +110,11 @@ export function CreateSaleModal({
       }
       setProductsNextCursor(remoteProducts.next_cursor ?? null);
       setProductsHasMore(!!remoteProducts.next_cursor);
-    } catch (e: any) {
+    } catch (e) {
       // Offline / network failure is expected here — fall back silently to local cache.
-      // Only log unexpected (non-network) failures.
-      if (e?.status && e.status !== 0) {
-        console.error("Failed to load products for sale:", e);
+      // Only report unexpected (non-network) failures.
+      if (e instanceof ApiError && e.status !== 0) {
+        reportError(e, { tag: "sale-modal-products-load", shopId: selectedShopId ?? null });
       }
     } finally {
       setProductsLoading(false);
@@ -109,10 +123,10 @@ export function CreateSaleModal({
 
   const loadMoreProducts = React.useCallback(() => {
     if (!productsHasMore || productsLoading) return;
-    loadProductsForSale(undefined, productsNextCursor);
+    loadProductsForSale(undefined, productsNextCursor ?? undefined);
   }, [productsHasMore, productsNextCursor, productsLoading, loadProductsForSale]);
 
-  // Reset form state
+  // Reset form state on each open
   React.useEffect(() => {
     if (!visible) return;
     setSaleType("product");
@@ -122,24 +136,34 @@ export function CreateSaleModal({
     setPaymentType("cash"); setError("");
     serviceIdRef.current = 0;
     setShopId("");
-  }, [visible, isSuperAdmin, token, user?.shop_id, shopId]);
+  }, [visible]);
+
+  // Effective shop = picker selection (when picker is shown) OR the user's
+  // implicit shop (seller / single-shop owner). null when picker is shown
+  // but nothing picked yet — products list stays empty until a choice.
+  const activeShopId: number | null = showShopPicker
+    ? (shopId ? Number(shopId) : null)
+    : implicitShopId;
 
   React.useEffect(() => {
-    if (visible && isSuperAdmin && shopId) {
-      loadProductsForSale(Number(shopId)).catch(console.error);
-    } else if (visible && isSuperAdmin && !shopId) {
+    if (!visible) return;
+    if (showShopPicker && activeShopId === null) {
+      // Picker visible but nothing picked yet — clear list, await selection.
       setProducts([]);
       setCart([]);
-    } else if (visible && !isSuperAdmin && user?.shop_id) {
-      loadProductsForSale(user.shop_id).catch(console.error);
-    } else if (visible && !isSuperAdmin) {
-      loadProductsForSale().catch(console.error);
+      return;
     }
-  }, [visible, isSuperAdmin, shopId, user?.shop_id, loadProductsForSale]);
+    loadProductsForSale(activeShopId ?? undefined).catch((e) =>
+      reportError(e, { tag: "sale-modal-products-effect", shopId: activeShopId })
+    );
+  }, [visible, showShopPicker, activeShopId, loadProductsForSale]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
-  function addToCart(p: Product) {
+  // Stable so the memoized ProductPicker / CartRow don't see a new function
+  // identity on each parent render. Functional setState lets us keep deps
+  // empty (no need to read current cart).
+  const addToCart = React.useCallback((p: Product) => {
     const availableQty = p.stock_quantity ?? 0;
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === p.id);
@@ -189,9 +213,19 @@ export function CreateSaleModal({
         },
       ];
     });
-  }
+  }, [showToast]);
 
-  function updateCartQuantity(productId: number, rawQuantity: string) {
+  const handlePickerClose = React.useCallback(() => {
+    setPickerVisible(false);
+  }, []);
+
+  // Handlers below are intentionally `useCallback`-stable (empty / minimal
+  // deps) so the memoized CartRow / ServiceItemRow components can rely on
+  // referential equality and skip re-rendering siblings on each keystroke.
+  // All updates use functional setState so the closures don't need to read
+  // current state and can therefore have empty dep arrays.
+
+  const updateCartQuantity = React.useCallback((productId: string, rawQuantity: string) => {
     const normalized = rawQuantity.replace(",", ".").trim();
     setCart((prev) =>
       prev.map((c) => {
@@ -224,9 +258,9 @@ export function CreateSaleModal({
         };
       })
     );
-  }
+  }, [showToast]);
 
-  function finalizeCartQuantity(productId: number) {
+  const finalizeCartQuantity = React.useCallback((productId: string) => {
     setCart((prev) =>
       prev.map((c) => {
         if (c.product.id !== productId) return c;
@@ -252,9 +286,9 @@ export function CreateSaleModal({
         };
       })
     );
-  }
+  }, []);
 
-  function updatePrice(productId: number, price: string) {
+  const updatePrice = React.useCallback((productId: string, price: string) => {
     setCart((prev) =>
       prev.map((c) =>
         c.product.id === productId
@@ -262,9 +296,9 @@ export function CreateSaleModal({
           : c
       )
     );
-  }
+  }, []);
 
-  function updatePriceMode(productId: number, mode: PriceMode) {
+  const updatePriceMode = React.useCallback((productId: string, mode: PriceMode) => {
     setCart((prev) =>
       prev.map((c) => {
         if (c.product.id !== productId) return c;
@@ -278,9 +312,9 @@ export function CreateSaleModal({
         return { ...c, priceMode: mode, markupPercent: nextMarkupPercent, price };
       })
     );
-  }
+  }, []);
 
-  function updateMarkup(productId: number, markup: string) {
+  const updateMarkup = React.useCallback((productId: string, markup: string) => {
     setCart((prev) =>
       prev.map((c) => {
         if (c.product.id !== productId) return c;
@@ -290,29 +324,33 @@ export function CreateSaleModal({
         return { ...c, markupPercent: markup, price };
       })
     );
-  }
+  }, []);
+
+  const removeCartItem = React.useCallback((productId: string) => {
+    setCart((prev) => prev.filter((c) => c.product.id !== productId));
+  }, []);
 
   // ── Service item helpers ────────────────────────────────────────────────────
 
-  function addServiceItem() {
+  const addServiceItem = React.useCallback(() => {
     const id = String(serviceIdRef.current++);
     setServiceItems((prev) => [
       ...prev,
       { id, name: "", unit: "шт", quantity: 1, quantityInput: "1", price: "" },
     ]);
-  }
+  }, []);
 
-  function updateServiceItem(id: string, patch: Partial<ServiceLineItem>) {
+  const updateServiceItem = React.useCallback((id: string, patch: Partial<ServiceLineItem>) => {
     setServiceItems((prev) =>
       prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
     );
-  }
+  }, []);
 
-  function removeServiceItem(id: string) {
+  const removeServiceItem = React.useCallback((id: string) => {
     setServiceItems((prev) => prev.filter((item) => item.id !== id));
-  }
+  }, []);
 
-  function updateServiceQuantity(id: string, rawQuantity: string) {
+  const updateServiceQuantity = React.useCallback((id: string, rawQuantity: string) => {
     const normalized = rawQuantity.replace(",", ".").trim();
     setServiceItems((prev) =>
       prev.map((item) => {
@@ -327,9 +365,9 @@ export function CreateSaleModal({
         return { ...item, quantity: parsedQuantity, quantityInput: rawQuantity };
       })
     );
-  }
+  }, []);
 
-  function finalizeServiceQuantity(id: string) {
+  const finalizeServiceQuantity = React.useCallback((id: string) => {
     setServiceItems((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item;
@@ -344,7 +382,7 @@ export function CreateSaleModal({
         return { ...item, quantity: parsedQuantity, quantityInput: String(parsedQuantity) };
       })
     );
-  }
+  }, []);
 
   // ── Calculations ────────────────────────────────────────────────────────────
 
@@ -362,7 +400,8 @@ export function CreateSaleModal({
   async function handleSubmit() {
     setError("");
 
-    if (isSuperAdmin && !shopId) { setError("Выберите магазин."); return; }
+    if (showShopPicker && !shopId) { setError("Выберите магазин."); return; }
+    if (!showShopPicker && implicitShopId === null) { setError("Магазин не назначен."); return; }
 
     if (saleType === "product") {
       if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
@@ -399,7 +438,7 @@ export function CreateSaleModal({
               quantity: s.quantity,
               price: parseFloat(s.price) || 0,
             })),
-      shop_id: isSuperAdmin && shopId ? Number(shopId) : undefined,
+      shop_id: showShopPicker && shopId ? Number(shopId) : (implicitShopId ?? undefined),
     };
     if (customerName.trim()) payload.customer_name = customerName.trim();
     if (discountVal > 0) payload.discount = discountVal;
@@ -419,15 +458,16 @@ export function CreateSaleModal({
           const prod = await api.products.get(c.product.id, token).catch(() => null);
           if (prod && prod.low_stock_alert && prod.low_stock_alert > 0) {
             if (prod.stock_quantity <= prod.low_stock_alert) {
-              const alreadySent = await hasLowStockAlertBeenSent(c.product.id, isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0));
+              const shopIdForAlert = (showShopPicker && shopId ? Number(shopId) : implicitShopId) ?? 0;
+              const alreadySent = await hasLowStockAlertBeenSent(c.product.id, shopIdForAlert);
               if (!alreadySent) {
                 await insertNotification(
                   "low_stock",
                   `Мало товара: ${c.product.name}`,
                   `Остаток ${prod.stock_quantity} ${c.product.unit ?? "шт"} при минимуме ${prod.low_stock_alert}`,
-                  { product_id: c.product.id, shop_id: isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0) }
+                  { product_id: c.product.id, shop_id: shopIdForAlert }
                 );
-                await markLowStockAlertSent(c.product.id, isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0));
+                await markLowStockAlertSent(c.product.id, shopIdForAlert);
               }
             }
           }
@@ -438,7 +478,7 @@ export function CreateSaleModal({
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         const now = new Date().toISOString();
-        const shopIdForSale = isSuperAdmin && shopId ? Number(shopId) : (user?.shop_id ?? 0);
+        const shopIdForSale = (showShopPicker && shopId ? Number(shopId) : implicitShopId) ?? 0;
         const localSale: Sale = {
           id: generateUUID(),
           type: saleType,
@@ -451,7 +491,7 @@ export function CreateSaleModal({
           notes: notes.trim() || undefined,
           items: saleType === "product"
             ? cart.map((c) => ({
-                id: 0,
+                id: generateUUID(),
                 product_id: c.product.id,
                 name: null,
                 product_name: c.product.name,
@@ -461,7 +501,7 @@ export function CreateSaleModal({
                 total: c.price * c.quantity,
               }))
             : serviceItems.map((s) => ({
-                id: 0,
+                id: generateUUID(),
                 product_id: null,
                 name: null,
                 product_name: null,
@@ -547,8 +587,10 @@ export function CreateSaleModal({
               </View>
             )}
 
-            {/* ── Shop Selector for SuperAdmin ── */}
-            {isSuperAdmin && (
+            {/* ── Shop selector ── */}
+            {/* Shown for super_admin (any shop) and multi-shop owners (their */}
+            {/* owned shops only — server-side scoping in api.shops.list).    */}
+            {showShopPicker && (
               <View className="mb-4">
                 <Select
                   label="Магазин"
@@ -610,7 +652,7 @@ export function CreateSaleModal({
                   <View className="flex-row items-center gap-2">
                     <TouchableOpacity
                       onPress={() => {
-                        if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин."); return; }
+                        if (showShopPicker && !shopId) { setError("Сначала выберите магазин."); return; }
                         setScannerVisible(true);
                       }}
                       className="flex-row items-center gap-1 bg-slate-100 dark:bg-zinc-800 px-3 py-1.5 rounded-lg"
@@ -620,7 +662,7 @@ export function CreateSaleModal({
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => {
-                        if (isSuperAdmin && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
+                        if (showShopPicker && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
                         setPickerVisible(true);
                       }}
                       className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
@@ -643,86 +685,17 @@ export function CreateSaleModal({
                 ) : (
                   <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
                     {cart.map((c) => (
-                      <View
+                      <CartRow
                         key={c.product.id}
-                        className="p-3 border-b border-slate-200 dark:border-zinc-700 last:border-0"
-                      >
-                        <View className="flex-row items-center justify-between mb-1.5">
-                          <Text className="text-sm font-medium text-slate-900 dark:text-slate-50 flex-1 mr-2">
-                            {c.product.name}
-                          </Text>
-                          <TouchableOpacity
-                            onPress={() =>
-                              setCart((prev) =>
-                                prev.filter((x) => x.product.id !== c.product.id)
-                              )
-                            }
-                            hitSlop={8}
-                          >
-                            <MaterialIcons name="close" size={16} color="#94a3b8" />
-                          </TouchableOpacity>
-                        </View>
-                        {/* Price mode toggle */}
-                        <View className="flex-row bg-slate-200 dark:bg-zinc-700 rounded-lg p-0.5 mb-2">
-                          {(["fixed", "manual", "markup"] as const).map((m) => (
-                            <TouchableOpacity
-                              key={m}
-                              onPress={() => canEditPrice && updatePriceMode(c.product.id, m)}
-                              disabled={!canEditPrice}
-                              className={`flex-1 py-1.5 rounded-md items-center ${
-                                c.priceMode === m ? "bg-white dark:bg-zinc-900" : ""
-                              } ${!canEditPrice ? "opacity-50" : ""}`}
-                            >
-                              <Text
-                                className={`text-xs font-medium ${
-                                  c.priceMode === m
-                                    ? "text-primary-500"
-                                    : "text-slate-400 dark:text-slate-500"
-                                }`}
-                              >
-                                {PRICE_MODE_LABELS[m]}
-                              </Text>
-                            </TouchableOpacity>
-                          ))}
-                        </View>
-                        <View className="flex-row items-center gap-3">
-                          <View className="w-20">
-                            <Input
-                              value={c.quantityInput ?? String(c.quantity)}
-                              onChangeText={(v) => updateCartQuantity(c.product.id, v)}
-                              onBlur={() => finalizeCartQuantity(c.product.id)}
-                              keyboardType="numeric"
-                              placeholder="Кол-во"
-                              className="py-1 text-xs text-center"
-                            />
-                          </View>
-                          {c.priceMode === "markup" ? (
-                            <View className="flex-1">
-                              <Input
-                                value={c.markupPercent}
-                                onChangeText={(v) => updateMarkup(c.product.id, v)}
-                                keyboardType="numeric"
-                                placeholder="Наценка %"
-                                className="py-1 text-xs"
-                              />
-                            </View>
-                          ) : (
-                            <View className="flex-1">
-                              <Input
-                                value={String(c.price)}
-                                onChangeText={(v) => updatePrice(c.product.id, v)}
-                                keyboardType="numeric"
-                                placeholder="Цена"
-                                className="py-1 text-xs"
-                                editable={c.priceMode === "manual" && canEditPrice}
-                              />
-                            </View>
-                          )}
-                          <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
-                            {fmt(c.price * c.quantity)}
-                          </Text>
-                        </View>
-                      </View>
+                        item={c}
+                        canEditPrice={canEditPrice}
+                        onRemove={removeCartItem}
+                        onPriceModeChange={updatePriceMode}
+                        onQuantityChange={updateCartQuantity}
+                        onQuantityBlur={finalizeCartQuantity}
+                        onMarkupChange={updateMarkup}
+                        onPriceChange={updatePrice}
+                      />
                     ))}
                   </View>
                 )}
@@ -757,63 +730,14 @@ export function CreateSaleModal({
                 ) : (
                   <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
                     {serviceItems.map((item) => (
-                      <View
+                      <ServiceItemRow
                         key={item.id}
-                        className="p-3 border-b border-slate-200 dark:border-zinc-700 last:border-0"
-                      >
-                        {/* Row 1: name + delete */}
-                        <View className="flex-row items-center gap-2 mb-2">
-                          <RNTextInput
-                            value={item.name}
-                            onChangeText={(v) => updateServiceItem(item.id, { name: v })}
-                            placeholder="Название услуги"
-                            placeholderTextColor="#94a3b8"
-                            className="flex-1 text-sm text-slate-900 dark:text-slate-50 bg-white dark:bg-zinc-900 rounded-lg px-3 py-2"
-                          />
-                          <TouchableOpacity
-                            onPress={() => removeServiceItem(item.id)}
-                            hitSlop={8}
-                          >
-                            <MaterialIcons name="close" size={16} color="#94a3b8" />
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Row 2: unit + qty input + price + total */}
-                        <View className="flex-row items-center gap-2">
-                          {/* Unit */}
-                          <RNTextInput
-                            value={item.unit}
-                            onChangeText={(v) => updateServiceItem(item.id, { unit: v })}
-                            placeholder="Ед."
-                            placeholderTextColor="#94a3b8"
-                            className="w-14 text-xs text-slate-900 dark:text-slate-50 bg-white dark:bg-zinc-900 rounded-lg px-2 py-1.5 text-center"
-                          />
-                          <View className="w-20">
-                            <Input
-                              value={item.quantityInput ?? String(item.quantity)}
-                              onChangeText={(v) => updateServiceQuantity(item.id, v)}
-                              onBlur={() => finalizeServiceQuantity(item.id)}
-                              keyboardType="numeric"
-                              placeholder="Кол-во"
-                              className="py-1 text-xs text-center"
-                            />
-                          </View>
-                          {/* Price */}
-                          <View className="flex-1">
-                            <Input
-                              value={item.price}
-                              onChangeText={(v) => updateServiceItem(item.id, { price: v })}
-                              keyboardType="numeric"
-                              placeholder="Цена"
-                              className="py-1 text-xs"
-                            />
-                          </View>
-                          {/* Line total */}
-                          <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
-                            {fmt((parseFloat(item.price) || 0) * item.quantity)}
-                          </Text>
-                        </View>
-                      </View>
+                        item={item}
+                        onPatch={updateServiceItem}
+                        onRemove={removeServiceItem}
+                        onQuantityChange={updateServiceQuantity}
+                        onQuantityBlur={finalizeServiceQuantity}
+                      />
                     ))}
                   </View>
                 )}
@@ -935,7 +859,7 @@ export function CreateSaleModal({
           visible={pickerVisible}
           products={products}
           onSelect={addToCart}
-          onClose={() => setPickerVisible(false)}
+          onClose={handlePickerClose}
           loading={productsLoading && products.length === 0}
           loadingMore={productsLoading && products.length > 0}
           hasMore={productsHasMore}

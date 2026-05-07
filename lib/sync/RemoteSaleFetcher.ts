@@ -7,6 +7,8 @@ import {
   setSalesLastSyncedAt,
   setSyncMetadata,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
+import { encodeCursor } from "./cursor";
 
 export interface SaleFetcherDeps {
   token: string;
@@ -25,20 +27,15 @@ const INITIAL_SYNC_PAGE_LIMIT = 5;
 const PAGE_SIZE = 100;
 const OLDEST_KEY = "sales_oldest_synced_at";
 
-/**
- * Encodes a composite (updated_at, id) cursor as base64 JSON.
- * See RemoteProductFetcher for details on the cursor protocol.
- */
-function encodeCursor(updatedAt: string, id: number): string {
-  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
-}
-
 export class RemoteSaleFetcher {
   constructor(private deps: () => SaleFetcherDeps) {}
 
   async fetch(forceFullSync = false): Promise<void> {
     const { token, shopId } = this.deps();
-    if (!token || !shopId) return;
+    // shopId is optional — super-admins (no shop assignment) get the cross-
+    // shop set straight from the server, owners/sellers always have a
+    // shopId from auth.user. The API filters by the auth token's role.
+    if (!token) return;
 
     try {
       let cursor: string | null = null;
@@ -99,7 +96,7 @@ export class RemoteSaleFetcher {
         );
       }
     } catch (error) {
-      console.error("Failed to fetch remote sales:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "sales" });
     }
   }
 
@@ -109,7 +106,7 @@ export class RemoteSaleFetcher {
    */
   async fetchOlder(pages = 5): Promise<boolean> {
     const { token, shopId } = this.deps();
-    if (!token || !shopId) return false;
+    if (!token) return false;
 
     const oldest = await getSyncMetadata(OLDEST_KEY);
     if (!oldest) return false;
@@ -148,7 +145,7 @@ export class RemoteSaleFetcher {
       }
       return true;
     } catch (error) {
-      console.error("Failed to fetch older sales:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "sales", op: "fetch-older" });
       return false;
     }
   }

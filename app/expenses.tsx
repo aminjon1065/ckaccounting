@@ -36,7 +36,7 @@ export default function ExpensesScreen() {
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = useExpenses({ token, shopId: user?.shop_id });
+  } = useExpenses({ token, user });
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);

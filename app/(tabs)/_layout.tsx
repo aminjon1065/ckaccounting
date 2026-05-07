@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
-import { useSync } from "@/lib/sync/SyncContext";
+import { usePendingActionsCount } from "@/lib/sync/syncStore";
 import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
 
 const PRIMARY = "#0a7ea4";
@@ -18,7 +18,7 @@ function TabIcon({ name, color }: { name: IconName; color: string }) {
 }
 
 function SalesTabIcon({ color }: { color: string }) {
-  const { pendingActionsCount } = useSync();
+  const pendingActionsCount = usePendingActionsCount();
   return (
     <View>
       <MaterialIcons name="receipt-long" size={24} color={color} />

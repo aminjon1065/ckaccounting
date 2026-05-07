@@ -8,7 +8,7 @@ import { useToast } from "@/store/toast";
 
 interface ReturnSaleModalProps {
   visible: boolean;
-  saleId: number;
+  saleId: string;
   items: SaleItem[];
   token: string;
   onClose: () => void;
@@ -59,7 +59,10 @@ export function ReturnSaleModal({
         product_id: ri.item.product_id,
         quantity: parseFloat(ri.returnQty) || 0,
       }))
-      .filter((ri) => ri.product_id != null && ri.quantity > 0);
+      .filter(
+        (ri): ri is { product_id: string; quantity: number } =>
+          ri.product_id != null && ri.quantity > 0
+      );
 
     if (validItems.length === 0) {
       Alert.alert("Ошибка", "Укажите количество для возврата.");
@@ -127,7 +130,7 @@ export function ReturnSaleModal({
           {/* Total */}
           <View className="mt-4 p-4 bg-slate-100 dark:bg-zinc-800 rounded-xl">
             <View className="flex-row justify-between">
-              <Text variant="body">К возврату:</Text>
+              <Text>К возврату:</Text>
               <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
                 {fmt(totalReturn)} ₽
               </Text>

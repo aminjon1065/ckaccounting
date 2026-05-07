@@ -42,7 +42,7 @@ export default function ProductsScreen() {
     handleDelete,
     handleSaved,
     retryFetch,
-  } = useProducts({ token, shopId: user?.shop_id });
+  } = useProducts({ token, user });
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
@@ -168,7 +168,6 @@ export default function ProductsScreen() {
         onClose={() => setFormVisible(false)}
         onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
         token={token!}
-        isSuperAdmin={isSuperAdmin}
       />
 
       {/* Barcode scanner for product search */}

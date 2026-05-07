@@ -21,9 +21,10 @@ import {
 } from "@/lib/api";
 import { getLocalDebtById, insertOrUpdateDebtTransactions, queueSyncAction } from "@/lib/db";
 import { generateUUID } from "@/lib/uuid";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { reportError } from "@/lib/observability/reporter";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ function AddTransactionModal({
   onAdded,
 }: {
   visible: boolean;
-  debtId: number;
+  debtId: string;
   currentBalance: number;
   onClose: () => void;
   onAdded: (tx: DebtTransaction, newBalance: number) => void;
@@ -119,7 +120,7 @@ function AddTransactionModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  const { refreshPendingActions, triggerSync } = useSync();
+  const { refreshPendingActions, triggerSync } = useSyncMethods();
 
   React.useEffect(() => {
     if (visible) {
@@ -178,30 +179,33 @@ function AddTransactionModal({
       const db = getDb();
       const row = await db.getFirstAsync<{
         direction: string | null;
-        balance: number | null;
         balance_kopecks: number | null;
+        version: number | null;
       }>(
-        "SELECT direction, balance, balance_kopecks FROM debts WHERE id = ?",
+        "SELECT direction, balance_kopecks, version FROM debts WHERE id = ?",
         [debtId]
       );
-      const rawBalance = row?.balance_kopecks != null
-        ? row.balance_kopecks / 100
-        : Number(row?.balance ?? 0);
+      const rawBalance = (row?.balance_kopecks ?? 0) / 100;
       const rawDelta = row?.direction === "payable" && rawBalance >= 0
         ? -delta
         : delta;
+      // Single source of truth: balance lives in balance_kopecks (INTEGER).
+      // The legacy REAL `balance` column is no longer maintained — see the
+      // money-canonicalization pass (phase 2.4).
       await db.runAsync(
         `UPDATE debts
-         SET balance = balance + ?,
-             balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100)) + ?
+         SET balance_kopecks = COALESCE(balance_kopecks, 0) + ?
          WHERE id = ?`,
-        [rawDelta, Math.round(rawDelta * 100), debtId]
+        [Math.round(rawDelta * 100), debtId]
       );
 
+      // Optimistic locking: include the last-known server version so the
+      // backend can reject the transaction if another client already
+      // modified the parent debt (returns 409 + server_data).
       await queueSyncAction(
         "POST",
         `/debts/${debtId}/transactions`,
-        payload,
+        { ...payload, version: row?.version ?? 1 },
         { "Idempotency-Key": `debt-tx-${txId}` },
         `debt-tx-${txId}`
       );
@@ -209,7 +213,7 @@ function AddTransactionModal({
 
       onAdded(tx, delta);
       onClose();
-      triggerSync().catch(console.error);
+      triggerSync().catch((e) => reportError(e, { tag: "debt-tx-create-sync" }));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
     } finally {
@@ -345,7 +349,7 @@ export default function DebtDetailScreen() {
 
     getLocalDebtById(id)
       .then(setDebt)
-      .catch(console.error)
+      .catch((e) => reportError(e, { tag: "debt-detail-load", debtId: id }))
       .finally(() => setLoading(false));
   }, [id]);
 

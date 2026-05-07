@@ -8,7 +8,8 @@ import { api, type LoginPayload, type User } from "@/lib/api";
 import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
 import { registerTokenExpiryHandler } from "@/lib/sync/TokenExpiryBridge";
-import { registerTokenRefreshHandler } from "@/lib/sync/TokenRefreshBridge";
+import { registerTokenRefreshHandler, resetTokenRefreshState } from "@/lib/sync/TokenRefreshBridge";
+import { reportError } from "@/lib/observability/reporter";
 import { clearLocalData } from "@/lib/db";
 import { suppressBiometricRelock } from "@/lib/biometricRelock";
 
@@ -197,7 +198,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         await clearLocalData();
       } catch (e) {
-        console.error("Failed to clear local data on account switch:", e);
+        reportError(e, {
+          tag: "auth-account-switch-clear",
+          prevUserId: prevUserId ?? null,
+          newUserId: newUserId ?? null,
+        });
       }
     }
 
@@ -229,6 +234,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? SecureStore.setItemAsync(PREV_USER_ID_KEY, newUserId)
         : SecureStore.deleteItemAsync(PREV_USER_ID_KEY),
     ]);
+    // Fresh session: clear any circuit-breaker state from the previous one
+    // so a single bad day on the network doesn't poison the new login.
+    resetTokenRefreshState();
     // Suppress biometric lock for 10s so the capability probe triggered by
     // token becoming non-null doesn't immediately lock the user out after login.
     suppressBiometricRelock(10_000);
@@ -258,6 +266,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
+      // Going back online from this session should retry refresh with a clean
+      // counter — the previous session's failures are no longer relevant
+      // once the user has re-authenticated locally.
+      resetTokenRefreshState();
       setState(prev => ({
         isLoaded: true,
         token,
@@ -300,6 +312,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? (() => { try { return JSON.parse(userJson) as User; } catch { return null; } })()
         : null;
 
+      // Same rationale as signInOffline: fresh local re-auth, clear circuit.
+      resetTokenRefreshState();
       setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
       return true;
     } catch {
@@ -374,6 +388,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // signOut also drops the prev-user pointer so the next signIn doesn't
     // misclassify itself as the "same account" against stale state.
     await SecureStore.deleteItemAsync(PREV_USER_ID_KEY).catch(() => {});
+    // Discard any in-flight refresh + circuit-breaker counters — the next
+    // login starts with a clean slate.
+    resetTokenRefreshState();
     setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
   }, []);
 

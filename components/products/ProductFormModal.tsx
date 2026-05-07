@@ -31,6 +31,8 @@ import {
   finishSystemUiBiometricSuppression,
   suppressBiometricRelockForSystemUi,
 } from "@/lib/biometricRelock";
+import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { useAuth } from "@/store/auth";
 
 interface FormModalProps {
   visible: boolean;
@@ -38,7 +40,6 @@ interface FormModalProps {
   onClose: () => void;
   onSaved: (p: Product, wasEditing: boolean) => void;
   token: string;
-  isSuperAdmin: boolean;
 }
 
 type PricingMode = "fixed" | "markup" | "manual";
@@ -103,8 +104,12 @@ export function ProductFormModal({
   onClose,
   onSaved,
   token,
-  isSuperAdmin,
 }: FormModalProps) {
+  const { user } = useAuth();
+  // Multi-shop UX: picker shown for super_admin and multi-shop owners.
+  // Single-shop owners and sellers get an implicit shop without a picker.
+  const showShopPicker = needsShopPicker(user);
+  const implicitShopId = effectiveShopId(user);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
 
@@ -132,19 +137,19 @@ export function ProductFormModal({
   const alertRef = React.useRef<RNTextInput>(null);
 
   React.useEffect(() => {
-    if (!visible || !isSuperAdmin) return;
+    if (!visible || !showShopPicker) return;
 
     // Load local shops immediately so the picker works offline
     getLocalShops().then(local => {
       if (local.length > 0) setShops(local.map(s => ({ id: s.id, name: s.name } as Shop)));
     }).catch(() => {});
 
-    // Refresh from server in background; update if we get a better list
-    api.shops.list(token).then((res: any) => {
-      const shopList: Shop[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-      if (shopList.length > 0) setShops(shopList);
+    // Refresh from server in background; update if we get a better list.
+    // Server-side scoping in api.shops.list ensures owners get only their owned shops.
+    api.shops.list(token).then((res) => {
+      if (res.data && res.data.length > 0) setShops(res.data);
     }).catch(() => {});
-  }, [visible, isSuperAdmin, token]);
+  }, [visible, showShopPicker, token]);
 
   React.useEffect(() => {
     if (visible && editing) {
@@ -274,8 +279,12 @@ export function ProductFormModal({
       return;
     }
 
-    if (isSuperAdmin && !editing && !shopId) {
+    if (showShopPicker && !editing && !shopId) {
       setError("Выберите магазин.");
+      return;
+    }
+    if (!showShopPicker && !editing && implicitShopId === null) {
+      setError("Магазин не назначен.");
       return;
     }
 
@@ -316,8 +325,10 @@ export function ProductFormModal({
         payload.low_stock_alert = parseFloat(lowAlert);
       }
 
-      if (isSuperAdmin && shopId && !editing) {
-        payload.shop_id = parseInt(shopId, 10);
+      if (!editing) {
+        payload.shop_id = showShopPicker && shopId
+          ? parseInt(shopId, 10)
+          : (implicitShopId ?? undefined);
       }
 
       const isNewPhoto = photoUri && !photoUri.startsWith("http");
@@ -339,7 +350,9 @@ export function ProductFormModal({
         const now = new Date().toISOString();
         const productPayload = {
           id: editing ? editing.id : generateUUID(),
-          shop_id: isSuperAdmin && shopId ? parseInt(shopId, 10) : null,
+          shop_id: showShopPicker && shopId
+            ? parseInt(shopId, 10)
+            : (editing?.shop_id ?? implicitShopId ?? null),
           name: name.trim(),
           code: code.trim() || null,
           unit: unit.trim() || null,
@@ -413,7 +426,7 @@ export function ProductFormModal({
             )}
 
             <View className="gap-4">
-              {isSuperAdmin && !editing && (
+              {showShopPicker && !editing && (
                 <Select
                   label="Магазин"
                   required

@@ -6,7 +6,7 @@ import * as Crypto from "expo-crypto";
 import { Text, Button } from "@/components/ui";
 import { type SyncAction, applyRecoveryStockDelta, insertOrUpdateSale, archiveSyncAction } from "@/lib/db";
 import { useAuth } from "@/store/auth";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
 
 interface SaleRecoveryModalProps {
   action: SyncAction | null;
@@ -23,7 +23,7 @@ interface ParsedSalePayload {
   payment_type: "cash" | "card" | "transfer";
   notes?: string;
   items: {
-    product_id?: number;
+    product_id?: string | null;
     name?: string;
     product_name?: string;
     quantity: number;
@@ -45,7 +45,7 @@ function fmt(n: number): string {
 
 export function SaleRecoveryModal({ action, onClose }: SaleRecoveryModalProps) {
   const { user } = useAuth();
-  const { refreshPendingActions } = useSync();
+  const { refreshPendingActions } = useSyncMethods();
 
   const [editedItems, setEditedItems] = React.useState<ParsedSalePayload["items"]>([]);
   const [discount, setDiscount] = React.useState("");
@@ -106,9 +106,11 @@ export function SaleRecoveryModal({ action, onClose }: SaleRecoveryModalProps) {
         }
       }
 
-      // Write corrected sale locally
-      const correctedItems = editedItems.map((item) => ({
-        id: 0,
+      // Write corrected sale locally. Generate a fresh UUID per item so the
+      // local SaleItem rows have stable identity for downstream queries.
+      const itemUuids = await Promise.all(editedItems.map(() => generateSecureUUID()));
+      const correctedItems = editedItems.map((item, idx) => ({
+        id: itemUuids[idx],
         product_id: item.product_id ?? null,
         name: item.product_name ?? item.name ?? "",
         product_name: item.product_name ?? item.name ?? "",

@@ -84,7 +84,7 @@ export default function PurchasesScreen() {
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = usePurchases({ token, shopId: user?.shop_id });
+  } = usePurchases({ token, user });
 
   const [createVisible, setCreateVisible] = React.useState(false);
 

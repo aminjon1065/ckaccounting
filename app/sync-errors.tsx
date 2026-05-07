@@ -5,9 +5,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Card, CardContent, Text } from "@/components/ui";
 import { archiveSyncAction, archiveSyncActions, getDb } from "@/lib/db";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useFailedActions } from "@/lib/sync/syncStore";
 import type { SyncAction } from "@/lib/db";
 import { SaleRecoveryModal } from "@/components/sales/SaleRecoveryModal";
+import { reportError } from "@/lib/observability/reporter";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,7 +49,8 @@ function getPathLabel(path: string): string {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SyncErrorsScreen() {
-  const { failedActions, triggerSync, refreshPendingActions } = useSync();
+  const { triggerSync, refreshPendingActions } = useSyncMethods();
+  const failedActions = useFailedActions();
   const [refreshing, setRefreshing] = React.useState(false);
   const [recoveryAction, setRecoveryAction] = React.useState<SyncAction | null>(null);
 
@@ -57,7 +60,7 @@ export default function SyncErrorsScreen() {
       [action.id]
     );
     await refreshPendingActions();
-    triggerSync().catch(console.error);
+    triggerSync().catch((e) => reportError(e, { tag: "sync-errors-retry" }));
   }
 
   function handleRetryWithConfirm(action: SyncAction): void {

@@ -4,19 +4,12 @@ import {
   insertOrUpdateProducts,
   setProductsLastSyncedAt,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
+import { encodeCursor } from "./cursor";
 
 export interface ProductFetcherDeps {
   token: string;
   shopId: number | undefined;
-}
-
-/**
- * Encodes a composite (updated_at, id) cursor as base64 JSON.
- * This provides stable, duplicate-free pagination when combined with
- * ORDER BY updated_at DESC, id DESC on the server.
- */
-function encodeCursor(updatedAt: string, id: number): string {
-  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
 }
 
 export class RemoteProductFetcher {
@@ -24,7 +17,10 @@ export class RemoteProductFetcher {
 
   async fetch(forceFullSync = false): Promise<void> {
     const { token, shopId } = this.deps();
-    if (!token || !shopId) return;
+    // shopId is optional — super-admins (no shop assignment) get the cross-
+    // shop set straight from the server, owners/sellers always have a
+    // shopId from auth.user. The API filters by the auth token's role.
+    if (!token) return;
 
     try {
       // For full sync: reset cursor so we fetch everything ordered by updated_at DESC
@@ -82,7 +78,7 @@ export class RemoteProductFetcher {
         await setProductsLastSyncedAt(serverTime ?? new Date().toISOString());
       }
     } catch (error) {
-      console.error("Failed to fetch remote products:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "products" });
     }
   }
 }

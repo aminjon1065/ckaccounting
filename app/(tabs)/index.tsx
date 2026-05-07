@@ -12,7 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Avatar, Select, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
 
 import { useDashboard } from "@/hooks/useDashboard";
 import { getGreeting, formatDate } from "@/lib/formatters";
@@ -36,7 +36,7 @@ import { can } from "@/lib/permissions";
 export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
-  const { refreshProducts } = useSync();
+  const { refreshProducts } = useSyncMethods();
   const isSuperAdmin = user?.role === "super_admin";
   const [isDataHidden, setIsDataHidden] = React.useState(false);
 

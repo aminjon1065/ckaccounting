@@ -1,0 +1,109 @@
+// ─── Sales endpoints ────────────────────────────────────────────────────────
+//
+// Pilot for runtime schema validation (phase 5.3): every response is run
+// through `parseOrLog`, which on shape mismatch reports to observability
+// and falls back to the raw value. Other endpoints will follow this pattern
+// incrementally — keep the validation hop here as the canonical example.
+
+import { request, qs } from "./client";
+import type { Paginated } from "./types";
+import { paginatedSchema, saleSchema } from "@/lib/api/schemas";
+import { parseOrLog } from "@/lib/validation/parser";
+
+export type SaleType = "product" | "service";
+
+export interface SaleItem {
+  id: string;
+  product_id: string | null;
+  name?: string | null;
+  product_name: string | null;
+  /** Populated for service-type sales */
+  service_name?: string | null;
+  unit?: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+export interface Sale {
+  id: string;
+  type?: SaleType;
+  user_id?: number | null;
+  customer_name: string | null;
+  total: number;
+  discount: number;
+  paid: number;
+  debt: number;
+  payment_type: "cash" | "card" | "transfer";
+  notes?: string | null;
+  items: SaleItem[];
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+  version?: number;
+}
+
+// Item shapes for the two sale types.
+export interface ProductSaleItemPayload {
+  product_id: string;
+  quantity: number;
+  price?: number;
+}
+
+export interface ServiceSaleItemPayload {
+  name: string;
+  unit?: string;
+  quantity: number;
+  price: number;
+}
+
+export interface CreateSalePayload {
+  id?: string;
+  type?: SaleType;
+  customer_name?: string;
+  discount?: number;
+  paid?: number;
+  notes?: string;
+  shop_id?: number;
+  payment_type: "cash" | "card" | "transfer";
+  items: (ProductSaleItemPayload | ServiceSaleItemPayload)[];
+}
+
+export const salesApi = {
+  list: async (
+    token: string,
+    params: { page?: number; limit?: number; after_id?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
+  ): Promise<Paginated<Sale>> => {
+    const raw = await request<Paginated<Sale>>(
+      `/sales${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
+      { token }
+    );
+    return parseOrLog(paginatedSchema(saleSchema), raw, { tag: "sales-list" }) as Paginated<Sale>;
+  },
+
+  get: async (id: string, token: string): Promise<Sale> => {
+    const raw = await request<Sale>(`/sales/${id}`, { token });
+    return parseOrLog(saleSchema, raw, { tag: "sales-get", extra: { saleId: id } }) as Sale;
+  },
+
+  create: async (payload: CreateSalePayload, token: string, idempotencyKey?: string): Promise<Sale> => {
+    const raw = await request<Sale>("/sales", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      token,
+    });
+    return parseOrLog(saleSchema, raw, { tag: "sales-create" }) as Sale;
+  },
+
+  return: (
+    id: string,
+    token: string,
+    payload?: { items?: Array<{ product_id: string; quantity: number }>; reason?: string; refund_method?: string }
+  ) =>
+    request<Sale>(`/sales/${id}/return`, {
+      method: "POST",
+      body: payload ? JSON.stringify(payload) : undefined,
+      token,
+    }),
+};

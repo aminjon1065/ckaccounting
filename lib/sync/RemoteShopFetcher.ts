@@ -4,6 +4,7 @@ import {
   insertOrUpdateShops,
   setShopsLastSyncedAt,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
 
 export interface ShopFetcherDeps {
   token: string;
@@ -35,10 +36,11 @@ export class RemoteShopFetcher {
         }
 
         if (response.data.length > 0) {
-          await insertOrUpdateShops(response.data as any);
+          await insertOrUpdateShops(response.data);
         }
 
-        if (page >= response.meta.last_page || response.data.length === 0) {
+        const lastPage = response.meta?.last_page;
+        if ((lastPage !== undefined && page >= lastPage) || response.data.length === 0) {
           hasMore = false;
         } else {
           page++;
@@ -48,7 +50,7 @@ export class RemoteShopFetcher {
       const serverTime = getLastServerTime();
       await setShopsLastSyncedAt(serverTime ?? new Date().toISOString());
     } catch (error) {
-      console.error("Failed to fetch remote shops:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "shops" });
     }
   }
 }

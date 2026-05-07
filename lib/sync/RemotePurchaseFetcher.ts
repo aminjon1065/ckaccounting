@@ -6,6 +6,8 @@ import {
   setPurchasesLastSyncedAt,
   setSyncMetadata,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
+import { encodeCursor } from "./cursor";
 
 export interface PurchaseFetcherDeps {
   token: string;
@@ -14,10 +16,6 @@ export interface PurchaseFetcherDeps {
 const INITIAL_SYNC_PAGE_LIMIT = 5;
 const PAGE_SIZE = 100;
 const OLDEST_KEY = "purchases_oldest_synced_at";
-
-function encodeCursor(updatedAt: string, id: number): string {
-  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
-}
 
 export class RemotePurchaseFetcher {
   constructor(private deps: () => PurchaseFetcherDeps) {}
@@ -70,7 +68,7 @@ export class RemotePurchaseFetcher {
         await setSyncMetadata(OLDEST_KEY, lastItemUpdatedAt);
       }
     } catch (error) {
-      console.error("Failed to fetch remote purchases:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "purchases" });
     }
   }
 
@@ -114,7 +112,7 @@ export class RemotePurchaseFetcher {
       }
       return true;
     } catch (error) {
-      console.error("Failed to fetch older purchases:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "purchases", op: "fetch-older" });
       return false;
     }
   }

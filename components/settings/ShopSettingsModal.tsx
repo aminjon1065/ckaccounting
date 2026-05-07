@@ -49,8 +49,7 @@ export function ShopSettingsModal({
       api.shops
         .list(token)
         .then((res) => {
-          const shopList = Array.isArray((res as any)?.data) ? (res as any).data : [];
-          setShops(shopList);
+          setShops(res.data ?? []);
         })
         .catch(() => {});
     } else {

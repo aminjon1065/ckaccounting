@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Purchase } from "@/lib/api";
-import { getLocalPurchases, type LocalPurchase } from "@/lib/db";
-import { useSync } from "@/lib/sync/SyncContext";
+import { type Purchase, type User } from "@/lib/api";
+import { getLocalPurchases, localScope, type LocalPurchase } from "@/lib/db";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useIsSyncing } from "@/lib/sync/syncStore";
 
 /**
  * Local-first purchases feed. SQLite is source of truth; SyncProvider
  * delta-sync brings new server records in; load-more extends history
  * via fetchOlderPurchases.
+ *
+ * Scoping is derived from `user` via `localScope`. Purchases are owner-only
+ * on the backend.
  */
-export function usePurchases({ token, shopId }: { token: string | null; shopId?: number | null }) {
-  const { triggerSync, fetchOlderPurchases, isSyncing } = useSync();
+export function usePurchases({ token, user }: { token: string | null; user: User | null | undefined }) {
+  const { triggerSync, fetchOlderPurchases } = useSyncMethods();
+  const isSyncing = useIsSyncing();
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -22,9 +27,9 @@ export function usePurchases({ token, shopId }: { token: string | null; shopId?:
 
   const loadFromLocal = useCallback(async () => {
     if (!token) return;
-    const local = await getLocalPurchases(shopId ?? undefined);
+    const local = await getLocalPurchases(localScope(user));
     setPurchases(dedupePurchases(local as Purchase[]));
-  }, [token, shopId]);
+  }, [token, user]);
 
   useEffect(() => {
     if (!token) return;

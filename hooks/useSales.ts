@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Sale } from "@/lib/api";
-import { getLocalSales } from "@/lib/db";
-import { useSync } from "@/lib/sync/SyncContext";
+import { type Sale, type User } from "@/lib/api";
+import { getLocalSales, localScope } from "@/lib/db";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useIsSyncing } from "@/lib/sync/syncStore";
 
 /**
  * Local-first sales feed.
@@ -13,9 +14,16 @@ import { useSync } from "@/lib/sync/SyncContext";
  * - load-more (scroll bottom) → fetchOlderSales pulls one historical page
  *   beyond the cap window, then we reload. hasMore tracks whether the
  *   server still has older history.
+ *
+ * Scoping: derives (shopId, userId) from `user` via `localScope`. Owners and
+ * super-admins see all sales in the shop; sellers see only their own. The
+ * previous shape passed `userId` only when the role was seller, but left
+ * `shopId` as `undefined` (= "every shop on this device"), which would leak
+ * data on devices shared between shops. Always pass through localScope now.
  */
-export function useSales({ token, userId, isSeller }: { token: string | null; userId?: number | null; isSeller?: boolean }) {
-  const { triggerSync, fetchOlderSales, isSyncing } = useSync();
+export function useSales({ token, user }: { token: string | null; user: User | null | undefined }) {
+  const { triggerSync, fetchOlderSales } = useSyncMethods();
+  const isSyncing = useIsSyncing();
 
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,9 +38,9 @@ export function useSales({ token, userId, isSeller }: { token: string | null; us
 
   const loadFromLocal = useCallback(async () => {
     if (!token) return;
-    const localSales = await getLocalSales(undefined, isSeller && userId ? userId : undefined);
+    const localSales = await getLocalSales(localScope(user));
     setSales(localSales);
-  }, [token, userId, isSeller]);
+  }, [token, user]);
 
   // Initial load + reload after each completed background sync.
   useEffect(() => {

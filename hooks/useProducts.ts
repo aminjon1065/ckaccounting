@@ -1,11 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Alert } from "react-native";
-import { api, type Product } from "@/lib/api";
+import { api, type Product, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalProducts, markProductDeletedLocally } from "@/lib/db";
+import { getLocalProducts, markProductDeletedLocally, localScope } from "@/lib/db";
 import type { LocalProduct } from "@/lib/db";
 
-export function useProducts({ token, shopId }: { token: string | null; shopId?: number }) {
+/**
+ * Local-first products feed. Catalog is shared per shop (no per-seller
+ * isolation), but we still go through `localScope` for sigature
+ * consistency with the other hooks. Owner picks a specific shop in the UI;
+ * super-admin can pass `overrideShopId` via the user fallback path.
+ */
+export function useProducts({ token, user }: { token: string | null; user: User | null | undefined }) {
   const { showToast } = useToast();
   const [products, setProducts] = useState<LocalProduct[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,7 +36,7 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
       // ── Initial load / refresh ─────────────────────────────────────────────
       // 1. Show local DB data instantly so the user sees something immediately,
       //    even while the network request is in flight.
-      const localData = await getLocalProducts(shopId, searchVal || undefined);
+      const localData = await getLocalProducts(localScope(user), searchVal || undefined);
       setProducts(localData);
       setHasMore(true); // Reset so we can paginate again after coming back online
 
@@ -44,7 +50,7 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
         // locally-pending items (creates/updates/deletes not yet synced).
         setProducts(mergeProducts(localData, res.data));
         pageRef.current = 2;
-        setHasMore(res.meta.current_page < res.meta.last_page);
+        setHasMore(!!res.meta && res.meta.current_page < res.meta.last_page);
       } catch (e: any) {
         const offline = e?.status === 0 || !e?.message?.includes("status");
         if (offline) {
@@ -77,7 +83,7 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
           return [...prev, ...newItems];
         });
         pageRef.current = pg + 1;
-        setHasMore(res.meta.current_page < res.meta.last_page);
+        setHasMore(!!res.meta && res.meta.current_page < res.meta.last_page);
       } catch (e: any) {
         const offline = e?.status === 0 || !e?.message?.includes("status");
         if (offline) {
@@ -87,7 +93,7 @@ export function useProducts({ token, shopId }: { token: string | null; shopId?: 
         // On load-more error, leave the existing list intact — don't clear it.
       }
     }
-  }, [token, search, shopId]); // `page` removed from deps — we use pageRef now
+  }, [token, search, user]); // `page` removed from deps — we use pageRef now
 
   useEffect(() => {
     if (token) {

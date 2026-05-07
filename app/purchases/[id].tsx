@@ -7,6 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button, Skeleton, Text } from "@/components/ui";
 import { api, type Purchase } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { reportError } from "@/lib/observability/reporter";
 
 function fmt(n: number) {
   return Math.round(n)
@@ -38,7 +39,7 @@ export default function PurchaseDetailScreen() {
     api.purchases
       .get(id, token)
       .then(setPurchase)
-      .catch(console.error)
+      .catch((e) => reportError(e, { tag: "purchase-detail-load", purchaseId: id }))
       .finally(() => setLoading(false));
   }, [token, id]);
 

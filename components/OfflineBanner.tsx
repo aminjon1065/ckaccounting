@@ -4,7 +4,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text } from "@/components/ui";
-import { useSync } from "@/lib/sync/SyncContext";
+import {
+  useFailedActionsCount,
+  useIsOnline,
+  useIsSyncing,
+  usePendingActionsCount,
+} from "@/lib/sync/syncStore";
 
 /**
  * Top-of-screen sync/connectivity status banner.
@@ -20,7 +25,10 @@ import { useSync } from "@/lib/sync/SyncContext";
  * single context read on the happy path.
  */
 export function OfflineBanner() {
-  const { isOnline, isSyncing, pendingActionsCount, failedActionsCount } = useSync();
+  const isOnline = useIsOnline();
+  const isSyncing = useIsSyncing();
+  const pendingActionsCount = usePendingActionsCount();
+  const failedActionsCount = useFailedActionsCount();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 

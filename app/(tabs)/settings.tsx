@@ -12,6 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Avatar, Card, CardContent, Separator, Text } from "@/components/ui";
 import { can, ROLE_LABELS } from "@/lib/permissions";
+import { getEntityRowCounts } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
@@ -19,7 +20,8 @@ import { SettingsRow } from "@/components/settings/SettingsRow";
 import { ShopSettingsModal } from "@/components/settings/ShopSettingsModal";
 import { EditProfileModal } from "@/components/settings/EditProfileModal";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useFailedActionsCount, useIsOnline } from "@/lib/sync/syncStore";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -29,7 +31,9 @@ export default function SettingsScreen() {
   const [shopSettingsVisible, setShopSettingsVisible] = React.useState(false);
   const [editProfileVisible, setEditProfileVisible] = React.useState(false);
   const { colorScheme, toggleColorScheme } = useColorScheme();
-  const { failedActionsCount, fetchAllHistory, isOnline } = useSync();
+  const { fetchAllHistory } = useSyncMethods();
+  const failedActionsCount = useFailedActionsCount();
+  const isOnline = useIsOnline();
   const { showToast } = useToast();
 
   // Full-history backfill state — shown inline so the user sees per-entity progress.
@@ -37,12 +41,14 @@ export default function SettingsScreen() {
   const [historyProgress, setHistoryProgress] = React.useState<{
     products: number;
     shops: number;
+    debts: number;
     sales: number;
     expenses: number;
     purchases: number;
   }>({
     products: 0,
     shops: 0,
+    debts: 0,
     sales: 0,
     expenses: 0,
     purchases: 0,
@@ -56,19 +62,38 @@ export default function SettingsScreen() {
     }
     Alert.alert(
       "Загрузить всю историю?",
-      "Будут скачаны все товары, магазины, продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
+      "Будут скачаны все товары, магазины, долги, продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
       [
         { text: "Отмена", style: "cancel" },
         {
           text: "Загрузить",
           onPress: async () => {
             setHistoryLoading(true);
-            setHistoryProgress({ products: 0, shops: 0, sales: 0, expenses: 0, purchases: 0 });
+            setHistoryProgress({ products: 0, shops: 0, debts: 0, sales: 0, expenses: 0, purchases: 0 });
             try {
               await fetchAllHistory(({ entity, pagesPulled }) => {
                 setHistoryProgress((prev) => ({ ...prev, [entity]: pagesPulled }));
               });
-              showToast({ message: "История загружена.", variant: "success" });
+              // Show actual row counts so the user can verify data landed.
+              // Without this, a fetcher that silently early-exits leaves the
+              // user with a "loaded" toast and an empty list, with nothing
+              // explaining why.
+              const counts = await getEntityRowCounts();
+              const summary = [
+                `Товары: ${counts.products}`,
+                `Магазины: ${counts.shops}`,
+                `Долги: ${counts.debts}`,
+                `Продажи: ${counts.sales}`,
+                `Расходы: ${counts.expenses}`,
+                `Закупки: ${counts.purchases}`,
+              ].join("\n");
+              const total = counts.products + counts.shops + counts.debts +
+                counts.sales + counts.expenses + counts.purchases;
+              Alert.alert(
+                total > 0 ? "История загружена" : "Загрузка завершена, но данных нет",
+                summary,
+                [{ text: "OK" }],
+              );
             } catch {
               showToast({ message: "Не удалось загрузить всю историю.", variant: "error" });
             } finally {
@@ -271,6 +296,7 @@ export default function SettingsScreen() {
                 <Text variant="small" className="text-slate-500">
                   Товары: {historyProgress.products > 0 ? "✓" : "…"}{"  ·  "}
                   Магазины: {historyProgress.shops > 0 ? "✓" : "…"}{"  ·  "}
+                  Долги: {historyProgress.debts > 0 ? "✓" : "…"}{"  ·  "}
                   Продажи: {historyProgress.sales} стр.{"  ·  "}
                   Расходы: {historyProgress.expenses} стр.{"  ·  "}
                   Закупки: {historyProgress.purchases} стр.

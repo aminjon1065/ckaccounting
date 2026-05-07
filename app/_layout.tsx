@@ -4,7 +4,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LogBox } from "react-native";
 import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -23,6 +23,7 @@ import {
 
 import { ErrorBoundary } from "@/components/error-boundary";
 import { BiometricGuard } from "@/components/auth/BiometricGuard";
+import { MigrationBlockedScreen } from "@/components/MigrationBlockedScreen";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SyncProvider } from "@/lib/sync/SyncContext";
@@ -32,6 +33,8 @@ import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
 import { requestNotificationPermissions } from "@/lib/notifications";
 import { initDb } from "@/lib/db";
+import { OutboxNotDrainedError } from "@/lib/db/schema";
+import { reportError } from "@/lib/observability/reporter";
 
 LogBox.ignoreLogs([
   "SafeAreaView has been deprecated",
@@ -94,9 +97,25 @@ function AuthGuard() {
   return null;
 }
 
+// State machine for the DB-init step. Three terminal states:
+//   loading  — `initDb()` is in flight, render nothing (splash is still up).
+//   ready    — proceed to the normal app tree.
+//   blocked  — destructive migration refused to run because the outbox is
+//              not drained; render MigrationBlockedScreen with retry.
+// Any *other* init failure falls through to `ready` with a reportError —
+// the offline-first SyncProvider re-tries open() on its own when SQLite is
+// reachable again, so we don't block the user on a transient open glitch.
+type DbInitState =
+  | { kind: "loading" }
+  | { kind: "ready" }
+  | { kind: "blocked"; error: OutboxNotDrainedError };
+
 export default function RootLayout() {
   const { colorScheme } = useColorScheme();
-  const [isDbReady, setIsDbReady] = useState(false);
+  const [dbState, setDbState] = useState<DbInitState>({ kind: "loading" });
+  // Bumping this re-runs the initDb effect. The retry button on
+  // MigrationBlockedScreen calls handleRetry which increments it.
+  const [retryKey, setRetryKey] = useState(0);
 
   const [interLoaded] = useInterFonts({
     Inter_400Regular,
@@ -122,18 +141,73 @@ export default function RootLayout() {
     return () => clearTimeout(handle);
   }, []);
 
-  // Initialize DB before rendering any providers that depend on it
+  // Initialize DB before rendering any providers that depend on it. Re-runs
+  // when retryKey changes (after the user clicks "try again" on the blocked
+  // screen). initDb() itself nulls its module-level promise cache on
+  // failure, so a fresh call genuinely re-attempts the migration.
   useEffect(() => {
+    let cancelled = false;
+    setDbState({ kind: "loading" });
     initDb()
-      .then(() => setIsDbReady(true))
-      .catch((e) => {
-        console.error("Failed to init DB:", e);
-        setIsDbReady(true); // Still proceed — SyncProvider will retry
+      .then(() => {
+        if (!cancelled) setDbState({ kind: "ready" });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        if (e instanceof OutboxNotDrainedError) {
+          setDbState({ kind: "blocked", error: e });
+          return;
+        }
+        // Any other error: log and proceed. SyncProvider's retry loop will
+        // pick up the slack once the underlying issue clears.
+        reportError(e, { tag: "init-db-non-blocking" });
+        setDbState({ kind: "ready" });
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [retryKey]);
+
+  const handleRetry = useCallback(async () => {
+    // Best-effort outbox drain before re-attempting the migration. The
+    // blocked screen sits *before* SyncProvider mounts, so the user can't
+    // rely on the regular periodic sync loop to empty the queue — they'd
+    // be stuck. Pull the token from SecureStore directly and run one
+    // OutboxProcessor pass; if it succeeds, the next initDb() will pass
+    // the guard. If offline / unauthed / partial, the guard re-triggers
+    // and the user sees the screen again with the still-unsynced count.
+    try {
+      const [{ OutboxProcessor }, SecureStore, { STORAGE_KEYS }] = await Promise.all([
+        import("@/lib/sync/OutboxProcessor"),
+        import("expo-secure-store"),
+        import("@/constants/config"),
+      ]);
+      const token = await SecureStore.getItemAsync(STORAGE_KEYS.authToken);
+      if (token) {
+        await new OutboxProcessor().triggerSync(token);
+      }
+    } catch (e) {
+      reportError(e, { tag: "migration-retry-outbox-drain" });
+    }
+    setRetryKey((k) => k + 1);
   }, []);
 
-  if (!isDbReady || !fontsLoaded) {
+  if (dbState.kind === "loading" || !fontsLoaded) {
     return null;
+  }
+
+  if (dbState.kind === "blocked") {
+    // The normal AuthGuard hides the splash; we won't reach AuthGuard from
+    // this branch, so hide it explicitly to avoid a frozen-splash UX.
+    hideSplashAfterMinDuration();
+    return (
+      <SafeAreaProvider>
+        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+          <MigrationBlockedScreen error={dbState.error} onRetry={handleRetry} />
+          <StatusBar style="auto" />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    );
   }
 
   return (

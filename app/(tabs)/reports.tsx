@@ -22,7 +22,8 @@ import { api, ApiError,
 } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useIsOnline } from "@/lib/sync/syncStore";
+import { reportError } from "@/lib/observability/reporter";
 import {
   computeLocalSalesReport,
   computeLocalExpensesReport,
@@ -255,7 +256,7 @@ function StockReportView({ data }: { data: StockReport }) {
 
 export default function ReportsScreen() {
   const { token, user } = useAuth();
-  const { isOnline } = useSync();
+  const isOnline = useIsOnline();
 
   const [activeTab, setActiveTab] = React.useState<ReportTab>("sales");
   const [dateFrom, setDateFrom] = React.useState(daysAgo(30));
@@ -448,7 +449,7 @@ export default function ReportsScreen() {
         setError(`PDF сохранён: ${fileName}`);
       }
     } catch (e) {
-      console.error(e);
+      reportError(e, { tag: "reports-pdf-generate", activeTab });
       setError("Не удалось создать PDF");
     } finally {
       setGeneratingPDF(false);

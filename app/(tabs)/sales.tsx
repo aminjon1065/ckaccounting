@@ -17,6 +17,7 @@ import { SaleCard } from "@/components/sales/SaleCard";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
 import { useSales } from "@/hooks/useSales";
 import { useSync } from "@/lib/sync/SyncContext";
+import { reportError } from "@/lib/observability/reporter";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -25,7 +26,6 @@ export default function SalesScreen() {
   const { showToast } = useToast();
   const router = useRouter();
   const { isOnline, isSyncing, pendingActionsCount, failedActionsCount, failedActions, clearFailedActions, triggerSync } = useSync();
-  const isSeller = user?.role === "seller";
 
   const {
     sales,
@@ -37,7 +37,7 @@ export default function SalesScreen() {
     handleRefresh,
     handleLoadMore,
     retryFetch,
-  } = useSales({ token, userId: user?.id, isSeller });
+  } = useSales({ token, user });
 
   const [createVisible, setCreateVisible] = React.useState(false);
 
@@ -78,7 +78,7 @@ export default function SalesScreen() {
             </View>
             {isOnline && pendingActionsCount > 0 && (
               <TouchableOpacity
-                onPress={() => triggerSync().catch(console.error)}
+                onPress={() => triggerSync().catch((e) => reportError(e, { tag: "sales-tab-manual-sync" }))}
                 disabled={isSyncing}
                 className="rounded-xl bg-amber-500 px-3 py-2 disabled:opacity-60"
               >

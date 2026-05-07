@@ -26,6 +26,8 @@ import { insertOrUpdatePurchase } from "@/lib/db";
 import { type LocalPurchase } from "@/lib/db";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
+import { reportError } from "@/lib/observability/reporter";
+import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 
 // ─── Product picker ───────────────────────────────────────────────────────────
 
@@ -149,7 +151,8 @@ export function CreatePurchaseModal({
   const [submitting, setSubmitting] = React.useState(false);
   const { showToast } = useToast();
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  const showShopPicker = needsShopPicker(user);
+  const implicitShopId = effectiveShopId(user);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
 
@@ -157,23 +160,27 @@ export function CreatePurchaseModal({
     if (!visible) return;
     setCart([]); setSupplierName(""); setError("");
     setShopId("");
-    if (isSuperAdmin) {
-      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    if (showShopPicker) {
+      api.shops.list(token)
+        .then((res) => setShops(res.data ?? []))
+        .catch((e) => reportError(e, { tag: "purchase-modal-shops-load" }));
     }
-  }, [token, visible, isSuperAdmin]);
+  }, [token, visible, showShopPicker]);
 
   React.useEffect(() => {
     if (!visible) return;
-    if (isSuperAdmin && shopId) {
-      api.products.list(token, { limit: 100, shop_id: Number(shopId) })
-        .then((res) => setProducts(res.data))
-        .catch(() => {});
-    } else if (!isSuperAdmin) {
-      api.products.list(token, { limit: 100 })
-        .then((res) => setProducts(res.data))
-        .catch(() => {});
+    const targetShop = showShopPicker
+      ? (shopId ? Number(shopId) : null)
+      : implicitShopId;
+    if (showShopPicker && targetShop === null) {
+      // Picker visible but nothing picked — leave product list empty.
+      setProducts([]);
+      return;
     }
-  }, [token, visible, isSuperAdmin, shopId]);
+    api.products.list(token, { limit: 100, shop_id: targetShop ?? undefined })
+      .then((res) => setProducts(res.data))
+      .catch(() => {});
+  }, [token, visible, showShopPicker, shopId, implicitShopId]);
 
   function addToCart(p: Product) {
     setCart((prev) => {
@@ -187,7 +194,7 @@ export function CreatePurchaseModal({
     });
   }
 
-  function updateQty(productId: number, delta: number) {
+  function updateQty(productId: string, delta: number) {
     setCart((prev) =>
       prev
         .map((c) =>
@@ -197,7 +204,7 @@ export function CreatePurchaseModal({
     );
   }
 
-  function updateQtyValue(productId: number, value: string) {
+  function updateQtyValue(productId: string, value: string) {
     const normalized = value.replace(",", ".");
     const quantity = Number(normalized);
 
@@ -210,7 +217,7 @@ export function CreatePurchaseModal({
     );
   }
 
-  function updatePrice(productId: number, price: string) {
+  function updatePrice(productId: string, price: string) {
     setCart((prev) =>
       prev.map((c) =>
         c.product.id === productId
@@ -220,7 +227,7 @@ export function CreatePurchaseModal({
     );
   }
 
-  function updateMarkup(productId: number, markup: string) {
+  function updateMarkup(productId: string, markup: string) {
     setCart((prev) =>
       prev.map((c) =>
         c.product.id === productId ? { ...c, markupPercent: markup } : c
@@ -249,11 +256,13 @@ export function CreatePurchaseModal({
       })),
     };
     if (supplierName.trim()) payload.supplier_name = supplierName.trim();
-    if (isSuperAdmin) {
+    if (showShopPicker) {
       if (!shopId) { setError("Выберите магазин."); setSubmitting(false); return; }
       payload.shop_id = Number(shopId);
-    } else if (user?.shop_id) {
-      payload.shop_id = user.shop_id;
+    } else if (implicitShopId !== null) {
+      payload.shop_id = implicitShopId;
+    } else {
+      setError("Магазин не назначен."); setSubmitting(false); return;
     }
     try {
       const created = await api.purchases.create(payload, token, idempotencyKey);
@@ -267,7 +276,7 @@ export function CreatePurchaseModal({
           supplier_name: supplierName.trim() || null,
           total,
           items: cart.map((c) => ({
-            id: 0,
+            id: generateUUID(),
             product_id: c.product.id,
             product_name: c.product.name,
             quantity: c.quantity,
@@ -322,8 +331,8 @@ export function CreatePurchaseModal({
               </View>
             )}
 
-            {/* ── Shop Selector for SuperAdmin ── */}
-            {isSuperAdmin && (
+            {/* ── Shop Selector ── */}
+            {showShopPicker && (
               <View className="mb-4">
                 <Select
                   label="Магазин"

@@ -15,7 +15,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useIsOnline } from "@/lib/sync/syncStore";
 
 // Cap initial post-login pull at 12s. If the network is slow, fall through
 // to the tabs anyway — SyncProvider keeps polling in the background and the
@@ -24,7 +25,8 @@ const BOOTSTRAP_TIMEOUT_MS = 12_000;
 
 export default function LoginScreen() {
   const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, bootstrapPending, completeBootstrap, token } = useAuth();
-  const { runFullSync, isOnline } = useSync();
+  const { runFullSync } = useSyncMethods();
+  const isOnline = useIsOnline();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 

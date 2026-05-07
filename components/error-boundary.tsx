@@ -4,6 +4,7 @@ import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Text } from "@/components/ui";
+import { reportError } from "@/lib/observability/reporter";
 
 interface Props {
   children: React.ReactNode;
@@ -26,11 +27,10 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // Log to console in development
-    console.error("ErrorBoundary caught an error:", error, errorInfo);
-
-    // In production, you could send to an error reporting service like Sentry
-    // Example: Sentry.captureException(error, { extra: errorInfo });
+    reportError(error, {
+      tag: "react-error-boundary",
+      componentStack: errorInfo.componentStack ?? null,
+    });
   }
 
   handleReset = () => {

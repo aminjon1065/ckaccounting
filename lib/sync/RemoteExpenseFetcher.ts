@@ -6,6 +6,8 @@ import {
   setExpensesLastSyncedAt,
   setSyncMetadata,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
+import { encodeCursor } from "./cursor";
 
 export interface ExpenseFetcherDeps {
   token: string;
@@ -14,10 +16,6 @@ export interface ExpenseFetcherDeps {
 const INITIAL_SYNC_PAGE_LIMIT = 5;
 const PAGE_SIZE = 100;
 const OLDEST_KEY = "expenses_oldest_synced_at";
-
-function encodeCursor(updatedAt: string, id: number): string {
-  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
-}
 
 export class RemoteExpenseFetcher {
   constructor(private deps: () => ExpenseFetcherDeps) {}
@@ -70,7 +68,7 @@ export class RemoteExpenseFetcher {
         await setSyncMetadata(OLDEST_KEY, lastItemUpdatedAt);
       }
     } catch (error) {
-      console.error("Failed to fetch remote expenses:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "expenses" });
     }
   }
 
@@ -114,7 +112,7 @@ export class RemoteExpenseFetcher {
       }
       return true;
     } catch (error) {
-      console.error("Failed to fetch older expenses:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "expenses", op: "fetch-older" });
       return false;
     }
   }

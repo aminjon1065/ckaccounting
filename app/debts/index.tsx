@@ -17,10 +17,12 @@ import { Button, Input, Select, Skeleton, Text } from "@/components/ui";
 import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
-import { getLocalDebts, getLocalShops, insertOrUpdateDebts, queueSyncAction } from "@/lib/db";
+import { getLocalDebts, getLocalShops, insertOrUpdateDebts, localScope, queueSyncAction } from "@/lib/db";
 import { generateUUID } from "@/lib/uuid";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useLastSyncedAt } from "@/lib/sync/syncStore";
 import { can } from "@/lib/permissions";
+import { reportError } from "@/lib/observability/reporter";
 
 function fmt(n: number) {
   return Math.round(Math.abs(n))
@@ -134,7 +136,7 @@ function CreateDebtModal({
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
 
-  const { refreshPendingActions, triggerSync } = useSync();
+  const { refreshPendingActions, triggerSync } = useSyncMethods();
 
   React.useEffect(() => {
     if (visible) {
@@ -210,7 +212,7 @@ function CreateDebtModal({
       try {
         await triggerSync();
       } catch (e) {
-        console.error("Debt sync failed:", e);
+        reportError(e, { tag: "debt-create-sync" });
       }
       // Always proceed — debt is saved locally and will sync when online
       onCreated(newDebt);
@@ -334,7 +336,7 @@ function CreateDebtModal({
 export default function DebtsScreen() {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const { lastSyncedAt } = useSync();
+  const lastSyncedAt = useLastSyncedAt();
   const router = useRouter();
   const isSeller = user?.role === "seller";
 
@@ -351,15 +353,15 @@ export default function DebtsScreen() {
     async (reset = false) => {
       setError("");
       try {
-        const localDebts = await getLocalDebts(user?.shop_id, isSeller ? user.id : undefined);
+        const localDebts = await getLocalDebts(localScope(user));
         setDebts(localDebts);
         setHasMore(false);
       } catch (e) {
-        console.error("Debts fetch error:", e);
+        reportError(e, { tag: "debts-fetch" });
         if (reset) setError("Не удалось загрузить долги.");
       }
     },
-    [user?.shop_id, user?.id, isSeller]
+    [user]
   );
 
   React.useEffect(() => {
@@ -370,7 +372,7 @@ export default function DebtsScreen() {
   // updated real server ids) replace stale tempId records in the list.
   React.useEffect(() => {
     if (lastSyncedAt) {
-      fetchDebts(false).catch(console.error);
+      fetchDebts(false).catch((e) => reportError(e, { tag: "debts-refetch-on-sync" }));
     }
   }, [fetchDebts, lastSyncedAt]);
 

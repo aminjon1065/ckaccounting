@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
-import { api, type Expense } from "@/lib/api";
+import { api, type Expense, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalExpenses, markExpenseDeletedLocally, deleteLocalExpense } from "@/lib/db";
+import { getLocalExpenses, markExpenseDeletedLocally, deleteLocalExpense, localScope } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
-import { useSync } from "@/lib/sync/SyncContext";
+import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useIsSyncing } from "@/lib/sync/syncStore";
 
 /**
  * Local-first expenses feed. Mirrors useSales: SQLite is the source of
  * truth for the UI; SyncProvider's delta-sync feeds new server records
  * in, and load-more extends the historical window via fetchOlderExpenses.
+ *
+ * Scoping is derived from `user` via `localScope` — see useSales for the
+ * rationale. Expenses are owner-only on the backend, so a seller scope
+ * effectively returns nothing here too.
  */
-export function useExpenses({ token, shopId }: { token: string | null; shopId?: number }) {
+export function useExpenses({ token, user }: { token: string | null; user: User | null | undefined }) {
   const { showToast } = useToast();
-  const { triggerSync, fetchOlderExpenses, isSyncing } = useSync();
+  const { triggerSync, fetchOlderExpenses } = useSyncMethods();
+  const isSyncing = useIsSyncing();
   const [expenses, setExpenses] = useState<LocalExpense[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -26,9 +32,9 @@ export function useExpenses({ token, shopId }: { token: string | null; shopId?: 
 
   const loadFromLocal = useCallback(async () => {
     if (!token) return;
-    const localData = await getLocalExpenses(shopId);
+    const localData = await getLocalExpenses(localScope(user));
     setExpenses(localData);
-  }, [token, shopId]);
+  }, [token, user]);
 
   useEffect(() => {
     if (!token) return;

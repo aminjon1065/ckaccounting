@@ -7,15 +7,26 @@ import { STORAGE_KEYS } from "@/constants/config";
 import { getDb, initDb } from "../db";
 import { SyncOrchestrator } from "./SyncOrchestrator";
 import { useSync } from "./SyncContext";
+import { withSyncLock, SyncLockBusyError } from "./syncLock";
+import { reportError, reportMessage } from "@/lib/observability/reporter";
 
 // ─── Background Task Definitions ───────────────────────────────────────────────
 
 const BACKGROUND_SYNC_TASK = "ck-background-sync";
+const BACKGROUND_LOCK_HOLDER = "background-fetch";
+// iOS background-fetch budget is ~30 s. Cap our slot well below that so we
+// release before the OS kills us, leaving room for outbox writes to flush.
+const BACKGROUND_LOCK_TTL_MS = 25_000;
 
 /**
  * Self-contained background sync handler.
  * Called by the OS when the background task fires — runs outside the React tree,
  * so it must read auth credentials from SecureStore directly.
+ *
+ * Cross-process safety: wraps the entire sync in `withSyncLock`. If the
+ * foreground app is currently mid-sync (rare but possible during quick
+ * background→foreground transitions), the OS task skips this slot and lets
+ * the OS reschedule us later — preferable to interleaving two writers.
  */
 TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
   try {
@@ -40,18 +51,31 @@ TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
     await initDb();
     getDb(); // ensure DB is open
 
-    // Run full sync: outbox push + pull all remote entities.
-    // role and userId are required so sellers don't trigger expense/purchase fetches.
-    const orchestrator = new SyncOrchestrator(() => ({ token, shopId, role, userId }));
-    await orchestrator.syncAll(false);
+    try {
+      await withSyncLock(
+        { holder: BACKGROUND_LOCK_HOLDER, ttlMs: BACKGROUND_LOCK_TTL_MS, waitMs: 0 },
+        async () => {
+          // Run full sync: outbox push + pull all remote entities.
+          // role and userId are required so sellers don't trigger expense/purchase fetches.
+          const orchestrator = new SyncOrchestrator(() => ({ token, shopId, role, userId }));
+          await orchestrator.syncAll(false);
 
-    const db = getDb();
-    await db.runAsync(
-      "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)",
-      ["last_background_sync_at", new Date().toISOString()]
-    );
-
-    return BackgroundFetch.BackgroundFetchResult.NewData;
+          const db = getDb();
+          await db.runAsync(
+            "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)",
+            ["last_background_sync_at", new Date().toISOString()]
+          );
+        }
+      );
+      return BackgroundFetch.BackgroundFetchResult.NewData;
+    } catch (e) {
+      if (e instanceof SyncLockBusyError) {
+        // Foreground holds the lock — let the OS reschedule us. This is
+        // expected behavior, not a failure.
+        return BackgroundFetch.BackgroundFetchResult.NoData;
+      }
+      throw e;
+    }
   } catch (e) {
     // Write error durably so it survives the process exit.
     try {
@@ -72,7 +96,7 @@ export async function registerBackgroundSync(): Promise<boolean> {
       status === BackgroundFetch.BackgroundFetchStatus.Restricted ||
       status === BackgroundFetch.BackgroundFetchStatus.Denied
     ) {
-      console.warn("Background fetch is restricted or denied");
+      reportMessage("Background fetch is restricted or denied", "warning", { tag: "bg-sync-register", status });
       return false;
     }
 
@@ -83,7 +107,7 @@ export async function registerBackgroundSync(): Promise<boolean> {
     });
     return true;
   } catch (e) {
-    console.error("Failed to register background sync:", e);
+    reportError(e, { tag: "bg-sync-register" });
     return false;
   }
 }
@@ -100,7 +124,7 @@ export function useBackgroundSync(enabled: boolean) {
   // happens on every network event) left gaps where background sync was inactive.
   useEffect(() => {
     if (!enabled) return;
-    registerBackgroundSync().catch(console.error);
+    registerBackgroundSync().catch((e) => reportError(e, { tag: "bg-sync-register", phase: "mount" }));
     // Intentionally NO cleanup: background fetch should remain registered
     // for the lifetime of the app session.
   }, [enabled]);
@@ -117,7 +141,7 @@ export function useBackgroundSync(enabled: boolean) {
           appState.current.match(/inactive|background/) &&
           nextAppState === "active"
         ) {
-          triggerSync().catch(console.error);
+          triggerSync().catch((e) => reportError(e, { tag: "bg-sync-foreground-trigger" }));
         }
         appState.current = nextAppState;
       }

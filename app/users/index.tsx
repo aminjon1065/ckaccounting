@@ -28,6 +28,7 @@ import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { useUsers } from "@/hooks/useUsers";
+import { reportError } from "@/lib/observability/reporter";
 
 // ─── User card ────────────────────────────────────────────────────────────────
 
@@ -162,7 +163,9 @@ function CreateUserModal({
       setShopId("");
       setError("");
       if (isSuperAdmin) {
-        api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+        api.shops.list(token)
+          .then((res) => setShops(res.data ?? []))
+          .catch((e) => reportError(e, { tag: "users-create-shops-load" }));
       }
     }
   }, [visible, isSuperAdmin, token]);
@@ -351,7 +354,9 @@ function EditUserModal({
       setPassword("");
       setError("");
       if (isSuperAdmin) {
-        api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+        api.shops.list(token)
+          .then((res) => setShops(res.data ?? []))
+          .catch((e) => reportError(e, { tag: "users-edit-shops-load" }));
       }
     }
   }, [visible, editingUser, isSuperAdmin, token]);

@@ -4,13 +4,11 @@ import {
   insertOrUpdateDebts,
   setDebtsLastSyncedAt,
 } from "../db";
+import { reportError } from "@/lib/observability/reporter";
+import { encodeCursor } from "./cursor";
 
 export interface DebtFetcherDeps {
   token: string;
-}
-
-function encodeCursor(updatedAt: string, id: number): string {
-  return btoa(JSON.stringify({ updated_at: updatedAt, id }));
 }
 
 export class RemoteDebtFetcher {
@@ -55,7 +53,7 @@ export class RemoteDebtFetcher {
         await setDebtsLastSyncedAt(serverTime ?? new Date().toISOString());
       }
     } catch (error) {
-      console.error("Failed to fetch remote debts:", error);
+      reportError(error, { tag: "remote-fetcher", entity: "debts" });
     }
   }
 }
