@@ -3,8 +3,6 @@ import { useSegments } from "expo-router";
 import {
   ActivityIndicator,
   Alert,
-  AppState,
-  type AppStateStatus,
   Platform,
   Pressable,
   StyleSheet,
@@ -81,15 +79,12 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
     if (!isEnabled) setUnlockedViaPin(false);
   }, [isEnabled]);
 
-  // Background→foreground re-engages the lock — same semantics the biometric
-  // hook applies to its own status. Without this, a PIN-only user would
-  // never be re-prompted after backgrounding the app.
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next === "background") setUnlockedViaPin(false);
-    });
-    return () => sub.remove();
-  }, []);
+  // No re-lock on backgrounding by user preference: PIN / biometric is
+  // required only at cold start. The unlock flag persists for the full
+  // lifetime of the JS context, so backgrounding (system modals, app
+  // switching, share sheet, camera) doesn't re-prompt. The `isEnabled`
+  // effect above still wipes the flag on sign-out so a fresh login
+  // can't inherit the previous session's authorization.
 
   // Auto-trigger the system biometric prompt whenever the guard enters the
   // locked state (initial launch AND every foreground resume).

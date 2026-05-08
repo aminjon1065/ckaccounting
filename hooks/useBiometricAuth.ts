@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as LocalAuthentication from "expo-local-authentication";
-import { AppState, type AppStateStatus, Platform } from "react-native";
+import { Platform } from "react-native";
 import { isBiometricRelockSuppressed } from "@/lib/biometricRelock";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -41,10 +41,9 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
   const [capabilities, setCapabilities] = useState<BiometricCapabilities | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Stable ref so AppState handler never closes over stale capabilities.
+  // Capability probe writes through this ref so the `authenticate`
+  // callback always sees the freshest capabilities without re-binding.
   const capabilitiesRef = useRef<BiometricCapabilities | null>(null);
-  // Track whether the app actually visited the background (not just inactive).
-  const wasInBackground = useRef(false);
 
   // ── 1. Capability probe ──────────────────────────────────────────────────
   useEffect(() => {
@@ -85,32 +84,14 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
     };
   }, [isEnabled]);
 
-  // ── 2. AppState: re-lock on every foreground resume ──────────────────────
-  useEffect(() => {
-    if (!isEnabled) return;
-
-    const handleChange = (next: AppStateStatus) => {
-      if (next === "background") {
-        wasInBackground.current = true;
-        return;
-      }
-
-      if (next === "active" && wasInBackground.current) {
-        wasInBackground.current = false;
-        if (isBiometricRelockSuppressed()) {
-          return;
-        }
-        const caps = capabilitiesRef.current;
-        if (caps?.hasHardware && caps?.isEnrolled) {
-          setErrorMessage(null);
-          setStatus("locked");
-        }
-      }
-    };
-
-    const sub = AppState.addEventListener("change", handleChange);
-    return () => sub.remove();
-  }, [isEnabled]);
+  // ── 2. AppState: no re-lock on resume ────────────────────────────────────
+  // Authentication is required only on cold start (when the OS spawned a
+  // fresh JS context). Foreground resume — switching apps, dismissing a
+  // system modal (camera, file picker, share sheet) — does NOT trigger
+  // a re-lock by user preference. The capability probe in effect 1 above
+  // sets `status = "locked"` on mount when biometrics are available, so
+  // cold starts still gate behind the prompt; we simply don't re-arm it
+  // when the same JS context comes back from the background.
 
   // ── 3. Authentication ────────────────────────────────────────────────────
   const authenticate = useCallback(async () => {

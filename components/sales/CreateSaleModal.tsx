@@ -541,7 +541,16 @@ export function CreateSaleModal({
         onCreated(localSale);
         onClose();
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        // Show the full per-field error breakdown when the server
+        // returned a 422 with `errors`. Just `e.message` often shows only
+        // the first message ("validation.exists" raw key from Laravel
+        // when lang files aren't published) — describeErrors lists every
+        // failing field so the user knows what to fix.
+        setError(
+          e instanceof ApiError
+            ? e.describeErrors()
+            : "Что-то пошло не так."
+        );
       }
     } finally {
       setSubmitting(false);

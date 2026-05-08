@@ -30,6 +30,27 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+
+  /**
+   * Produce a user-facing string describing every field-level error.
+   * Falls back to `message` when the server response carries no `errors`
+   * map (typical for non-validation 4xx). When validation errors are
+   * present, returns one line per field, e.g.:
+   *   `shop_id: The selected shop id is invalid.`
+   *   `items.0.product_id: The selected items.0.product id is invalid.`
+   *
+   * Use this in form-level error display instead of `e.message` alone —
+   * the bare message often surfaces only the first field, leaving the
+   * user guessing which other fields are wrong.
+   */
+  describeErrors(): string {
+    if (!this.errors || Object.keys(this.errors).length === 0) {
+      return this.message;
+    }
+    return Object.entries(this.errors)
+      .map(([field, messages]) => `${field}: ${messages.join("; ")}`)
+      .join("\n");
+  }
 }
 
 // ─── Online probe ───────────────────────────────────────────────────────────
