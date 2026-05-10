@@ -80,7 +80,6 @@
           "cameraPermission": "Разрешите доступ к камере для сканирования штрихкодов."
         }
       ],
-      "@react-native-community/datetimepicker",
       "expo-sqlite",
       "expo-font",
       "expo-image",
