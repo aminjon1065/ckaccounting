@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Skeleton, Text } from "@/components/ui";
+import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { type Expense } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
@@ -30,7 +30,6 @@ export default function ExpensesScreen() {
     refreshing,
     loadingMore,
     error,
-    isOffline,
     handleDelete,
     handleSaved,
     handleRefresh,
@@ -115,12 +114,11 @@ export default function ExpensesScreen() {
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            <View className="items-center justify-center py-20">
-              <MaterialIcons name="account-balance-wallet" size={48} color="#94a3b8" />
-              <Text variant="muted" className="mt-3 text-center">
-                Расходов нет.{"\n"}Нажмите + для записи.
-              </Text>
-            </View>
+            <EmptyState
+              icon="account-balance-wallet"
+              title="Расходов пока нет"
+              description="Запишите первый расход — кнопка «+» в правом нижнем углу."
+            />
           }
           ListFooterComponent={
             loadingMore ? (
@@ -136,16 +134,12 @@ export default function ExpensesScreen() {
 
       {/* FAB */}
       {can(user?.role, "expenses:create") && (
-        <TouchableOpacity
+        <FAB
           onPress={() => {
             setEditing(null);
             setFormVisible(true);
           }}
-          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-          style={{ elevation: 6 }}
-        >
-          <MaterialIcons name="add" size={28} color="#fff" />
-        </TouchableOpacity>
+        />
       )}
 
       {/* Form modal */}

@@ -1,13 +1,13 @@
-import { api, getLastServerTime, Expense } from "../api";
+import { api, getLastServerTime, Expense } from "../../api";
 import {
   getExpensesLastSyncedAt,
   getSyncMetadata,
   insertOrUpdateExpenses,
   setExpensesLastSyncedAt,
   setSyncMetadata,
-} from "../db";
+} from "../../db";
 import { reportError } from "@/lib/observability/reporter";
-import { encodeCursor } from "./cursor";
+import { encodeCursor } from "../cursor";
 
 export interface ExpenseFetcherDeps {
   token: string;

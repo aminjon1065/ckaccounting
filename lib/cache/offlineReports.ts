@@ -22,9 +22,9 @@
 // forced the row shape; the tests around `aggregateSalesReport` /
 // `aggregateStockReport` now make that class of bug fail at unit-test time.
 
-import { getDb } from "../../db";
-import { fromKopecks } from "../../db/money";
-import type { ProfitReport, SalesReport, ExpensesReport, StockReport } from "../../api";
+import { getDb } from "../db";
+import { fromKopecks } from "../db/money";
+import type { ProfitReport, SalesReport, ExpensesReport, StockReport } from "../api";
 import {
   aggregateCostOfGoodsSold,
   aggregateExpensesReport,
@@ -38,7 +38,7 @@ import {
   type ProfitSaleRow,
   type SaleItemAggregateRow,
   type SalesAggregateRow,
-} from "./OfflineReportsAggregators";
+} from "./offlineReportsAggregators";
 
 export type {
   DateRange,
@@ -47,7 +47,7 @@ export type {
   ProductAggregateRow,
   SaleItemAggregateRow,
   ProfitSaleRow,
-} from "./OfflineReportsAggregators";
+} from "./offlineReportsAggregators";
 
 export {
   aggregateSalesReport,
@@ -56,7 +56,7 @@ export {
   aggregateStockReport,
   aggregateCostOfGoodsSold,
   isInDateRange,
-} from "./OfflineReportsAggregators";
+} from "./offlineReportsAggregators";
 
 // ─── Sales ──────────────────────────────────────────────────────────────────
 

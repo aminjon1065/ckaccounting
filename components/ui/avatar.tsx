@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Image, View, Text, type ViewProps } from "react-native";
+import { View, Text, type ViewProps } from "react-native";
+import { Image } from "expo-image";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
@@ -74,7 +75,10 @@ function Avatar({ className, size, src, name, fallback, ...props }: AvatarProps)
       {src && !imageError ? (
         <Image
           source={{ uri: src }}
-          className="w-full h-full"
+          style={{ width: "100%", height: "100%" }}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={120}
           onError={() => setImageError(true)}
         />
       ) : (

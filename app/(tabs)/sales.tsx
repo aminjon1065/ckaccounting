@@ -9,15 +9,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Skeleton, Text } from "@/components/ui";
+import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
 import { SaleCard } from "@/components/sales/SaleCard";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
 import { useSales } from "@/hooks/useSales";
-import { useSync } from "@/lib/sync/SyncContext";
-import { reportError } from "@/lib/observability/reporter";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -25,7 +24,7 @@ export default function SalesScreen() {
   const { token, user } = useAuth();
   const { showToast } = useToast();
   const router = useRouter();
-  const { isOnline, isSyncing, pendingActionsCount, failedActionsCount, failedActions, clearFailedActions, triggerSync } = useSync();
+  const isOnline = useIsOnline();
 
   const {
     sales,
@@ -63,52 +62,14 @@ export default function SalesScreen() {
         </Text>
       </View>
 
-      {(!isOnline || pendingActionsCount > 0) && (
+      {!isOnline && (
         <View className="mx-4 mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
-          <View className="flex-row items-center justify-between gap-3">
-            <View className="flex-1">
-              <Text className="text-sm font-semibold text-amber-900 dark:text-amber-200">
-                {!isOnline ? "Офлайн-режим" : "Есть очередь синхронизации"}
-              </Text>
-              <Text className="mt-1 text-xs text-amber-800 dark:text-amber-300">
-                {!isOnline
-                  ? "Продажи сохраняются локально и будут отправлены после восстановления сети."
-                  : `В очереди ${pendingActionsCount} операций.`}
-              </Text>
-            </View>
-            {isOnline && pendingActionsCount > 0 && (
-              <TouchableOpacity
-                onPress={() => triggerSync().catch((e) => reportError(e, { tag: "sales-tab-manual-sync" }))}
-                disabled={isSyncing}
-                className="rounded-xl bg-amber-500 px-3 py-2 disabled:opacity-60"
-              >
-                <Text className="text-xs font-semibold text-white">
-                  {isSyncing ? "Sync..." : "Sync"}
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      )}
-
-      {isOnline && failedActionsCount > 0 && (
-        <View className="mx-4 mt-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/40 dark:bg-red-900/20">
-          <View className="flex-row items-center justify-between gap-3">
-            <View className="flex-1">
-              <Text className="text-sm font-semibold text-red-900 dark:text-red-200">
-                Ошибки синхронизации ({failedActionsCount})
-              </Text>
-              <Text className="mt-1 text-xs text-red-800 dark:text-red-300">
-                {failedActionsCount} операций не удалось отправить на сервер.
-              </Text>
-            </View>
-            <TouchableOpacity
-              onPress={clearFailedActions}
-              className="rounded-xl bg-red-500 px-3 py-2"
-            >
-              <Text className="text-xs font-semibold text-white">Очистить</Text>
-            </TouchableOpacity>
-          </View>
+          <Text className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+            Офлайн-режим
+          </Text>
+          <Text className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+            Показаны сохранённые продажи. Новые операции станут доступны после восстановления сети.
+          </Text>
         </View>
       )}
 
@@ -148,12 +109,11 @@ export default function SalesScreen() {
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            <View className="items-center justify-center py-20">
-              <MaterialIcons name="receipt-long" size={48} color="#94a3b8" />
-              <Text variant="muted" className="mt-3 text-center">
-                Продаж нет.{"\n"}Нажмите + для записи.
-              </Text>
-            </View>
+            <EmptyState
+              icon="receipt-long"
+              title="Пока нет продаж"
+              description="Запишите первую продажу — кнопка «+» в правом нижнем углу."
+            />
           }
           ListFooterComponent={
             loadingMore ? (
@@ -168,13 +128,7 @@ export default function SalesScreen() {
       )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => setCreateVisible(true)}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      <FAB onPress={() => setCreateVisible(true)} />
 
       {/* Create modal */}
       <CreateSaleModal

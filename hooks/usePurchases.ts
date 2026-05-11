@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type Purchase, type User } from "@/lib/api";
 import { getLocalPurchases, localScope, type LocalPurchase } from "@/lib/db";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
-import { useIsSyncing } from "@/lib/sync/syncStore";
+import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
 
 /**
  * Local-first purchases feed. SQLite is source of truth; SyncProvider
@@ -13,7 +12,7 @@ import { useIsSyncing } from "@/lib/sync/syncStore";
  * on the backend.
  */
 export function usePurchases({ token, user }: { token: string | null; user: User | null | undefined }) {
-  const { triggerSync, fetchOlderPurchases } = useSyncMethods();
+  const { triggerSync, fetchOlderPurchases } = useCacheMethods();
   const isSyncing = useIsSyncing();
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);

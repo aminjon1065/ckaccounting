@@ -6,7 +6,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TouchableOpacity,
   View,
@@ -16,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   Badge,
   Button,
+  FAB,
   Input,
   Select,
   Skeleton,
@@ -23,22 +23,13 @@ import {
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type Shop, type CreateShopPayload } from "@/lib/api";
 import { reportError } from "@/lib/observability/reporter";
-import { queueSyncAction, insertOrUpdateLocalShop, type LocalShop } from "@/lib/db";
 import { useShops } from "@/hooks/useShops";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
-function generateUUID() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
 // ─── Shop card ────────────────────────────────────────────────────────────────
 
-function ShopCard({
+const ShopCard = React.memo(function ShopCard({
   item,
   onEdit,
   onToggleStatus,
@@ -102,7 +93,7 @@ function ShopCard({
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 // ─── Create shop modal ────────────────────────────────────────────────────────
 
@@ -154,19 +145,12 @@ function CreateShopModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = generateUUID();
-        const localShop = {
-          id: -Date.now(),
-          name: name.trim(),
-          is_active: true,
-        };
-        await insertOrUpdateLocalShop(localShop, localId, "create");
-        await queueSyncAction("POST", "/shops", payload, {});
-        onCreated({ ...localShop, local_id: localId, status: "pending", sync_action: "create" } as LocalShop);
-        showToast({ message: "Нет сети. Магазин сохранен локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -190,7 +174,7 @@ function CreateShopModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -298,19 +282,12 @@ function EditShopModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const localId = (editingShop as LocalShop)?.local_id || String(editingShop!.id);
-        const localShop = {
-          id: editingShop!.id,
-          name: name.trim(),
-          is_active: isActive === "active",
-        };
-        await insertOrUpdateLocalShop(localShop, localId, "update");
-        await queueSyncAction("PATCH", `/shops/${editingShop!.id}`, payload, {});
-        onSaved({ ...localShop, local_id: localId, status: "pending", sync_action: "update" } as LocalShop);
-        showToast({ message: "Нет сети. Изменения сохранены локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -334,7 +311,7 @@ function EditShopModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -407,9 +384,7 @@ export default function ShopsScreen() {
     setShops,
     loading,
     refreshing,
-    error,
     handleRefresh,
-    retryFetch,
   } = useShops({ token });
 
   const [createVisible, setCreateVisible] = React.useState(false);
@@ -449,10 +424,9 @@ export default function ShopsScreen() {
           text: confirmWord,
           style: shop.is_active ? "destructive" : "default",
           onPress: async () => {
-            const actionWord = shop.is_active ? "deactivate" : "activate";
-            const now = new Date().toISOString();
-            const localId = (shop as LocalShop)?.local_id ?? String(shop.id);
-            // Optimistic update
+            // Optimistic update — instant feedback for a fast toggle. Rolled
+            // back on any error (including offline) so the visible state
+            // always matches what's actually persisted server-side.
             setShops((prev) => prev.map((s) =>
               s.id === shop.id ? { ...s, is_active: !s.is_active } : s
             ));
@@ -461,16 +435,15 @@ export default function ShopsScreen() {
               setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
               showToast({ message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`, variant: "success" });
             } catch (e) {
+              setShops((prev) => prev.map((s) =>
+                s.id === shop.id ? { ...s, is_active: shop.is_active } : s
+              ));
               if (e instanceof ApiError && e.status === 0) {
-                // Offline: save locally, queue sync action
-                await insertOrUpdateLocalShop({ ...shop, is_active: !shop.is_active }, localId, "update");
-                await queueSyncAction("PATCH", `/shops/${shop.id}`, { is_active: !shop.is_active }, { "Idempotency-Key": `local-shop-${localId}-${Date.now()}` });
-                showToast({ message: "Нет сети. Изменение сохранено локально.", variant: "warning" });
+                showToast({
+                  message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
               } else {
-                // Revert optimistic update on non-offline error
-                setShops((prev) => prev.map((s) =>
-                  s.id === shop.id ? { ...s, is_active: shop.is_active } : s
-                ));
                 showToast({ message: "Не удалось изменить статус.", variant: "error" });
               }
             }
@@ -548,13 +521,7 @@ export default function ShopsScreen() {
       )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => setCreateVisible(true)}
-        className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-        style={{ elevation: 6 }}
-      >
-        <MaterialIcons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      <FAB onPress={() => setCreateVisible(true)} />
 
       <CreateShopModal
         visible={createVisible}

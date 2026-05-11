@@ -41,7 +41,6 @@ interface ProductCardProps {
   onEdit: () => void;
   onDelete: () => void;
   canEdit: boolean;
-  token?: string | null;
 }
 
 function ProductCardImpl({
@@ -50,7 +49,6 @@ function ProductCardImpl({
   onEdit,
   onDelete,
   canEdit,
-  token,
 }: ProductCardProps) {
   const isLow =
     item.low_stock_alert != null && item.stock_quantity <= item.low_stock_alert;
@@ -150,7 +148,6 @@ function ProductCardImpl({
  */
 export const ProductCard = React.memo(ProductCardImpl, (prev, next) => {
   if (prev.canEdit !== next.canEdit) return false;
-  if (prev.token !== next.token) return false;
   const a = prev.item;
   const b = next.item;
   return (

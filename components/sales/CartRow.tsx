@@ -23,6 +23,7 @@ export const CartRow = React.memo(function CartRow({
   onPriceModeChange,
   onQuantityChange,
   onQuantityBlur,
+  onQuantityAdjust,
   onMarkupChange,
   onPriceChange,
 }: {
@@ -32,6 +33,9 @@ export const CartRow = React.memo(function CartRow({
   onPriceModeChange: (productId: string, mode: PriceMode) => void;
   onQuantityChange: (productId: string, value: string) => void;
   onQuantityBlur: (productId: string) => void;
+  /** ±1 stepper invoked by the round +/− buttons next to the quantity
+   *  input. Parent handles stock cap + remove-on-zero. */
+  onQuantityAdjust: (productId: string, delta: number) => void;
   onMarkupChange: (productId: string, value: string) => void;
   onPriceChange: (productId: string, value: string) => void;
 }) {
@@ -73,15 +77,32 @@ export const CartRow = React.memo(function CartRow({
       </View>
 
       <View className="flex-row items-center gap-3">
-        <View className="w-20">
-          <Input
-            value={item.quantityInput ?? String(item.quantity)}
-            onChangeText={(v) => onQuantityChange(productId, v)}
-            onBlur={() => onQuantityBlur(productId)}
-            keyboardType="numeric"
-            placeholder="Кол-во"
-            className="py-1 text-xs text-center"
-          />
+        <View className="flex-row items-center gap-2">
+          <TouchableOpacity
+            onPress={() => onQuantityAdjust(productId, -1)}
+            hitSlop={6}
+            className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="remove" size={14} color="#64748b" />
+          </TouchableOpacity>
+          <View className="w-16">
+            <Input
+              value={item.quantityInput ?? String(item.quantity)}
+              onChangeText={(v) => onQuantityChange(productId, v)}
+              onBlur={() => onQuantityBlur(productId)}
+              keyboardType="numeric"
+              selectTextOnFocus
+              placeholder="Кол-во"
+              className="py-1 text-xs text-center"
+            />
+          </View>
+          <TouchableOpacity
+            onPress={() => onQuantityAdjust(productId, 1)}
+            hitSlop={6}
+            className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-700 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="add" size={14} color="#64748b" />
+          </TouchableOpacity>
         </View>
         {item.priceMode === "markup" ? (
           <View className="flex-1">

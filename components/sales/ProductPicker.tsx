@@ -53,6 +53,8 @@ export function ProductPicker({
   hasMore = false,
   onLoadMore,
   loading = false,
+  canCreate = false,
+  onRequestCreate,
 }: {
   visible: boolean;
   products: Product[];
@@ -62,6 +64,12 @@ export function ProductPicker({
   hasMore?: boolean;
   onLoadMore?: () => void;
   loading?: boolean;
+  /** Show the inline "+ Create new product" CTA. Off by default for
+   *  backward-compat with read-only call sites. */
+  canCreate?: boolean;
+  /** Called when the user taps the CTA — opens caller's ProductFormModal
+   *  pre-filled with this name (the current search query, trimmed). */
+  onRequestCreate?: (initialName: string) => void;
 }) {
   const [search, setSearch] = React.useState("");
   const [showScanner, setShowScanner] = React.useState(false);
@@ -136,6 +144,37 @@ export function ProductPicker({
     [loadingMore]
   );
 
+  // CTA always rendered when the user is allowed to create — at the top of
+  // the list. A non-empty search trims into a "Create «xyz»" affordance so
+  // the user can spin up a new SKU without retyping the name they just
+  // searched for.
+  const trimmedSearch = search.trim();
+  const showCreateCta = canCreate && !!onRequestCreate;
+  const handleCreate = React.useCallback(() => {
+    onRequestCreate?.(trimmedSearch);
+  }, [onRequestCreate, trimmedSearch]);
+
+  const listHeader = React.useMemo(
+    () =>
+      showCreateCta ? (
+        <TouchableOpacity
+          onPress={handleCreate}
+          className="flex-row items-center gap-3 py-3.5 mb-1 border-b border-slate-100 dark:border-zinc-800 active:opacity-70"
+        >
+          <View className="w-9 h-9 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
+            <MaterialIcons name="add" size={20} color="#0a7ea4" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-primary-500">
+              {trimmedSearch ? `Создать «${trimmedSearch}»` : "Создать новый товар"}
+            </Text>
+            <Text variant="small">Добавить в каталог прямо отсюда.</Text>
+          </View>
+        </TouchableOpacity>
+      ) : null,
+    [showCreateCta, handleCreate, trimmedSearch]
+  );
+
   return (
     <Modal
       visible={visible}
@@ -186,6 +225,7 @@ export function ProductPicker({
           keyExtractor={keyExtractor}
           contentContainerStyle={{ padding: 16 }}
           renderItem={renderItem}
+          ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
           ListFooterComponent={listFooter}
           onEndReached={hasMore ? onLoadMore : undefined}

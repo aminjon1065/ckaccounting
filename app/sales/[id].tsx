@@ -5,15 +5,17 @@ import { Alert, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import * as Crypto from "expo-crypto";
 
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
 import { api, type Sale, type SaleItem } from "@/lib/api";
-import { buildReceiptText, generateReceiptHtml } from "@/lib/receipt";
+import { generateReceiptHtml } from "@/lib/receipt";
 import { getLocalSaleById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
-import { can } from "@/lib/permissions";
 import { useToast } from "@/store/toast";
+import { can } from "@/lib/permissions";
 import { ReturnSaleModal } from "@/components/sales/ReturnSaleModal";
+import { EditSaleModal } from "@/components/sales/EditSaleModal";
 
 function fmt(n: number) {
   return Math.round(n)
@@ -97,14 +99,46 @@ function SummaryRow({
 export default function SaleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { token, user } = useAuth();
-  const router = useRouter();
   const { showToast } = useToast();
+  const router = useRouter();
 
   const [sale, setSale] = React.useState<Sale | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
-  const [isOffline, setIsOffline] = React.useState(false);
   const [returnModalVisible, setReturnModalVisible] = React.useState(false);
+  const [editModalVisible, setEditModalVisible] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+
+  const handleDelete = React.useCallback(() => {
+    if (!sale || !token) return;
+    Alert.alert(
+      "Удалить продажу?",
+      "Товары будут возвращены на склад. Действие нельзя отменить.",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const bytes = await Crypto.getRandomBytesAsync(16);
+              const idempotencyKey = Array.from(bytes)
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("");
+              await api.sales.delete(sale.id, token, idempotencyKey);
+              showToast({ message: "Продажа удалена", variant: "success" });
+              router.back();
+            } catch (e: any) {
+              Alert.alert("Ошибка", e?.message ?? "Не удалось удалить продажу.");
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [sale, token, router, showToast]);
 
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
@@ -151,14 +185,12 @@ export default function SaleDetailScreen() {
   try {
     const s = await api.sales.get(id, token);
     setSale(s);
-    setIsOffline(false);
   } catch (e: any) {
-    const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-    if (isOfflineError) {
-      setIsOffline(true);
-      if (!local) setError("Нет сети. Продажа недоступна офлайн.");
-    } else {
-      if (!local) setError("Не удалось загрузить продажу.");
+    if (!local) {
+      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+      setError(isOfflineError
+        ? "Нет сети. Продажа недоступна офлайн."
+        : "Не удалось загрузить продажу.");
     }
   }
   }, [id, token]);
@@ -223,15 +255,45 @@ export default function SaleDetailScreen() {
           <Text variant="h4">
             {sale.customer_name || "Покупатель"}
           </Text>
-          <Text variant="muted" className="mt-0.5">{fmtDate(sale.created_at)}</Text>
+          <View className="flex-row items-center gap-1 mt-0.5">
+            <Text variant="muted">{fmtDate(sale.created_at)}</Text>
+            {sale.seller_name ? (
+              <>
+                <Text variant="muted">·</Text>
+                <MaterialIcons name="person" size={13} color="#94a3b8" />
+                <Text variant="muted" numberOfLines={1}>
+                  {sale.seller_name}
+                </Text>
+              </>
+            ) : null}
+          </View>
         </View>
         <TouchableOpacity
           onPress={handleShareReceipt}
           hitSlop={10}
-          className="mr-3 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+          className="mr-2 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
         >
           <MaterialIcons name="share" size={18} color="#0a7ea4" />
         </TouchableOpacity>
+        {can(user?.role, "sales:edit") && (
+          <TouchableOpacity
+            onPress={() => setEditModalVisible(true)}
+            hitSlop={10}
+            className="mr-2 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+          >
+            <MaterialIcons name="edit" size={18} color="#0a7ea4" />
+          </TouchableOpacity>
+        )}
+        {can(user?.role, "sales:delete") && (
+          <TouchableOpacity
+            onPress={handleDelete}
+            disabled={deleting}
+            hitSlop={10}
+            className="mr-2 w-10 h-10 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center"
+          >
+            <MaterialIcons name="delete-outline" size={18} color="#ef4444" />
+          </TouchableOpacity>
+        )}
         <View className="flex-row items-center gap-2">
           {sale.type === "service" && <Badge variant="secondary">Услуга</Badge>}
           {hasDebt && <Badge variant="destructive">Долг</Badge>}
@@ -337,6 +399,19 @@ export default function SaleDetailScreen() {
           onSuccess={() => {
             setReturnModalVisible(false);
             router.back();
+          }}
+        />
+      )}
+
+      {sale && token && (
+        <EditSaleModal
+          visible={editModalVisible}
+          sale={sale}
+          token={token}
+          onClose={() => setEditModalVisible(false)}
+          onSuccess={(updated) => {
+            setSale(updated);
+            setEditModalVisible(false);
           }}
         />
       )}

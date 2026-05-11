@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
 import { api, ApiError, type Shop, type ShopSettings } from "@/lib/api";
-import { getLocalShops, queueSyncAction } from "@/lib/db";
+import { getLocalShops } from "@/lib/db";
 import { useToast } from "@/store/toast";
 
 export function ShopSettingsModal({
@@ -95,11 +95,12 @@ export function ShopSettingsModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("PATCH", `/settings${selectedShopId ? `?shop_id=${selectedShopId}` : ""}`, payload, {});
-        showToast({ message: "Нет сети. Настройки сохранены локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Не удалось сохранить.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Не удалось сохранить.");
       }
     } finally {
       setSubmitting(false);

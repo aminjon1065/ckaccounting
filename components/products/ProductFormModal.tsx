@@ -4,16 +4,14 @@ import * as ImagePicker from "expo-image-picker";
 import * as React from "react";
 import {
   Alert,
-  Image,
-  type ImageSourcePropType,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TextInput as RNTextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Image, type ImageSource } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
@@ -25,18 +23,33 @@ import {
   type Product,
   type Shop,
 } from "@/lib/api";
-import { getLocalShops, insertOrUpdateProduct } from "@/lib/db";
-import type { LocalProduct } from "@/lib/db";
+import { getLocalShops } from "@/lib/db";
 import {
   finishSystemUiBiometricSuppression,
   suppressBiometricRelockForSystemUi,
 } from "@/lib/biometricRelock";
 import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 interface FormModalProps {
   visible: boolean;
   editing: Product | null;
+  /**
+   * Optional seed for the name field when opening for a fresh create.
+   * Used by inline-create flows (e.g. the purchase product picker passes
+   * the user's search string so they don't retype it).
+   */
+  initialName?: string;
+  /**
+   * When set, lock the product's shop to this id and hide the shop picker.
+   * Used by inline-create flows inside purchase / sale modals — the parent
+   * has already chosen the target shop, and letting the user pick a
+   * different one here causes the backend to reject the parent submission
+   * with "Resource not Found" (the purchase shop won't see a product from
+   * another shop).
+   */
+  initialShopId?: number | null;
   onClose: () => void;
   onSaved: (p: Product, wasEditing: boolean) => void;
   token: string;
@@ -101,15 +114,25 @@ async function persistProductPhoto(asset: ImagePicker.ImagePickerAsset): Promise
 export function ProductFormModal({
   visible,
   editing,
+  initialName,
+  initialShopId,
   onClose,
   onSaved,
   token,
 }: FormModalProps) {
   const { user } = useAuth();
-  // Multi-shop UX: picker shown for super_admin and multi-shop owners.
-  // Single-shop owners and sellers get an implicit shop without a picker.
-  const showShopPicker = needsShopPicker(user);
-  const implicitShopId = effectiveShopId(user);
+  const { showToast } = useToast();
+  // Shop scope:
+  //   • `initialShopId` (set by inline-create callers like the purchase /
+  //     sale modal) wins — we're a sub-flow of an already shop-scoped
+  //     parent. The picker stays hidden so the user can't accidentally
+  //     pick another shop and break the parent submission.
+  //   • Otherwise: standalone create flow. Show the picker for
+  //     super_admin / multi-shop owners; single-shop users get the
+  //     implicit shop without a picker.
+  const lockedShopId = initialShopId ?? null;
+  const showShopPicker = lockedShopId === null && needsShopPicker(user);
+  const implicitShopId = lockedShopId ?? effectiveShopId(user);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
 
@@ -167,7 +190,7 @@ export function ProductFormModal({
       setPhotoUri(editing.photo_url ?? editing.image_url ?? null);
       setShopId(editing.shop_id ? String(editing.shop_id) : "");
     } else if (visible && !editing) {
-      setName("");
+      setName(initialName ?? "");
       setCode("");
       setUnit("");
       setCostPrice("");
@@ -183,12 +206,16 @@ export function ProductFormModal({
     }
 
     setError("");
+    // `initialName` is only consumed on the visibility/editing edge — we
+    // intentionally omit it from the dep list so a parent re-render that
+    // changes the seed mid-edit doesn't clobber what the user has typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editing]);
 
   const computedMarkupPrice = pricingMode === "markup"
     ? computeMarkupPrice(costPrice, markupPercent)
     : salePrice;
-  const previewSource = React.useMemo<ImageSourcePropType | undefined>(() => {
+  const previewSource = React.useMemo<ImageSource | undefined>(() => {
     if (!photoUri) return undefined;
     return { uri: photoUri };
   }, [photoUri]);
@@ -346,42 +373,14 @@ export function ProductFormModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        // Offline: save locally, queue for sync
-        const now = new Date().toISOString();
-        const productPayload = {
-          id: editing ? editing.id : generateUUID(),
-          shop_id: showShopPicker && shopId
-            ? parseInt(shopId, 10)
-            : (editing?.shop_id ?? implicitShopId ?? null),
-          name: name.trim(),
-          code: code.trim() || null,
-          unit: unit.trim() || null,
-          cost_price: parseFloat(costPrice),
-          sale_price: pricingMode === "markup" ? parseFloat(computedMarkupPrice) : parseFloat(salePrice),
-          pricing_mode: pricingMode as Product["pricing_mode"],
-          markup_percent: pricingMode === "markup" && markupPercent ? parseFloat(markupPercent) : null,
-          bulk_price: bulkPrice.trim() ? parseFloat(bulkPrice) : null,
-          bulk_threshold: bulkThreshold.trim() ? parseInt(bulkThreshold, 10) : null,
-          stock_quantity: parseFloat(stock),
-          low_stock_alert: lowAlert.trim() ? parseFloat(lowAlert) : null,
-          photo_url: photoUri && !photoUri.startsWith("http") ? photoUri : null,
-          created_at: now,
-          updated_at: now,
-        } as Product;
-
-        await insertOrUpdateProduct(productPayload, editing ? "update" : "create");
-        const optimisticProduct: LocalProduct = {
-          ...productPayload,
-          status: "pending",
-          sync_action: editing ? "update" : "create",
-        } as LocalProduct;
-
-        onSaved(optimisticProduct as Product, !!editing);
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
         setError(
           e instanceof ApiError
-            ? e.message
+            ? e.describeErrors()
             : "Что-то пошло не так. Попробуйте снова."
         );
       }
@@ -409,7 +408,7 @@ export function ProductFormModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -446,7 +445,8 @@ export function ProductFormModal({
                     <Image
                       source={previewSource}
                       style={{ width: "100%", height: "100%" }}
-                      resizeMode="cover"
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
                     />
                     <TouchableOpacity
                       onPress={() => setPhotoUri(null)}

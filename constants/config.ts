@@ -31,6 +31,11 @@ export const STORAGE_KEYS = {
   appTheme: "ck_app_theme",
   dashboardHideAmounts: "ck_dashboard_hide_amounts",
   shopSuspended: "ck_shop_suspended",
+  // Smart-defaults for form re-opens. Each key stores the user's last
+  // choice for that particular form field so the next "Create" pre-fills
+  // it instead of starting from a generic baseline.
+  prefSalePaymentType: "ck_pref_sale_payment_type",
+  prefLastShopId: "ck_pref_last_shop_id",
 } as const;
 
 // ─── App ──────────────────────────────────────────────────────────────────────

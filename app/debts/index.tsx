@@ -6,21 +6,19 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Select, Skeleton, Text } from "@/components/ui";
-import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
+import { Button, EmptyState, FAB, Input, Select, Skeleton, Text } from "@/components/ui";
+import * as Crypto from "expo-crypto";
+import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
-import { getLocalDebts, getLocalShops, insertOrUpdateDebts, localScope, queueSyncAction } from "@/lib/db";
-import { generateUUID } from "@/lib/uuid";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
-import { useLastSyncedAt } from "@/lib/sync/syncStore";
+import { getLocalDebts, getLocalShops, localScope } from "@/lib/db";
+import { useLastSyncedAt } from "@/lib/cache/CacheProvider";
 import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
 
@@ -30,7 +28,7 @@ function fmt(n: number) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
+const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
   const isPositive = item.balance >= 0;
   const accentColor = isPositive ? "#16a34a" : "#ef4444";
   const statusLabel = isPositive ? "Нам должны" : "Мы должны";
@@ -64,6 +62,14 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
               старт {fmt(item.opening_balance)}
             </Text>
           </View>
+          {item.created_by_name ? (
+            <View className="flex-row items-center gap-1 mt-1">
+              <MaterialIcons name="person" size={12} color="#94a3b8" />
+              <Text variant="small" numberOfLines={1}>
+                Дал в долг: {item.created_by_name}
+              </Text>
+            </View>
+          ) : null}
         </View>
         <View className="items-end ml-3">
           <Text className="text-lg font-bold" style={{ color: accentColor }}>
@@ -74,7 +80,7 @@ function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 function DebtSummary({ debts }: { debts: Debt[] }) {
   const receivable = debts.reduce((sum, d) => sum + Math.max(0, d.balance), 0);
@@ -119,7 +125,8 @@ function CreateDebtModal({
   onCreated,
   showShopPicker,
   implicitShopId,
-  userId,
+  userId: _userId,
+  token,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -129,6 +136,7 @@ function CreateDebtModal({
   /** Implicit shop for sellers / single-shop owners. */
   implicitShopId?: number | null;
   userId?: number | null;
+  token: string;
 }) {
   const [shopId, setShopId] = React.useState("");
   const [shops, setShops] = React.useState<{ id: number; name: string }[]>([]);
@@ -137,8 +145,7 @@ function CreateDebtModal({
   const [openingBalance, setOpeningBalance] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-
-  const { refreshPendingActions, triggerSync } = useSyncMethods();
+  const { showToast } = useToast();
 
   React.useEffect(() => {
     if (visible) {
@@ -182,10 +189,7 @@ function CreateDebtModal({
         setError("Введите сумму без минуса.");
         return;
       }
-      const signedOpeningBalance = direction === "receivable" ? amount : -amount;
-      const debtId = generateUUID();
-      const payload: CreateDebtPayload & { id: string } = {
-        id: debtId,
+      const payload: CreateDebtPayload = {
         person_name: personName.trim(),
         direction,
       };
@@ -196,39 +200,19 @@ function CreateDebtModal({
         payload.opening_balance = amount;
       }
 
-      const newDebt: Debt & { sync_action: "create" } = {
-        id: debtId,
-        shop_id: selectedShopId,
-        user_id: userId ?? undefined,
-        person_name: payload.person_name,
-        opening_balance: signedOpeningBalance,
-        balance: signedOpeningBalance,
-        direction,
-        sync_action: "create",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      await insertOrUpdateDebts([newDebt], selectedShopId);
-      await queueSyncAction(
-        "POST",
-        "/debts",
-        payload,
-        { "Idempotency-Key": `debt-${debtId}` },
-        `debt-${debtId}`
-      );
-      await refreshPendingActions();
-
-      try {
-        await triggerSync();
-      } catch (e) {
-        reportError(e, { tag: "debt-create-sync" });
-      }
-      // Always proceed — debt is saved locally and will sync when online
-      onCreated(newDebt);
+      const idempotencyKey = await Crypto.randomUUID();
+      const created = await api.debts.create(payload, token, idempotencyKey);
+      onCreated(created);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
+      } else {
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -253,7 +237,7 @@ function CreateDebtModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -344,11 +328,10 @@ function CreateDebtModal({
 }
 
 export default function DebtsScreen() {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const { showToast } = useToast();
   const lastSyncedAt = useLastSyncedAt();
   const router = useRouter();
-  const isSeller = user?.role === "seller";
 
   const [debts, setDebts] = React.useState<Debt[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -358,6 +341,14 @@ export default function DebtsScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
   const canCreateDebt = can(user?.role, "debts:create");
+
+  const renderDebt = React.useCallback(
+    ({ item }: { item: Debt }) => (
+      <DebtCard item={item} onPress={() => router.push(`/debts/${item.id}`)} />
+    ),
+    [router]
+  );
+  const debtKey = React.useCallback((item: Debt) => String(item.id), []);
 
   const fetchDebts = React.useCallback(
     async (reset = false) => {
@@ -431,7 +422,6 @@ export default function DebtsScreen() {
       ) : (
         <FlatList
           data={debts}
-          keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           ListHeaderComponent={debts.length ? <DebtSummary debts={debts} /> : null}
           refreshing={refreshing}
@@ -446,48 +436,40 @@ export default function DebtsScreen() {
           }}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            <View className="items-center justify-center py-20">
-              <MaterialIcons name="people" size={48} color="#94a3b8" />
-              <Text variant="h5" className="mt-4 text-center">
-                Пока нет записей
-              </Text>
-              <Text variant="muted" className="mt-3 text-center">
-                Добавьте человека или поставщика, чтобы видеть баланс и историю операций.
-              </Text>
-            </View>
+            <EmptyState
+              icon="people"
+              title="Пока нет записей"
+              description="Добавьте человека или поставщика, чтобы видеть баланс и историю операций."
+            />
           }
           ListFooterComponent={
             loadingMore ? (
               <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
             ) : null
           }
-          renderItem={({ item }) => (
-            <DebtCard item={item} onPress={() => router.push(`/debts/${item.id}`)} />
-          )}
+          renderItem={renderDebt}
+          keyExtractor={debtKey}
         />
       )}
 
       {canCreateDebt && (
-        <TouchableOpacity
-          onPress={() => setCreateVisible(true)}
-          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-          style={{ elevation: 6 }}
-        >
-          <MaterialIcons name="add" size={28} color="#fff" />
-        </TouchableOpacity>
+        <FAB onPress={() => setCreateVisible(true)} />
       )}
 
-      <CreateDebtModal
-        visible={createVisible}
-        onClose={() => setCreateVisible(false)}
-        onCreated={(d) => {
-          setDebts((prev) => [d, ...prev]);
-          showToast({ message: "Запись добавлена", variant: "success" });
-        }}
-        showShopPicker={needsShopPicker(user)}
-        implicitShopId={effectiveShopId(user)}
-        userId={user?.id}
-      />
+      {token && (
+        <CreateDebtModal
+          visible={createVisible}
+          onClose={() => setCreateVisible(false)}
+          onCreated={(d) => {
+            setDebts((prev) => [d, ...prev]);
+            showToast({ message: "Запись добавлена", variant: "success" });
+          }}
+          showShopPicker={needsShopPicker(user)}
+          implicitShopId={effectiveShopId(user)}
+          userId={user?.id}
+          token={token}
+        />
+      )}
     </SafeAreaView>
   );
 }

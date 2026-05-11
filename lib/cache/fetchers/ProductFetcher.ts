@@ -1,11 +1,11 @@
-import { api, getLastServerTime, Product } from "../api";
+import { api, getLastServerTime } from "../../api";
 import {
   getProductsLastSyncedAt,
   insertOrUpdateProducts,
   setProductsLastSyncedAt,
-} from "../db";
+} from "../../db";
 import { reportError } from "@/lib/observability/reporter";
-import { encodeCursor } from "./cursor";
+import { encodeCursor } from "../cursor";
 
 export interface ProductFetcherDeps {
   token: string;

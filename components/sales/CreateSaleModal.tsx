@@ -1,11 +1,11 @@
 import * as React from "react";
 import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
 import { Modal, TouchableOpacity, View, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text, Button, Input, Select } from "@/components/ui";
 import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
@@ -13,17 +13,18 @@ import { defaultPriceMode, deriveProductPrice, fmt, PAYMENT_ICONS, PAYMENT_LABEL
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
 import { CartRow } from "./CartRow";
 import { ServiceItemRow } from "./ServiceItemRow";
-import { getLocalProducts, insertOrUpdateProducts, insertOrUpdateSale, decrementLocalProductStock, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, getLocalProductById, localScope } from "@/lib/db";
+import { getLocalProducts, insertOrUpdateProducts, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, localScope } from "@/lib/db";
 import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
-import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { ProductFormModal } from "@/components/products/ProductFormModal";
+import { STORAGE_KEYS } from "@/constants/config";
 
-function generateUUID() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+type PaymentType = "cash" | "card" | "transfer";
+const PAYMENT_TYPES: PaymentType[] = ["cash", "card", "transfer"];
+
+function parsePaymentTypePref(value: string | null): PaymentType {
+  return PAYMENT_TYPES.includes(value as PaymentType) ? (value as PaymentType) : "cash";
 }
 
 export function CreateSaleModal({
@@ -46,7 +47,6 @@ export function CreateSaleModal({
   const canEditPrice = user?.role !== "seller";
   const [saleType, setSaleType] = React.useState<SaleType>("product");
   const { showToast } = useToast();
-  const { refreshPendingActions } = useSyncMethods();
 
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
@@ -65,20 +65,59 @@ export function CreateSaleModal({
   const [customerName, setCustomerName] = React.useState("");
   const [discount, setDiscount] = React.useState("");
   const [paid, setPaid] = React.useState("");
+  // Tracks whether the cashier has hand-typed into "Оплачено". While false
+  // (default state), the field auto-mirrors the cart total — fits the
+  // typical bazaar happy-path where the customer pays in full and the
+  // cashier just hits submit. Once they touch the field we stop touching
+  // it; partial payments and overpayments stay sticky.
+  const paidEditedRef = React.useRef(false);
+  const handlePaidChange = React.useCallback((value: string) => {
+    paidEditedRef.current = true;
+    setPaid(value);
+  }, []);
   const [notes, setNotes] = React.useState("");
-  const [paymentType, setPaymentType] = React.useState<"cash" | "card" | "transfer">("cash");
+  const [paymentType, setPaymentType] = React.useState<PaymentType>("cash");
+
+  // Restore the user's last payment-type choice when the modal opens.
+  // SecureStore lookups are async, so the initial render keeps the "cash"
+  // default; the value updates on the next tick. Persisted on submit.
+  React.useEffect(() => {
+    if (!visible) return;
+    SecureStore.getItemAsync(STORAGE_KEYS.prefSalePaymentType)
+      .then((stored) => setPaymentType(parsePaymentTypePref(stored)))
+      .catch(() => {});
+  }, [visible]);
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [scannerVisible, setScannerVisible] = React.useState(false);
   const [productsHasMore, setProductsHasMore] = React.useState(false);
   const [productsNextCursor, setProductsNextCursor] = React.useState<string | null>(null);
+  // Inline product create flow — triggered from the picker's "+ Создать"
+  // CTA when the seller types a name that isn't in the catalog yet.
+  const [createProductVisible, setCreateProductVisible] = React.useState(false);
+  const [createProductSeed, setCreateProductSeed] = React.useState("");
+  const canCreateProduct = can(user?.role, "products:edit");
 
   // Load shops when a picker is needed. Server-side scoping ensures
   // owners get only their owned shops, super_admin gets the full list.
   React.useEffect(() => {
     if (visible && showShopPicker) {
       api.shops.list(token)
-        .then((res) => setShops(res.data ?? []))
+        .then((res) => {
+          const list = res.data ?? [];
+          setShops(list);
+          // Pre-fill from the last successful sale if the saved shop is
+          // still in the user's allowed set — multi-shop owners doing PoS
+          // typically work one shop at a time, no need to re-select on
+          // every "Create sale".
+          SecureStore.getItemAsync(STORAGE_KEYS.prefLastShopId)
+            .then((stored) => {
+              if (stored && list.some((s) => String(s.id) === stored)) {
+                setShopId(stored);
+              }
+            })
+            .catch(() => {});
+        })
         .catch((e) => reportError(e, { tag: "sale-modal-shops-load" }));
     }
   }, [visible, showShopPicker, token]);
@@ -136,6 +175,7 @@ export function CreateSaleModal({
     setPaymentType("cash"); setError("");
     serviceIdRef.current = 0;
     setShopId("");
+    paidEditedRef.current = false;
   }, [visible]);
 
   // Effective shop = picker selection (when picker is shown) OR the user's
@@ -218,6 +258,22 @@ export function CreateSaleModal({
   const handlePickerClose = React.useCallback(() => {
     setPickerVisible(false);
   }, []);
+
+  const handleRequestCreateProduct = React.useCallback((seedName: string) => {
+    setCreateProductSeed(seedName);
+    setCreateProductVisible(true);
+  }, []);
+
+  const handleProductCreated = React.useCallback((saved: Product) => {
+    // Keep the picker's catalogue in sync — the user will see the new SKU
+    // if they reopen the picker mid-sale.
+    setProducts((prev) => (prev.some((p) => p.id === saved.id) ? prev : [saved, ...prev]));
+    addToCart(saved);
+    setCreateProductVisible(false);
+    setCreateProductSeed("");
+    setPickerVisible(false);
+    showToast({ message: `${saved.name} добавлен в каталог и в корзину`, variant: "success" });
+  }, [addToCart, showToast]);
 
   // Handlers below are intentionally `useCallback`-stable (empty / minimal
   // deps) so the memoized CartRow / ServiceItemRow components can rely on
@@ -330,6 +386,42 @@ export function CreateSaleModal({
     setCart((prev) => prev.filter((c) => c.product.id !== productId));
   }, []);
 
+  // ±1 stepper used by the CartRow's plus / minus buttons. Mirrors the
+  // purchase modal's pattern. Hitting "−" past 1 drops the line entirely
+  // (no zero-quantity items sit in the cart); hitting "+" past stock
+  // shows a non-blocking warning and stops at the available quantity.
+  const adjustCartQuantity = React.useCallback((productId: string, delta: number) => {
+    setCart((prev) => {
+      const target = prev.find((c) => c.product.id === productId);
+      if (!target) return prev;
+
+      const availableQty = target.product.stock_quantity ?? 0;
+      const nextQty = target.quantity + delta;
+      if (nextQty > availableQty) {
+        showToast({
+          message: `Нет столько на складе (доступно: ${availableQty})`,
+          variant: "warning",
+        });
+        return prev;
+      }
+
+      return prev
+        .map((c) => {
+          if (c.product.id !== productId) return c;
+          const quantity = Math.max(0, nextQty);
+          return {
+            ...c,
+            quantity,
+            quantityInput: String(quantity),
+            price: c.priceMode === "manual"
+              ? c.price
+              : deriveProductPrice(c.product, c.priceMode, c.markupPercent, Math.max(quantity, 1)),
+          };
+        })
+        .filter((c) => c.quantity > 0);
+    });
+  }, [showToast]);
+
   // ── Service item helpers ────────────────────────────────────────────────────
 
   const addServiceItem = React.useCallback(() => {
@@ -393,7 +485,16 @@ export function CreateSaleModal({
   const discountVal = parseFloat(discount) || 0;
   const total = Math.max(0, subtotal - discountVal);
   const paidVal = parseFloat(paid) || 0;
-  const debt = Math.max(0, total - paidVal);
+  const unpaid = Math.max(0, total - paidVal); // amount still owed
+  const overpaid = Math.max(0, paidVal - total); // amount paid above the bill
+
+  // Sync "Оплачено" with the running total until the cashier types into
+  // the field. Re-fires whenever the cart / discount changes so adding a
+  // new item bumps the prefilled amount automatically.
+  React.useEffect(() => {
+    if (paidEditedRef.current) return;
+    setPaid(total > 0 ? String(total) : "");
+  }, [total]);
 
   // ── Submit ──────────────────────────────────────────────────────────────────
 
@@ -452,6 +553,13 @@ export function CreateSaleModal({
       .join("");
     try {
       const created = await api.sales.create(payload, token, idempotencyKey);
+      // Persist payment-type + shop choice so the next "Create sale" opens
+      // with the same selection — typical PoS use is the same shop / payment
+      // type for dozens of sales in a row.
+      SecureStore.setItemAsync(STORAGE_KEYS.prefSalePaymentType, paymentType).catch(() => {});
+      if (showShopPicker && shopId) {
+        SecureStore.setItemAsync(STORAGE_KEYS.prefLastShopId, shopId).catch(() => {});
+      }
       // Check low stock for sold products (online case)
       if (saleType === "product") {
         for (const c of cart) {
@@ -477,69 +585,10 @@ export function CreateSaleModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const now = new Date().toISOString();
-        const shopIdForSale = (showShopPicker && shopId ? Number(shopId) : implicitShopId) ?? 0;
-        const localSale: Sale = {
-          id: generateUUID(),
-          type: saleType,
-          customer_name: customerName.trim() || null,
-          total,
-          discount: discountVal,
-          paid: paidVal,
-          debt,
-          payment_type: paymentType,
-          notes: notes.trim() || undefined,
-          items: saleType === "product"
-            ? cart.map((c) => ({
-                id: generateUUID(),
-                product_id: c.product.id,
-                name: null,
-                product_name: c.product.name,
-                unit: c.product.unit ?? undefined,
-                quantity: c.quantity,
-                price: c.price,
-                total: c.price * c.quantity,
-              }))
-            : serviceItems.map((s) => ({
-                id: generateUUID(),
-                product_id: null,
-                name: null,
-                product_name: null,
-                service_name: s.name.trim(),
-                unit: s.unit.trim() || undefined,
-                quantity: s.quantity,
-                price: parseFloat(s.price) || 0,
-                total: (parseFloat(s.price) || 0) * s.quantity,
-              })),
-          created_at: now,
-          updated_at: now,
-        };
-
-        // Save locally and decrement stock immediately
-        await insertOrUpdateSale(localSale, shopIdForSale, user?.id);
-        for (const c of cart) {
-          await decrementLocalProductStock(c.product.id, c.quantity);
-          // Check low stock and notify
-          const updatedProduct = await getLocalProductById(c.product.id);
-          if (updatedProduct && updatedProduct.low_stock_alert && updatedProduct.low_stock_alert > 0) {
-            if (updatedProduct.stock_quantity <= updatedProduct.low_stock_alert) {
-              const alreadySent = await hasLowStockAlertBeenSent(c.product.id, shopIdForSale);
-              if (!alreadySent) {
-                await insertNotification(
-                  "low_stock",
-                  `Мало товара: ${c.product.name}`,
-                  `Остаток ${updatedProduct.stock_quantity} ${c.product.unit ?? "шт"} при минимуме ${updatedProduct.low_stock_alert}`,
-                  { product_id: c.product.id, shop_id: shopIdForSale }
-                );
-                await markLowStockAlertSent(c.product.id, shopIdForSale);
-              }
-            }
-          }
-        }
-        await refreshPendingActions();
-        showToast({ message: "Нет сети. Продажа сохранена локально.", variant: "warning" });
-        onCreated(localSale);
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
         // Show the full per-field error breakdown when the server
         // returned a 422 with `errors`. Just `e.message` often shows only
@@ -579,7 +628,7 @@ export function CreateSaleModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -702,6 +751,7 @@ export function CreateSaleModal({
                         onPriceModeChange={updatePriceMode}
                         onQuantityChange={updateCartQuantity}
                         onQuantityBlur={finalizeCartQuantity}
+                        onQuantityAdjust={adjustCartQuantity}
                         onMarkupChange={updateMarkup}
                         onPriceChange={updatePrice}
                       />
@@ -799,11 +849,11 @@ export function CreateSaleModal({
             {/* ── Paid ─────────────────────────────────────────────────────── */}
             <Input
               label="Оплачено"
-              placeholder={fmt(total)}
+              placeholder="0"
               value={paid}
-              onChangeText={setPaid}
+              onChangeText={handlePaidChange}
               keyboardType="numeric"
-              hint="Оставьте пустым для полной оплаты"
+              hint="По умолчанию равно сумме счёта. Измените, если клиент оплатил частично или с переплатой."
               className="mb-3"
             />
 
@@ -834,17 +884,31 @@ export function CreateSaleModal({
               )}
               <View className="flex-row justify-between border-t border-slate-200 dark:border-zinc-700 pt-2 mt-1">
                 <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Сумма
+                  Должно быть
                 </Text>
                 <Text className="text-base font-bold text-slate-900 dark:text-slate-50">
                   {fmt(total)}
                 </Text>
               </View>
-              {paidVal > 0 && paidVal < total && (
+              <View className="flex-row justify-between">
+                <Text variant="muted">Оплачено</Text>
+                <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  {fmt(paidVal)}
+                </Text>
+              </View>
+              {unpaid > 0 && (
                 <View className="flex-row justify-between">
-                  <Text variant="muted">Остаток долга</Text>
+                  <Text variant="muted">Не доплачено</Text>
                   <Text className="text-sm font-semibold text-red-500">
-                    {fmt(debt)}
+                    {fmt(unpaid)}
+                  </Text>
+                </View>
+              )}
+              {overpaid > 0 && (
+                <View className="flex-row justify-between">
+                  <Text variant="muted">Переплата</Text>
+                  <Text className="text-sm font-semibold text-green-600">
+                    {fmt(overpaid)}
                   </Text>
                 </View>
               )}
@@ -873,6 +937,32 @@ export function CreateSaleModal({
           loadingMore={productsLoading && products.length > 0}
           hasMore={productsHasMore}
           onLoadMore={loadMoreProducts}
+          canCreate={canCreateProduct}
+          onRequestCreate={handleRequestCreateProduct}
+        />
+      )}
+
+      {/* Inline product create — opens from the picker's "+ Создать" CTA.
+          Skipped for service-type sales (no catalogue to extend) and for
+          users without products:edit permission. The new product is locked
+          to the sale's shop so the sale submission later doesn't 404 on
+          a cross-shop product_id. */}
+      {saleType === "product" && canCreateProduct && (
+        <ProductFormModal
+          visible={createProductVisible}
+          editing={null}
+          initialName={createProductSeed}
+          initialShopId={
+            showShopPicker
+              ? (shopId ? Number(shopId) : null)
+              : implicitShopId
+          }
+          onClose={() => {
+            setCreateProductVisible(false);
+            setCreateProductSeed("");
+          }}
+          onSaved={handleProductCreated}
+          token={token}
         />
       )}
 

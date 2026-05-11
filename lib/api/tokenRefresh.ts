@@ -20,7 +20,7 @@
 // will do so iff refresh genuinely cannot recover. This avoids the UI
 // mistakenly bouncing the user to /login while a refresh is mid-flight.
 
-import { triggerTokenExpiry } from "./TokenExpiryBridge";
+import { triggerTokenExpiry } from "./tokenExpiry";
 import { reportError, reportMessage } from "@/lib/observability/reporter";
 
 let _getToken: (() => string | null) | null = null;

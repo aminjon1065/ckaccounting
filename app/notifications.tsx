@@ -3,7 +3,7 @@ import * as React from "react";
 import { FlatList, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Badge, Card, CardContent, Separator, Text } from "@/components/ui";
+import { Badge, Separator, Text } from "@/components/ui";
 import { getUnreadNotifications, markNotificationsRead, type LocalNotification } from "@/lib/db";
 
 export default function NotificationsScreen() {
@@ -58,7 +58,6 @@ export default function NotificationsScreen() {
   }
 
   function renderItem({ item }: { item: LocalNotification }) {
-    const data = item.data ? JSON.parse(item.data) : null;
     return (
       <View key={item.id}>
         <TouchableOpacity

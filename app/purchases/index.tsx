@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Skeleton, Text } from "@/components/ui";
+import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { type Purchase } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
@@ -35,7 +35,7 @@ function fmtDate(iso: string) {
 
 // ─── Purchase card ────────────────────────────────────────────────────────────
 
-function PurchaseCard({
+const PurchaseCard = React.memo(function PurchaseCard({
   item,
   onPress,
 }: {
@@ -63,7 +63,7 @@ function PurchaseCard({
       </Text>
     </TouchableOpacity>
   );
-}
+});
 
 
 
@@ -78,7 +78,6 @@ export default function PurchasesScreen() {
     setPurchases,
     loading,
     refreshing,
-    hasMore,
     loadingMore,
     error,
     handleRefresh,
@@ -145,12 +144,11 @@ export default function PurchasesScreen() {
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            <View className="items-center justify-center py-20">
-              <MaterialIcons name="shopping-bag" size={48} color="#94a3b8" />
-              <Text variant="muted" className="mt-3 text-center">
-                Закупок нет.{"\n"}Нажмите + для записи.
-              </Text>
-            </View>
+            <EmptyState
+              icon="shopping-bag"
+              title="Закупок пока нет"
+              description="Запишите первую закупку у поставщика — кнопка «+» в правом нижнем углу."
+            />
           }
           ListFooterComponent={
             loadingMore ? (
@@ -171,13 +169,7 @@ export default function PurchasesScreen() {
 
       {/* FAB */}
       {can(user?.role, "purchases:create") && (
-        <TouchableOpacity
-          onPress={() => setCreateVisible(true)}
-          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-          style={{ elevation: 6 }}
-        >
-          <MaterialIcons name="add" size={28} color="#fff" />
-        </TouchableOpacity>
+        <FAB onPress={() => setCreateVisible(true)} />
       )}
 
       {/* Create modal */}

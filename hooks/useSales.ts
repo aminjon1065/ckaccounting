@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type Sale, type User } from "@/lib/api";
 import { getLocalSales, localScope } from "@/lib/db";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
-import { useIsSyncing } from "@/lib/sync/syncStore";
+import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
 
 /**
  * Local-first sales feed.
@@ -22,7 +21,7 @@ import { useIsSyncing } from "@/lib/sync/syncStore";
  * data on devices shared between shops. Always pass through localScope now.
  */
 export function useSales({ token, user }: { token: string | null; user: User | null | undefined }) {
-  const { triggerSync, fetchOlderSales } = useSyncMethods();
+  const { triggerSync, fetchOlderSales } = useCacheMethods();
   const isSyncing = useIsSyncing();
 
   const [sales, setSales] = useState<Sale[]>([]);

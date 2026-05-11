@@ -169,7 +169,8 @@ function normalizeProductsPage(page: Paginated<Product>): Paginated<Product> {
 
 function buildProductFormData(
   payload: Partial<CreateProductPayload>,
-  photoUri: string
+  photoUri: string,
+  methodSpoof?: "PATCH" | "PUT"
 ): FormData {
   const fd = new FormData();
   Object.entries(payload).forEach(([k, v]) => {
@@ -180,6 +181,14 @@ function buildProductFormData(
     name: "product.jpg",
     type: "image/jpeg",
   } as unknown as Blob);
+  // Laravel method spoofing: PHP only parses multipart/form-data on POST
+  // requests, so an honest `PATCH` with a file attachment arrives with an
+  // empty $_FILES superglobal. The route is registered for both PUT and
+  // PATCH and Laravel rewrites the request method when it sees `_method`
+  // in the form body.
+  if (methodSpoof) {
+    fd.append("_method", methodSpoof);
+  }
   return fd;
 }
 
@@ -209,9 +218,11 @@ export const productsApi = {
 
   update: (id: string, payload: Partial<CreateProductPayload>, token: string, photoUri?: string) =>
     request<Product>(`/products/${id}`, {
-      method: "PATCH",
+      // Photo-attached updates piggy-back on POST + method spoofing because
+      // PHP refuses to parse multipart on PATCH. Pure-JSON updates stay PATCH.
+      method: photoUri ? "POST" : "PATCH",
       body: photoUri
-        ? buildProductFormData(payload, photoUri)
+        ? buildProductFormData(payload, photoUri, "PATCH")
         : JSON.stringify(payload),
       token,
     }).then(normalizeProductImageUrls),

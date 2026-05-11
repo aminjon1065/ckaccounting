@@ -1,4 +1,4 @@
-import { api, getLastServerTime, Sale } from "../api";
+import { api, getLastServerTime, Sale } from "../../api";
 import {
   getDb,
   getSalesLastSyncedAt,
@@ -6,9 +6,9 @@ import {
   insertOrUpdateRemoteSales,
   setSalesLastSyncedAt,
   setSyncMetadata,
-} from "../db";
+} from "../../db";
 import { reportError } from "@/lib/observability/reporter";
-import { encodeCursor } from "./cursor";
+import { encodeCursor } from "../cursor";
 
 export interface SaleFetcherDeps {
   token: string;

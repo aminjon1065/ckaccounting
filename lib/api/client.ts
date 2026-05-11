@@ -15,7 +15,8 @@
 import NetInfo from "@react-native-community/netinfo";
 import { API_URL, TIMEOUTS } from "@/constants/config";
 import { triggerSuspension } from "@/store/suspension";
-import { attemptTokenRefresh } from "@/lib/sync/TokenRefreshBridge";
+import { attemptTokenRefresh } from "./tokenRefresh";
+import { useNetworkStore } from "@/lib/network/NetworkProvider";
 
 const BASE_URL = API_URL;
 
@@ -54,17 +55,23 @@ export class ApiError extends Error {
 }
 
 // ─── Online probe ───────────────────────────────────────────────────────────
-
-// Cache the last known online state; NetInfo updates it via its own listener.
-// Refreshed at the start of every request via the cached state to avoid an
-// extra event-loop wait when the OS already knows the answer.
-let _isOnlineCache: boolean | null = null;
-NetInfo.addEventListener((state) => {
-  _isOnlineCache = !!state.isConnected && state.isInternetReachable !== false;
-});
+//
+// Reads from the same Zustand store the NetworkProvider listener writes to.
+// One source of truth — no duplicate NetInfo subscriptions, no listener
+// running in this module before React mounts.
+//
+// During the brief boot window before NetworkProvider's `useEffect` fires,
+// the store defaults to `isOnline: true` (optimistic). If the device is
+// actually offline we still degrade gracefully — the fetch below will fail
+// fast with a network error and the retry layer handles it.
 
 async function isOnline(): Promise<boolean> {
-  if (_isOnlineCache !== null) return _isOnlineCache;
+  // Fast path: the listener-driven store value.
+  if (useNetworkStore.getState().isOnline) return true;
+
+  // Listener says we're offline. Double-check via a bounded probe to catch
+  // the case where NetInfo's `isInternetReachable` is stuck at `null` on
+  // Android — those devices would otherwise be perma-offline in our eyes.
   try {
     const state = await Promise.race([
       NetInfo.fetch(),
@@ -94,7 +101,6 @@ function isRetryableStatus(status: number): boolean {
 
 async function withRetry<T>(
   fn: () => Promise<T>,
-  method: string,
   retries = MAX_RETRIES,
   tokenRef?: { current: string | undefined }
 ): Promise<T> {
@@ -157,7 +163,6 @@ export async function request<T>(
   // The closure (fn) reads options.token each time, which will pick up the
   // updated holder.current after a token refresh.
   const tokenHolder = { current: options.token ?? undefined };
-  const method = options.method ?? "GET";
 
   return withRetry(async () => {
     const { token: _token, headers: extraHeaders, ...rest } = options;
@@ -259,7 +264,7 @@ export async function request<T>(
     }
 
     return json as T;
-  }, method, MAX_RETRIES, tokenHolder);
+  }, MAX_RETRIES, tokenHolder);
 }
 
 // ─── Query builder ──────────────────────────────────────────────────────────

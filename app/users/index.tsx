@@ -6,7 +6,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TouchableOpacity,
   View,
@@ -17,13 +16,13 @@ import {
   Avatar,
   Badge,
   Button,
+  FAB,
   Input,
   Select,
   Skeleton,
   Text,
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type CreateUserPayload, type Shop } from "@/lib/api";
-import { queueSyncAction } from "@/lib/db";
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
@@ -33,7 +32,7 @@ import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 
 // ─── User card ────────────────────────────────────────────────────────────────
 
-function UserCard({
+const UserCard = React.memo(function UserCard({
   item,
   currentUserId,
   onEdit,
@@ -118,7 +117,7 @@ function UserCard({
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 // ─── Create user modal ────────────────────────────────────────────────────────
 
@@ -223,20 +222,12 @@ function CreateUserModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("POST", "/users", payload, {});
-        const localUser: AppUser = {
-          id: -Date.now(),
-          name: name.trim(),
-          email: email.trim().toLowerCase(),
-          role,
-          shop_id: resolvedShopId ?? 0,
-          created_at: new Date().toISOString(),
-        };
-        onCreated(localUser);
-        showToast({ message: "Нет сети. Сотрудник сохранён локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -260,7 +251,7 @@ function CreateUserModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -424,18 +415,12 @@ function EditUserModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("PATCH", `/users/${editingUser!.id}`, payload, {});
-        const updatedUser: AppUser = {
-          ...editingUser!,
-          name: name.trim(),
-          role,
-          shop_id: shopPickerVisible && shopId ? parseInt(shopId, 10) : editingUser!.shop_id,
-        };
-        onSaved(updatedUser);
-        showToast({ message: "Нет сети. Изменения сохранены локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -459,7 +444,7 @@ function EditUserModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -538,10 +523,7 @@ export default function UsersScreen() {
     setUsers,
     loading,
     refreshing,
-    error,
-    isOffline,
     handleRefresh,
-    retryFetch,
   } = useUsers({ token });
 
   const [createVisible, setCreateVisible] = React.useState(false);
@@ -604,9 +586,10 @@ export default function UsersScreen() {
               showToast({ message: "Сотрудник удалён", variant: "success" });
             } catch (e) {
               if (e instanceof ApiError && e.status === 0) {
-                await queueSyncAction("DELETE", `/users/${id}`, {}, {});
-                setUsers((prev) => prev.filter((u) => u.id !== id));
-                showToast({ message: "Нет сети. Удаление сохранено в очередь.", variant: "warning" });
+                showToast({
+                  message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
               } else {
                 showToast({ message: "Не удалось удалить сотрудника.", variant: "error" });
               }
@@ -670,13 +653,7 @@ export default function UsersScreen() {
 
       {/* FAB */}
       {can(user?.role, "users:create") && (
-        <TouchableOpacity
-          onPress={() => setCreateVisible(true)}
-          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-          style={{ elevation: 6 }}
-        >
-          <MaterialIcons name="add" size={28} color="#fff" />
-        </TouchableOpacity>
+        <FAB onPress={() => setCreateVisible(true)} />
       )}
 
       <CreateUserModal

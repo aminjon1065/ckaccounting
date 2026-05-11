@@ -1,73 +1,41 @@
 import * as React from "react";
-import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text } from "@/components/ui";
-import {
-  useFailedActionsCount,
-  useIsOnline,
-  useIsSyncing,
-  usePendingActionsCount,
-} from "@/lib/sync/syncStore";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
+import { useIsSyncing } from "@/lib/cache/CacheProvider";
 
 /**
- * Top-of-screen sync/connectivity status banner.
+ * Top-of-screen connectivity / cache-refresh status banner.
  *
- * Renders one of four states (priority order, top wins):
- *   1. failed   — outbox has actions that the server rejected; tappable,
- *                  routes to /sync-errors so the user can act on them.
- *   2. offline  — device has no connectivity. Shows "офлайн".
- *   3. syncing  — outbox push or remote pull is in flight. Animated.
- *   4. pending  — online & idle but the queue still has items waiting.
+ * Online-first build renders one of two states (priority order, top wins):
+ *   1. offline  — device has no connectivity. Shows "офлайн".
+ *   2. syncing  — cache refresh is in flight. Animated.
  *
- * The clean state (online, queue empty, not syncing) renders nothing — a
- * single context read on the happy path.
+ * Clean state (online, idle) renders nothing — a single store read on the
+ * happy path. The pre-migration "pending actions" / "failed actions" branches
+ * are gone with the outbox.
  */
 export function OfflineBanner() {
   const isOnline = useIsOnline();
   const isSyncing = useIsSyncing();
-  const pendingActionsCount = usePendingActionsCount();
-  const failedActionsCount = useFailedActionsCount();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
 
-  const failed = failedActionsCount > 0;
   const offline = !isOnline;
-  const syncing = isSyncing;
-  const pending = !syncing && pendingActionsCount > 0;
+  const syncing = !offline && isSyncing;
 
-  if (!failed && !offline && !syncing && !pending) return null;
+  if (!offline && !syncing) return null;
 
   const top = Platform.OS === "ios" ? insets.top : 0;
-
-  // failed > offline > syncing > pending
-  const variant: "failed" | "offline" | "syncing" | "pending" =
-    failed ? "failed" : offline ? "offline" : syncing ? "syncing" : "pending";
-
-  const text =
-    variant === "failed"
-      ? `${failedActionsCount} ${pluralizeAction(failedActionsCount)} не отправлено · нажмите`
-      : variant === "offline"
-        ? "Нет соединения · работаем офлайн"
-        : variant === "syncing"
-          ? pendingActionsCount > 0
-            ? `Синхронизация · ${pendingActionsCount} ${pluralizeAction(pendingActionsCount)}`
-            : "Синхронизация…"
-          : `Ожидает синхронизации: ${pendingActionsCount}`;
-
-  const handlePress = () => {
-    if (variant === "failed") router.push("/sync-errors");
-  };
-
-  // Only the failed banner is interactive — others stay tap-through so users
-  // can still hit UI underneath.
-  const tapThrough = variant !== "failed";
+  const variant: "offline" | "syncing" = offline ? "offline" : "syncing";
+  const text = variant === "offline"
+    ? "Нет соединения · работаем офлайн"
+    : "Синхронизация…";
 
   return (
-    <Pressable
-      onPress={handlePress}
-      pointerEvents={tapThrough ? "none" : "auto"}
+    <View
+      pointerEvents="none"
       style={[
         styles.container,
         styles[variant],
@@ -77,31 +45,11 @@ export function OfflineBanner() {
       {variant === "syncing" ? (
         <ActivityIndicator size="small" color="#fff" />
       ) : (
-        <MaterialIcons
-          name={
-            variant === "failed"
-              ? "error-outline"
-              : variant === "offline"
-                ? "cloud-off"
-                : "sync"
-          }
-          size={14}
-          color="#fff"
-        />
+        <MaterialIcons name="cloud-off" size={14} color="#fff" />
       )}
       <Text style={styles.text}>{text}</Text>
-    </Pressable>
+    </View>
   );
-}
-
-function pluralizeAction(n: number): string {
-  // 1 действие, 2-4 действия, 5+ действий
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 14) return "действий";
-  if (mod10 === 1) return "действие";
-  if (mod10 >= 2 && mod10 <= 4) return "действия";
-  return "действий";
 }
 
 const styles = StyleSheet.create({
@@ -118,17 +66,11 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
     paddingHorizontal: 12,
   },
-  failed: {
-    backgroundColor: "#dc2626",
-  },
   offline: {
     backgroundColor: "#dc2626",
   },
   syncing: {
     backgroundColor: "#2563eb",
-  },
-  pending: {
-    backgroundColor: "#f59e0b",
   },
   text: {
     color: "#fff",

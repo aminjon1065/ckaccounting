@@ -34,6 +34,10 @@ export type { SelectProps, SelectOption } from "./select";
 export { Separator } from "./separator";
 export type { SeparatorProps } from "./separator";
 
+export { EmptyState } from "./empty-state";
+
+export { FAB } from "./fab";
+
 export { Skeleton, SkeletonText } from "./skeleton";
 
 export { StatCard } from "./stat-card";

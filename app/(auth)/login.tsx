@@ -2,7 +2,7 @@ import { Alert, Button, Input, Text } from "@/components/ui";
 import { useLocalSearchParams } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as React from "react";
-import { ActivityIndicator, Alert as RNAlertDialog } from "react-native";
+import { Alert as RNAlertDialog } from "react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -12,21 +12,18 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Image } from "expo-image";
+
+const LOGO_SOURCE = require("@/assets/images/main-icon.png");
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
-import { useIsOnline } from "@/lib/sync/syncStore";
-
-// Cap initial post-login pull at 12s. If the network is slow, fall through
-// to the tabs anyway — SyncProvider keeps polling in the background and the
-// data will appear once it arrives.
-const BOOTSTRAP_TIMEOUT_MS = 12_000;
+import { useCacheMethods } from "@/lib/cache/CacheProvider";
+import { reportError } from "@/lib/observability/reporter";
 
 export default function LoginScreen() {
-  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, bootstrapPending, completeBootstrap, token } = useAuth();
-  const { runFullSync } = useSyncMethods();
-  const isOnline = useIsOnline();
+  const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, token } = useAuth();
+  const { triggerSync } = useCacheMethods();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 
@@ -43,40 +40,15 @@ export default function LoginScreen() {
     if (token && pinSetupPending) setShowPinSetup(true);
   }, [token, pinSetupPending]);
 
-  // Initial bootstrap pull: fires once after PIN setup is done (or skipped)
-  // and bootstrapPending is still armed. Awaits the first remote pull so the
-  // user lands in tabs with their data already in SQLite. Bounded by a
-  // timeout so a flaky network doesn't trap the user on the login screen.
-  const bootstrapStartedRef = React.useRef(false);
+  // After a successful login, refresh the local cache so every screen's
+  // first paint already has something to show.
+  const refreshStartedRef = React.useRef(false);
   React.useEffect(() => {
-    if (!bootstrapPending) {
-      bootstrapStartedRef.current = false;
-      return;
-    }
-    if (pinSetupPending) return; // wait for PIN setup to clear first
-    if (bootstrapStartedRef.current) return;
-    bootstrapStartedRef.current = true;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        if (!isOnline) {
-          // Online sign-in already succeeded, but the device dropped offline
-          // before the pull could start. Skip the gate — SyncProvider will
-          // catch up automatically once connectivity returns.
-          return;
-        }
-        await Promise.race([
-          runFullSync(),
-          new Promise<void>((resolve) => setTimeout(resolve, BOOTSTRAP_TIMEOUT_MS)),
-        ]);
-      } finally {
-        if (!cancelled) completeBootstrap();
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [bootstrapPending, pinSetupPending, isOnline, runFullSync, completeBootstrap]);
+    if (!token || pinSetupPending) return;
+    if (refreshStartedRef.current) return;
+    refreshStartedRef.current = true;
+    triggerSync().catch((e) => reportError(e, { tag: "login-cache-refresh" }));
+  }, [token, pinSetupPending, triggerSync]);
   const [pinValue, setPinValue] = React.useState("");
   const [pinConfirm, setPinConfirm] = React.useState("");
   const [pinError, setPinError] = React.useState("");
@@ -205,37 +177,15 @@ export default function LoginScreen() {
     }
   }
 
-  // ── Bootstrap loading screen (post-login initial data pull) ──────────────────
-  // Shown after the user authenticates (and finished PIN setup, if needed)
-  // while the first remote pull populates SQLite. Replaces the empty-tabs
-  // flicker on first login. Falls through automatically on success or timeout.
-  if (token && bootstrapPending && !pinSetupPending && !showPinSetup && !showPinVerify) {
-    return (
-      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-1 items-center justify-center px-6">
-          <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-5">
-            <MaterialIcons name="cloud-download" size={28} color="#fff" />
-          </View>
-          <Text variant="h2" className="text-center">
-            Загрузка данных
-          </Text>
-          <Text variant="muted" className="text-center mt-2">
-            {isOnline
-              ? "Загружаем ваши товары, продажи и долги из облака…"
-              : "Нет сети. Запускаем приложение в офлайн-режиме…"}
-          </Text>
-          <ActivityIndicator size="large" className="mt-6" />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   // ── PIN Verify Screen (before offline login) ─────────────────────────────────
   if (showPinVerify) {
     return (
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          // "padding" on both platforms — Android `adjustResize` already
+          // shrinks the window, and pairing with "height" double-shrunk the
+          // KAV so the focused input slid under the keyboard.
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -302,7 +252,8 @@ export default function LoginScreen() {
     return (
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          // See note on the password/email screen below — same rationale.
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -388,7 +339,10 @@ export default function LoginScreen() {
   return (
     <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // "padding" on both platforms — Android `adjustResize` already
+        // shrinks the window, and pairing with "height" double-shrunk the
+        // KAV so the focused input slid under the keyboard.
+        behavior="padding"
         className="flex-1"
       >
         <ScrollView
@@ -404,9 +358,11 @@ export default function LoginScreen() {
         >
           {/* ── Logo ── */}
           <View className="items-center mb-10">
-            <View className="w-20 h-20 rounded-3xl bg-primary-500 items-center justify-center mb-5 shadow-lg">
-              <MaterialIcons name="account-balance" size={38} color="#fff" />
-            </View>
+            <Image
+              source={LOGO_SOURCE}
+              style={{ width: 96, height: 96, marginBottom: 16 }}
+              contentFit="contain"
+            />
             <Text variant="h2" className="text-center tracking-tight">
               CK Accounting
             </Text>

@@ -6,7 +6,12 @@
 // (or create a new one) and add a single line below — never grow this file.
 //
 // Repository files: products, debts, sales, expenses, purchases, shops,
-// outbox, notifications, cache, syncMetadata, money, scope, schema.
+// notifications, cache, syncMetadata, money, scope, schema.
+//
+// Online-first: the outbox (`./outbox`) and offline mutation helpers
+// (decrement/cancel stock deltas, *Status setters, *DeletedLocally markers)
+// were removed in Phase 2. Writes go directly to the API; SQLite is a
+// read-only cache mirrored from remote fetchers in `lib/cache`.
 
 export { getDb, initDb, clearLocalData } from "./schema";
 export { localScope } from "./scope";
@@ -18,24 +23,12 @@ export { toKopecks, fromKopecks, signedDebtAmount, localDebtTransactionType } fr
 // Products repository — see lib/db/products.ts
 export {
   insertOrUpdateProducts,
-  insertOrUpdateProduct,
   getLocalProducts,
   getLocalProductById,
-  getPendingSyncProducts,
-  decrementLocalProductStock,
-  incrementLocalProductStock,
-  onSaleSyncSuccess,
-  onPurchaseSyncSuccess,
-  cancelPendingStockDelta,
-  cancelPendingPurchaseStockDelta,
-  applyRecoveryStockDelta,
-  updateProductStatus,
-  markProductDeletedLocally,
-  deleteLocalProduct,
 } from "./products";
 export type { LocalProduct } from "./products";
 
-// Sync metadata — see lib/db/syncMetadata.ts
+// Sync metadata — see lib/db/syncMetadata.ts (cache cursors, not outbox).
 export {
   getSyncMetadata,
   setSyncMetadata,
@@ -64,66 +57,33 @@ export {
   getLocalDebtTransactions,
 } from "./debts";
 
-// Outbox helpers — see lib/db/outbox.ts
-export {
-  queueSyncAction,
-  claimPendingSyncActions,
-  getPendingSyncActions,
-  getPendingSyncActionsCount,
-  getDeadSyncActionsCount,
-  markSyncActionStatus,
-  archiveSyncAction,
-  pruneArchivedSyncActions,
-  archiveSyncActions,
-  releaseStuckSyncActions,
-} from "./outbox";
-export type { SyncAction } from "./outbox";
-
 // Sales repository — see lib/db/sales.ts
 export {
-  insertOrUpdateSale,
   insertOrUpdateRemoteSales,
   getLocalSales,
   getLocalSaleById,
-  updateSaleStatus,
-  deleteLocalSale,
-  getPendingSyncSales,
 } from "./sales";
 export type { LocalSale } from "./sales";
 
 // Expenses repository — see lib/db/expenses.ts
 export {
-  insertOrUpdateExpense,
   insertOrUpdateExpenses,
   getLocalExpenses,
-  updateExpenseStatus,
-  deleteLocalExpense,
-  getPendingSyncExpenses,
-  markExpenseDeletedLocally,
 } from "./expenses";
 export type { LocalExpense } from "./expenses";
 
 // Purchases repository — see lib/db/purchases.ts
 export {
-  insertOrUpdatePurchase,
   insertOrUpdatePurchases,
   getLocalPurchases,
-  updatePurchaseStatus,
-  deleteLocalPurchase,
-  getPendingSyncPurchases,
 } from "./purchases";
 export type { LocalPurchase } from "./purchases";
 
 // Shops repository — see lib/db/shops.ts
 export {
-  insertOrUpdateShop,
   insertOrUpdateShops,
-  insertOrUpdateLocalShop,
   getLocalShops,
   getLocalShopById,
-  updateShopStatus,
-  deleteLocalShop,
-  getPendingSyncShops,
 } from "./shops";
 export type { LocalShop } from "./shops";
 

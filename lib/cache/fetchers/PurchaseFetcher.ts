@@ -1,13 +1,13 @@
-import { api, getLastServerTime, Purchase } from "../api";
+import { api, getLastServerTime, Purchase } from "../../api";
 import {
   getPurchasesLastSyncedAt,
   getSyncMetadata,
   insertOrUpdatePurchases,
   setPurchasesLastSyncedAt,
   setSyncMetadata,
-} from "../db";
+} from "../../db";
 import { reportError } from "@/lib/observability/reporter";
-import { encodeCursor } from "./cursor";
+import { encodeCursor } from "../cursor";
 
 export interface PurchaseFetcherDeps {
   token: string;

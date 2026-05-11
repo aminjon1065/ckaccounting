@@ -20,11 +20,13 @@ function SaleCardImpl({ item, onSelect }: SaleCardProps) {
       className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-start justify-between mb-2">
-        <View className="flex-1">
+        <View className="flex-1 mr-2">
           <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
             {item.customer_name || "Покупатель"}
           </Text>
-          <Text variant="small">{fmtDate(item.created_at)}</Text>
+          <Text variant="small" className="mt-0.5">
+            {fmtDate(item.created_at)}
+          </Text>
         </View>
         <View className="items-end gap-1">
           <Text className="text-base font-bold text-slate-900 dark:text-slate-50">
@@ -55,6 +57,19 @@ function SaleCardImpl({ item, onSelect }: SaleCardProps) {
         {item.discount > 0 && (
           <Text variant="small">Скидка: {fmt(item.discount)}</Text>
         )}
+        {/* Seller pinned to the bottom-right corner. flex-1 spacer absorbs
+            any free space so this stays glued to the edge regardless of
+            which left-side chips are rendered. shrink + numberOfLines
+            handles long names without breaking the row. */}
+        <View className="flex-1" />
+        {item.seller_name ? (
+          <View className="flex-row items-center gap-1 shrink">
+            <MaterialIcons name="person" size={13} color="#94a3b8" />
+            <Text variant="small" numberOfLines={1} className="max-w-[120px]">
+              {item.seller_name}
+            </Text>
+          </View>
+        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -70,6 +85,7 @@ export const SaleCard = React.memo(SaleCardImpl, (prev, next) => {
     && a.debt === b.debt
     && a.discount === b.discount
     && a.customer_name === b.customer_name
+    && a.seller_name === b.seller_name
     && a.payment_type === b.payment_type
     && a.type === b.type
     && a.created_at === b.created_at

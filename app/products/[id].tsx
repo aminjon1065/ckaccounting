@@ -1,7 +1,8 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { Image, type ImageSourcePropType, ScrollView, TouchableOpacity, View } from "react-native";
+import { ScrollView, TouchableOpacity, View } from "react-native";
+import { Image, type ImageSource } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
@@ -61,7 +62,7 @@ export default function ProductDetailScreen() {
   const [error, setError] = React.useState("");
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(product?.photo_url ?? product?.image_url ?? null);
-  const imageSource = React.useMemo<ImageSourcePropType | undefined>(() => {
+  const imageSource = React.useMemo<ImageSource | undefined>(() => {
     if (!imageUri) return undefined;
     if (/^https?:\/\//i.test(imageUri) && token) {
       return {
@@ -160,7 +161,9 @@ export default function ProductDetailScreen() {
             <Image
               source={imageSource}
               style={{ width: "100%", aspectRatio: 1, borderRadius: 16 }}
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={120}
               onError={() => setImageFailed(true)}
             />
           )}

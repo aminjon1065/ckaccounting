@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Alert } from "react-native";
 import { api, type Product, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalProducts, markProductDeletedLocally, localScope } from "@/lib/db";
+import { getLocalProducts, localScope } from "@/lib/db";
 import type { LocalProduct } from "@/lib/db";
 
 /**
@@ -115,14 +115,19 @@ export function useProducts({ token, user }: { token: string | null; user: User 
   const handleSearchChange = useCallback((text: string) => {
     setSearch(text);
     if (searchDebounce.current) clearTimeout(searchDebounce.current);
-    // 600ms gives the user time to type a few characters before we burn
-    // a network round-trip — under flaky links this prevents 3-5 stacked
-    // requests for a single search.
+
+    // Instant feedback: show local FTS results immediately, no debounce.
+    // The user sees something in <100ms instead of waiting 250-600ms.
+    getLocalProducts(localScope(user), text || undefined)
+      .then((local) => setProducts(local))
+      .catch(() => {});
+
+    // Network refresh debounced — 250ms is enough to avoid stacking
+    // requests on fast typists without making the user feel a lag.
     searchDebounce.current = setTimeout(() => {
-      setLoading(true);
-      fetchProducts(true, text).finally(() => setLoading(false));
-    }, 600);
-  }, [fetchProducts]);
+      fetchProducts(true, text);
+    }, 250);
+  }, [fetchProducts, user]);
 
   const handleDelete = useCallback((id: string) => {
     Alert.alert("Удалить товар", "Товар будет удалён безвозвратно.", [
@@ -137,17 +142,10 @@ export function useProducts({ token, user }: { token: string | null; user: User 
             showToast({ message: "Товар удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              await markProductDeletedLocally(id);
-              setProducts((prev) => {
-                const idx = prev.findIndex((p) => p.id === id);
-                if (idx >= 0) {
-                  const next = [...prev];
-                  next[idx] = { ...next[idx], sync_action: "delete", status: "pending" };
-                  return next;
-                }
-                return prev;
+              showToast({
+                message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                variant: "error",
               });
-              showToast({ message: "Удалено локально. Будет удалено после синхронизации.", variant: "warning" });
             } else {
               showToast({ message: "Не удалось удалить товар.", variant: "error" });
             }
@@ -155,7 +153,7 @@ export function useProducts({ token, user }: { token: string | null; user: User 
         },
       },
     ]);
-  }, [token, products, showToast]);
+  }, [token, showToast]);
 
   const handleSaved = useCallback((saved: Product | LocalProduct, wasEditing: boolean) => {
     setProducts((prev) => {

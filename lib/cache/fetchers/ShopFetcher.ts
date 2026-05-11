@@ -1,9 +1,9 @@
-import { api, getLastServerTime } from "../api";
+import { api, getLastServerTime } from "../../api";
 import {
   getShopsLastSyncedAt,
   insertOrUpdateShops,
   setShopsLastSyncedAt,
-} from "../db";
+} from "../../db";
 import { reportError } from "@/lib/observability/reporter";
 
 export interface ShopFetcherDeps {

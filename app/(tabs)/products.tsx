@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Skeleton, Text } from "@/components/ui";
+import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { type Product } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
@@ -26,7 +26,6 @@ export default function ProductsScreen() {
   const { token, user } = useAuth();
   const router = useRouter();
   const canEdit = can(user?.role, "products:edit");
-  const isSuperAdmin = user?.role === "super_admin";
 
   const {
     products,
@@ -35,7 +34,6 @@ export default function ProductsScreen() {
     loadingMore,
     search,
     error,
-    isOffline,
     handleRefresh,
     handleLoadMore,
     handleSearchChange,
@@ -47,6 +45,26 @@ export default function ProductsScreen() {
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
   const [scannerVisible, setScannerVisible] = React.useState(false);
+
+  const openEdit = React.useCallback((item: Product) => {
+    setEditing(item);
+    setFormVisible(true);
+  }, []);
+
+  const renderItem = React.useCallback(
+    ({ item }: { item: Product }) => (
+      <ProductCard
+        item={item}
+        onViewDetail={() => router.push(`/products/${item.id}`)}
+        onEdit={() => openEdit(item)}
+        onDelete={() => handleDelete(item.id)}
+        canEdit={canEdit}
+      />
+    ),
+    [router, openEdit, handleDelete, canEdit]
+  );
+
+  const keyExtractor = React.useCallback((item: Product) => String(item.id), []);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -104,7 +122,7 @@ export default function ProductsScreen() {
       ) : (
         <FlatList
           data={products}
-          keyExtractor={(item) => String(item.id)}
+          keyExtractor={keyExtractor}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           initialNumToRender={12}
           maxToRenderPerBatch={8}
@@ -115,12 +133,19 @@ export default function ProductsScreen() {
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            <View className="flex-1 items-center justify-center py-20">
-              <MaterialIcons name="inventory-2" size={48} color="#94a3b8" />
-              <Text variant="muted" className="mt-3 text-center">
-                {search ? "Товары не найдены." : "Нет товаров.\nНажмите + для добавления."}
-              </Text>
-            </View>
+            search ? (
+              <EmptyState
+                icon="search-off"
+                title="Ничего не найдено"
+                description={`По запросу «${search}» товары не найдены. Попробуйте другое слово или штрихкод.`}
+              />
+            ) : (
+              <EmptyState
+                icon="inventory-2"
+                title="Каталог пустой"
+                description="Добавьте первый товар — нажмите «+» в правом нижнем углу."
+              />
+            )
           }
           ListFooterComponent={
             loadingMore ? (
@@ -131,34 +156,18 @@ export default function ProductsScreen() {
               />
             ) : null
           }
-          renderItem={({ item }) => (
-            <ProductCard
-              item={item}
-              onViewDetail={() => router.push(`/products/${item.id}`)}
-              onEdit={() => {
-                setEditing(item);
-                setFormVisible(true);
-              }}
-              onDelete={() => handleDelete(item.id)}
-              canEdit={canEdit}
-              token={token}
-            />
-          )}
+          renderItem={renderItem}
         />
       )}
 
       {/* FAB */}
       {canEdit && (
-        <TouchableOpacity
+        <FAB
           onPress={() => {
             setEditing(null);
             setFormVisible(true);
           }}
-          className="absolute bottom-8 right-6 w-14 h-14 rounded-full bg-primary-500 items-center justify-center shadow-lg active:opacity-80"
-          style={{ elevation: 6 }}
-        >
-          <MaterialIcons name="add" size={28} color="#fff" />
-        </TouchableOpacity>
+        />
       )}
 
       {/* Form modal */}

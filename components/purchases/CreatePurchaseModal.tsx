@@ -5,7 +5,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TextInput as RNTextInput,
   TouchableOpacity,
@@ -22,25 +21,30 @@ import {
   type Purchase,
   type Shop,
 } from "@/lib/api";
-import { insertOrUpdatePurchase } from "@/lib/db";
-import { type LocalPurchase } from "@/lib/db";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
 import { reportError } from "@/lib/observability/reporter";
-import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { ProductFormModal } from "@/components/products/ProductFormModal";
 
 // ─── Product picker ───────────────────────────────────────────────────────────
 
 function ProductPicker({
   visible,
   products,
+  canCreate,
   onSelect,
   onClose,
+  onRequestCreate,
 }: {
   visible: boolean;
   products: Product[];
+  /** If false, hide the "Create new product" CTA (e.g. read-only role). */
+  canCreate: boolean;
   onSelect: (p: Product) => void;
   onClose: () => void;
+  /** Caller opens its ProductFormModal pre-filled with this name. */
+  onRequestCreate: (initialName: string) => void;
 }) {
   const [search, setSearch] = React.useState("");
   const filtered = search
@@ -48,6 +52,14 @@ function ProductPicker({
         p.name.toLowerCase().includes(search.toLowerCase())
       )
     : products;
+
+  // CTA visibility: always render it when the user has a non-trivial search
+  // (so they can create a brand-new SKU even when partial matches exist),
+  // or when the list is empty and they have no search yet. Power users on
+  // a busy supplier delivery can type "Mol" and immediately tap "Create
+  // 'Mol'" rather than scrolling through the catalog.
+  const trimmedSearch = search.trim();
+  const showCreateCta = canCreate && (trimmedSearch.length > 0 || filtered.length === 0);
 
   return (
     <Modal
@@ -70,7 +82,7 @@ function ProductPicker({
             <RNTextInput
               value={search}
               onChangeText={setSearch}
-              placeholder="Поиск…"
+              placeholder="Поиск или название нового товара…"
               placeholderTextColor="#94a3b8"
               className="flex-1 py-2.5 text-sm text-slate-900 dark:text-slate-50"
             />
@@ -80,6 +92,28 @@ function ProductPicker({
           data={filtered}
           keyExtractor={(p) => String(p.id)}
           contentContainerStyle={{ padding: 16 }}
+          ListHeaderComponent={
+            showCreateCta ? (
+              <TouchableOpacity
+                onPress={() => onRequestCreate(trimmedSearch)}
+                className="flex-row items-center gap-3 py-3.5 mb-1 border-b border-slate-100 dark:border-zinc-800"
+              >
+                <View className="w-9 h-9 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
+                  <MaterialIcons name="add" size={20} color="#0a7ea4" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-sm font-semibold text-primary-500">
+                    {trimmedSearch
+                      ? `Создать «${trimmedSearch}»`
+                      : "Создать новый товар"}
+                  </Text>
+                  <Text variant="small">
+                    Добавить в каталог прямо отсюда.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ) : null
+          }
           renderItem={({ item }) => (
             <TouchableOpacity
               onPress={() => { onSelect(item); onClose(); setSearch(""); }}
@@ -97,7 +131,9 @@ function ProductPicker({
             </TouchableOpacity>
           )}
           ListEmptyComponent={
-            <Text variant="muted" className="text-center py-10">Товары не найдены.</Text>
+            showCreateCta ? null : (
+              <Text variant="muted" className="text-center py-10">Товары не найдены.</Text>
+            )
           }
         />
       </SafeAreaView>
@@ -120,14 +156,6 @@ function fmt(n: number) {
   return Math.round(n)
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
-
-function generateUUID() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 }
 
 // ─── Create purchase modal ────────────────────────────────────────────────────
@@ -155,6 +183,11 @@ export function CreatePurchaseModal({
   const implicitShopId = effectiveShopId(user);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
+  // Inline create flow from the product picker. We carry the seed name so
+  // the form opens pre-filled with whatever the user was searching for.
+  const [createProductVisible, setCreateProductVisible] = React.useState(false);
+  const [createProductSeed, setCreateProductSeed] = React.useState("");
+  const canCreateProduct = can(user?.role, "products:edit");
 
   React.useEffect(() => {
     if (!visible) return;
@@ -192,6 +225,19 @@ export function CreatePurchaseModal({
       }
       return [...prev, { product: p, quantity: 1, price: p.cost_price, markupPercent: "" }];
     });
+  }
+
+  function handleProductCreated(saved: Product) {
+    // Make sure the picker's product list includes the new SKU so a
+    // subsequent open of the picker still shows it.
+    setProducts((prev) => (prev.some((p) => p.id === saved.id) ? prev : [saved, ...prev]));
+    addToCart(saved);
+    setCreateProductVisible(false);
+    setCreateProductSeed("");
+    // Close the picker too — the user just got what they came for; staying
+    // in the picker would feel like an extra tap.
+    setPickerVisible(false);
+    showToast({ message: "Товар добавлен в каталог и в приход", variant: "success" });
   }
 
   function updateQty(productId: string, delta: number) {
@@ -270,28 +316,12 @@ export function CreatePurchaseModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const now = new Date().toISOString();
-        const localPurchase: Purchase = {
-          id: generateUUID(),
-          supplier_name: supplierName.trim() || null,
-          total,
-          items: cart.map((c) => ({
-            id: generateUUID(),
-            product_id: c.product.id,
-            product_name: c.product.name,
-            quantity: c.quantity,
-            price: c.price,
-            total: c.price * c.quantity,
-          })),
-          created_at: now,
-          updated_at: now,
-        };
-        await insertOrUpdatePurchase(localPurchase, payload.shop_id);
-        onCreated({ ...localPurchase, status: "pending", sync_action: "create" } as LocalPurchase);
-        showToast({ message: "Нет сети. Закупка сохранена локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -315,7 +345,7 @@ export function CreatePurchaseModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -475,9 +505,37 @@ export function CreatePurchaseModal({
       <ProductPicker
         visible={pickerVisible}
         products={products}
+        canCreate={canCreateProduct}
         onSelect={addToCart}
         onClose={() => setPickerVisible(false)}
+        onRequestCreate={(seedName) => {
+          setCreateProductSeed(seedName);
+          setCreateProductVisible(true);
+        }}
       />
+
+      {canCreateProduct && (
+        <ProductFormModal
+          visible={createProductVisible}
+          editing={null}
+          initialName={createProductSeed}
+          // Lock the new product to the purchase's shop. Without this, a
+          // super-admin / multi-shop owner could pick another shop in the
+          // product form, and the purchase submit would fail with 404
+          // (product visible only inside its own shop scope).
+          initialShopId={
+            showShopPicker
+              ? (shopId ? Number(shopId) : null)
+              : implicitShopId
+          }
+          onClose={() => {
+            setCreateProductVisible(false);
+            setCreateProductSeed("");
+          }}
+          onSaved={handleProductCreated}
+          token={token}
+        />
+      )}
     </Modal>
   );
 }

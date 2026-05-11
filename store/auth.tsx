@@ -7,8 +7,8 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { api, type LoginPayload, type User } from "@/lib/api";
 import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
-import { registerTokenExpiryHandler } from "@/lib/sync/TokenExpiryBridge";
-import { registerTokenRefreshHandler, resetTokenRefreshState } from "@/lib/sync/TokenRefreshBridge";
+import { registerTokenExpiryHandler } from "@/lib/api/tokenExpiry";
+import { registerTokenRefreshHandler, resetTokenRefreshState } from "@/lib/api/tokenRefresh";
 import { reportError } from "@/lib/observability/reporter";
 import { clearLocalData } from "@/lib/db";
 import { suppressBiometricRelock } from "@/lib/biometricRelock";
@@ -31,10 +31,6 @@ interface AuthState {
   shopSuspended: boolean;
   tokenExpired: boolean;
   pinSetupPending: boolean;
-  // True from signIn until the first remote pull completes (or times out).
-  // While true, AuthGuard keeps the user on the login screen so a "Загрузка
-  // данных…" overlay can render before the tabs mount with empty SQLite.
-  bootstrapPending: boolean;
 }
 
 interface AuthActions {
@@ -48,8 +44,6 @@ interface AuthActions {
   hasPin: () => Promise<boolean>;
   hasCredentials: () => Promise<boolean>;
   setPinSetupPending: (pending: boolean) => void;
-  /** Mark initial post-login data sync complete so the user can leave (auth) */
-  completeBootstrap: () => void;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -90,7 +84,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     shopSuspended: false,
     tokenExpired: false,
     pinSetupPending: false,
-    bootstrapPending: false,
   });
 
   // Always-current token ref — avoids stale closure in callbacks that depend on token
@@ -146,7 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const wasShopSuspended = suspendedFlag === "1";
 
         if (!token) {
-          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
+          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
           return;
         }
 
@@ -159,7 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // If we have a token but no PIN saved, force the PIN setup flow before
         // letting the user reach the app — PIN is mandatory for every account.
         const pinPending = !pinHash;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending, bootstrapPending: false });
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -172,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Offline or server error — cached user is sufficient, stay logged in
         }
       } catch {
-        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
+        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
       }
     })();
 
@@ -240,9 +233,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Suppress biometric lock for 10s so the capability probe triggered by
     // token becoming non-null doesn't immediately lock the user out after login.
     suppressBiometricRelock(10_000);
-    // Arm bootstrap: tabs stay gated until the login screen finishes the
-    // initial pull (or the timeout fires) and calls completeBootstrap().
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending, bootstrapPending: true });
+    // Online-first: drop the bootstrap gate so the user lands in tabs
+    // immediately. Screens read from the local SQLite cache first (instant
+    // paint) and refresh from the server on mount. SyncProvider's background
+    // pull warms the cache; no need to block navigation on it.
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending });
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
@@ -277,10 +272,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         shopSuspended: suspendedFlag === "1",
         tokenExpired: prev.tokenExpired, // preserve server-invalidated state
         pinSetupPending: false,
-        // Offline path: SQLite already holds this user's data, no remote pull
-        // is possible, and no other user could have signed in meanwhile (PIN
-        // gate ensures it's the same physical user). Skip the bootstrap gate.
-        bootstrapPending: false,
       }));
       return true;
     } catch {
@@ -288,7 +279,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const signInWithPassword = React.useCallback(async (email: string, password: string): Promise<boolean> => {
+  const signInWithPassword = React.useCallback(async (_email: string, password: string): Promise<boolean> => {
     try {
       const [passwordHash, salt] = await Promise.all([
         SecureStore.getItemAsync(PASSWORD_HASH_KEY),
@@ -314,7 +305,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Same rationale as signInOffline: fresh local re-auth, clear circuit.
       resetTokenRefreshState();
-      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
+      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false });
       return true;
     } catch {
       return false;
@@ -358,10 +349,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => ({ ...prev, pinSetupPending: pending }));
   }, []);
 
-  const completeBootstrap = React.useCallback(() => {
-    setState((prev) => prev.bootstrapPending ? { ...prev, bootstrapPending: false } : prev);
-  }, []);
-
   const updateUser = React.useCallback(async (user: User) => {
     await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
     setState((prev) => ({ ...prev, user }));
@@ -391,7 +378,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Discard any in-flight refresh + circuit-breaker counters — the next
     // login starts with a clean slate.
     resetTokenRefreshState();
-    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, bootstrapPending: false });
+    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
   }, []);
 
   const value = React.useMemo<AuthContextValue>(
@@ -407,9 +394,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hasPin,
       hasCredentials,
       setPinSetupPending,
-      completeBootstrap,
     }),
-    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending, completeBootstrap]
+    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,10 +1,10 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
 import * as React from "react";
 import {
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TextInput as RNTextInput,
   TouchableOpacity,
@@ -14,13 +14,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense, type Shop } from "@/lib/api";
-import { insertOrUpdateExpense } from "@/lib/db";
-import { generateUUID } from "@/lib/uuid";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
-import type { LocalExpense } from "@/lib/db";
 import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
+import { STORAGE_KEYS } from "@/constants/config";
 
 export function ExpenseFormModal({
   visible,
@@ -52,7 +50,18 @@ export function ExpenseFormModal({
   React.useEffect(() => {
     if (visible && showShopPicker) {
       api.shops.list(token)
-        .then((res) => setShops(res.data ?? []))
+        .then((res) => {
+          const list = res.data ?? [];
+          setShops(list);
+          // Pre-fill from last expense's shop if still in allowed set.
+          SecureStore.getItemAsync(STORAGE_KEYS.prefLastShopId)
+            .then((stored) => {
+              if (stored && list.some((s) => String(s.id) === stored)) {
+                setShopId(stored);
+              }
+            })
+            .catch(() => {});
+        })
         .catch((e) => reportError(e, { tag: "expense-modal-shops-load" }));
     }
   }, [visible, showShopPicker, token]);
@@ -113,36 +122,29 @@ export function ExpenseFormModal({
     if (targetShopId !== null) payload.shop_id = targetShopId;
 
     setSubmitting(true);
+    // Idempotency-Key protects against double-tap retries on the same
+    // submission (the user retrying after a slow response). Generated per
+    // attempt; the server dedupes by key.
     const idempotencyKey = await Crypto.randomUUID();
     try {
       const saved = editing
         ? await api.expenses.update(editing.id, payload, token)
         : await api.expenses.create(payload, token, idempotencyKey);
+      if (!editing && showShopPicker && shopId) {
+        SecureStore.setItemAsync(STORAGE_KEYS.prefLastShopId, shopId).catch(() => {});
+      }
       onSaved(saved, !!editing);
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        const now = new Date().toISOString();
-        const localExpense: Expense = {
-          id: editing ? editing.id : generateUUID(),
-          name: name.trim(),
-          quantity: parseFloat(quantity),
-          price: parseFloat(price),
-          total,
-          note: note.trim() || null,
-          created_at: editing?.created_at ?? now,
-          updated_at: now,
-          version: (editing as Expense | null)?.version,
-        };
-        const offlineShopId = targetShopId ?? user?.shop_id ?? undefined;
-        await insertOrUpdateExpense(localExpense, offlineShopId, user?.id, editing ? "update" : "create");
-        onSaved({ ...localExpense, status: "pending", sync_action: editing ? "update" : "create" } as LocalExpense, !!editing);
-        showToast({ message: "Нет сети. Расход сохранен локально.", variant: "warning" });
-        onClose();
+        // No network: keep the form open with all fields intact so the user
+        // can tap "Сохранить" again once connectivity returns.
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(
-          e instanceof ApiError ? e.message : "Что-то пошло не так."
-        );
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
@@ -175,7 +177,7 @@ export function ExpenseFormModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView

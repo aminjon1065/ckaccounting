@@ -84,9 +84,7 @@
       "expo-font",
       "expo-image",
       "expo-sharing",
-      "expo-web-browser",
-      "expo-task-manager",
-      "expo-background-fetch"
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

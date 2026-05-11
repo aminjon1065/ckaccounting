@@ -114,7 +114,7 @@ export function CustomPeriodModal({
                     value={from}
                     mode="date"
                     display="default"
-                    onChange={(e: any, d?: Date) => {
+                    onChange={(_e: unknown, d?: Date) => {
                       if (d) {
                         setFrom(d);
                         if (error) setError("");
@@ -130,7 +130,7 @@ export function CustomPeriodModal({
                     value={to}
                     mode="date"
                     display="default"
-                    onChange={(e: any, d?: Date) => {
+                    onChange={(_e: unknown, d?: Date) => {
                       if (d) {
                         setTo(d);
                         if (error) setError("");

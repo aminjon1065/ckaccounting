@@ -123,25 +123,11 @@ async function performInitDb() {
       last_synced_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS sync_queue (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      method TEXT NOT NULL,
-      path TEXT NOT NULL,
-      payload TEXT,
-      headers TEXT,
-      status TEXT DEFAULT 'pending',
-      retries INTEGER DEFAULT 0,
-      created_at TEXT NOT NULL,
-      last_error TEXT,
-      batch_id TEXT,
-      idempotency_key TEXT,
-      archived_at TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS debts (
       id INTEGER PRIMARY KEY,
       shop_id INTEGER,
       user_id INTEGER,
+      created_by_name TEXT,
       person_name TEXT NOT NULL,
       opening_balance REAL DEFAULT 0,
       balance REAL DEFAULT 0,
@@ -153,6 +139,7 @@ async function performInitDb() {
     CREATE TABLE IF NOT EXISTS debt_transactions (
       id INTEGER PRIMARY KEY,
       debt_id INTEGER,
+      created_by_name TEXT,
       type TEXT NOT NULL,
       amount REAL NOT NULL,
       note TEXT,
@@ -164,6 +151,7 @@ async function performInitDb() {
       local_id TEXT UNIQUE,
       shop_id INTEGER,
       user_id INTEGER,
+      seller_name TEXT,
       customer_name TEXT,
       type TEXT,
       total REAL,
@@ -365,11 +353,9 @@ async function performInitDb() {
     {
       version: 24,
       migrate: (db) => {
-        // Refuse to run if the user still has unsynced offline writes —
-        // this migration wipes sync_queue (line ~end of execSync below) and
-        // would silently drop them. Block here, let the user come online,
-        // let the outbox drain, then retry on next launch.
-        assertSyncQueueDrained(db, "v24 (UUID PK conversion)");
+        // (Pre-online-first this called assertSyncQueueDrained to refuse
+        // running while unsynced rows existed. Phase 2 dropped the outbox
+        // entirely — migration v31 wipes the sync_queue table regardless.)
 
         db.execSync(`
           DROP TABLE IF EXISTS sale_items;
@@ -710,6 +696,59 @@ async function performInitDb() {
         return !!idCol && idCol.pk === 0;
       },
     },
+    // Migration v31: online-first cleanup.
+    //
+    // Drops the outbox infrastructure tables that the offline-first build
+    // used to queue writes against the server. After Phase 1 + Phase 2 every
+    // mutation goes straight to the API, so these tables are dead weight.
+    //
+    // Any non-archived rows in `sync_queue` at this point belong to a user
+    // who installed a stale build, made offline edits, and never reconnected
+    // before upgrading. Phase 1's login-time outbox drain has been live for
+    // multiple releases — by the time this migration runs the queue should
+    // be empty in practice. We accept the very-rare data loss instead of
+    // blocking the upgrade with a modal screen the way the old build did.
+    //
+    // The dead columns (sync_action, status, version, pending_stock_delta,
+    // last_synced_at, local_id on entity tables) are left in place: SQLite
+    // ALTER TABLE DROP COLUMN works but rebuilding every table is fragile,
+    // and the new code never reads them. They cost a few bytes per row.
+    {
+      version: 31,
+      migrate: (db) => {
+        db.execSync(`
+          DROP TABLE IF EXISTS sync_queue;
+          DROP TABLE IF EXISTS sync_lock;
+        `);
+      },
+      check: (db) => tableExists(db, "sync_queue") || tableExists(db, "sync_lock"),
+    },
+    // Migration v32: persist the seller's display name on each sale row so
+    // the list / detail UI can show "продал: <name>" without a per-row
+    // user lookup. The column is nullable — pre-existing rows backfill
+    // lazily on the next remote pull (the fetcher writes `seller_name`).
+    {
+      version: 32,
+      sql: "ALTER TABLE sales ADD COLUMN seller_name TEXT;",
+      check: (db) => !columnExists(db, "sales", "seller_name"),
+    },
+    // Migration v33: persist the creator's display name on debts and on
+    // each debt transaction. The list / detail UI shows "кто дал в долг"
+    // and "кто принял оплату". Backfilled lazily on the next remote pull.
+    {
+      version: 33,
+      migrate: (db) => {
+        if (!columnExists(db, "debts", "created_by_name")) {
+          db.execSync("ALTER TABLE debts ADD COLUMN created_by_name TEXT;");
+        }
+        if (!columnExists(db, "debt_transactions", "created_by_name")) {
+          db.execSync("ALTER TABLE debt_transactions ADD COLUMN created_by_name TEXT;");
+        }
+      },
+      check: (db) =>
+        !columnExists(db, "debts", "created_by_name") ||
+        !columnExists(db, "debt_transactions", "created_by_name"),
+    },
   ];
 
   db.execSync(`
@@ -740,37 +779,8 @@ async function performInitDb() {
     }
   });
 
-  ensureSyncQueueColumns(db);
   ensureAccountingSyncColumns(db);
   ensureSaleItemsColumns(db);
-
-  // Recover any rows stuck as 'processing' from a previous crashed session.
-  // We only release them back to 'pending' here — the runtime sweeper
-  // (`releaseStuckSyncActions`) is responsible for promoting truly broken
-  // rows to 'dead' and unwinding any pending_stock_delta they leaked.
-  // Doing the dead-promotion here is unsafe because it would skip the
-  // stock-unwind path (which is async, not callable from the synchronous
-  // migration runner). Sellers would see phantom inventory until next sync.
-  db.runSync(
-    `UPDATE sync_queue
-     SET status = 'pending',
-         batch_id = NULL,
-         claimed_at = NULL,
-         retries = retries + 1,
-         last_error = COALESCE(last_error, '') || ' | launch: stuck in processing'
-     WHERE status = 'processing'`
-  );
-
-  // Clear any *expired* sync_lock left behind by a previous crashed session.
-  // We only clear locks whose expires_at has already passed — never an active
-  // lock, since the OS background-fetch task may legitimately be holding one
-  // while the foreground process is starting.
-  if (tableExists(db, "sync_lock")) {
-    db.runSync(
-      "UPDATE sync_lock SET holder = NULL, acquired_at = NULL, expires_at = NULL " +
-        "WHERE id = 1 AND (expires_at IS NULL OR datetime(expires_at) < datetime('now'))"
-    );
-  }
 }
 
 function isDatabaseLockedError(error: unknown): boolean {
@@ -801,7 +811,11 @@ function addColumnIfMissing(
   }
 }
 
+// Legacy helper retained for migrations v12 / v21 which patched the
+// `sync_queue` table on upgrade. Migration v31 drops the table; these
+// calls become no-ops on devices that have already reached v31.
 function ensureSyncQueueColumns(db: SQLite.SQLiteDatabase): void {
+  if (!tableExists(db, "sync_queue")) return;
   addColumnIfMissing(db, "sync_queue", "last_error", "TEXT");
   addColumnIfMissing(db, "sync_queue", "batch_id", "TEXT");
   addColumnIfMissing(db, "sync_queue", "idempotency_key", "TEXT");
@@ -814,59 +828,6 @@ function ensureSyncQueueColumns(db: SQLite.SQLiteDatabase): void {
   `);
 }
 
-/**
- * Thrown when a destructive migration (one that wipes `sync_queue`) is asked
- * to run while pending offline writes still exist on the device. Aborting
- * the migration this way preserves the user's unsynced data — the schema
- * stays at the prior version, the user is told to come online and let the
- * outbox drain, and only then upgrade.
- *
- * The error caries the unsynced row count for diagnostics. The caller (the
- * migration runner inside `withTransactionSync`) re-throws it; SQLite rolls
- * back the partial migration and `schema_version` is not bumped, so the
- * next launch retries.
- */
-export class OutboxNotDrainedError extends Error {
-  constructor(
-    public readonly migrationLabel: string,
-    public readonly unsyncedRows: number
-  ) {
-    super(
-      `Destructive migration "${migrationLabel}" refused to run: ${unsyncedRows} unsynced ` +
-        "outbox row(s) would be lost. Connect the device to the network, let the outbox drain, " +
-        "and re-launch the app to retry."
-    );
-    this.name = "OutboxNotDrainedError";
-  }
-}
-
-/**
- * Pre-flight guard for any migration that wipes or replaces `sync_queue`.
- * Counts non-archived rows in pending/processing/failed/dead states — any
- * row that has not yet been delivered to the server. If non-zero, aborts.
- *
- * RULE: every future migration that does `DELETE FROM sync_queue` (or
- * structurally rebuilds the table) must call this helper first. The audit
- * surfaced exactly this gap in v24 — that migration silently dropped
- * unsynced offline writes.
- */
-export function assertSyncQueueDrained(
-  db: SQLite.SQLiteDatabase,
-  migrationLabel: string
-): void {
-  if (!tableExists(db, "sync_queue")) {
-    return;
-  }
-  const row = db.getFirstSync<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM sync_queue
-     WHERE archived_at IS NULL
-       AND status IN ('pending', 'processing', 'failed', 'dead')`
-  );
-  const unsynced = Number(row?.n ?? 0);
-  if (unsynced > 0) {
-    throw new OutboxNotDrainedError(migrationLabel, unsynced);
-  }
-}
 
 function ensureAccountingMoneyColumns(db: SQLite.SQLiteDatabase): void {
   addColumnIfMissing(db, "products", "cost_price_kopecks", "INTEGER");
@@ -1014,33 +975,61 @@ function dropColumnIfExists(
   }
 }
 
+// Backfill `*_kopecks` integer columns from the legacy REAL money columns
+// that older schemas (pre-v29) carried. Each UPDATE is gated on the
+// existence of its source column — on fresh installs none of the legacy
+// columns are created, so all branches no-op cleanly. Without the guards
+// SQLite throws "no such column: cost_price" at startup on every new
+// install. Old devices that ever ran v8–v28 still have the REAL columns
+// and get the one-time backfill before migration v29 dropped them.
 function backfillAccountingMoneyColumns(db: SQLite.SQLiteDatabase): void {
-  db.execSync(`
-    UPDATE products
-    SET cost_price_kopecks = COALESCE(cost_price_kopecks, ROUND(cost_price * 100)),
-        sale_price_kopecks = COALESCE(sale_price_kopecks, ROUND(sale_price * 100)),
-        bulk_price_kopecks = CASE
-          WHEN bulk_price IS NULL THEN bulk_price_kopecks
-          ELSE COALESCE(bulk_price_kopecks, ROUND(bulk_price * 100))
-        END;
-    UPDATE debts
-    SET opening_balance_kopecks = COALESCE(opening_balance_kopecks, ROUND(opening_balance * 100)),
-        balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100));
-    UPDATE debt_transactions
-    SET amount_kopecks = COALESCE(amount_kopecks, ROUND(amount * 100));
-    UPDATE sales
-    SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100)),
-        discount_kopecks = COALESCE(discount_kopecks, ROUND(discount * 100)),
-        paid_kopecks = COALESCE(paid_kopecks, ROUND(paid * 100)),
-        debt_kopecks = COALESCE(debt_kopecks, ROUND(debt * 100));
-    UPDATE expenses
-    SET price_kopecks = COALESCE(price_kopecks, ROUND(price * 100)),
-        total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
-    UPDATE purchases
-    SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
-  `);
-
-  if (tableExists(db, "sale_items")) {
+  if (columnExists(db, "products", "cost_price")) {
+    db.execSync(`
+      UPDATE products
+      SET cost_price_kopecks = COALESCE(cost_price_kopecks, ROUND(cost_price * 100)),
+          sale_price_kopecks = COALESCE(sale_price_kopecks, ROUND(sale_price * 100)),
+          bulk_price_kopecks = CASE
+            WHEN bulk_price IS NULL THEN bulk_price_kopecks
+            ELSE COALESCE(bulk_price_kopecks, ROUND(bulk_price * 100))
+          END;
+    `);
+  }
+  if (columnExists(db, "debts", "balance")) {
+    db.execSync(`
+      UPDATE debts
+      SET opening_balance_kopecks = COALESCE(opening_balance_kopecks, ROUND(opening_balance * 100)),
+          balance_kopecks = COALESCE(balance_kopecks, ROUND(balance * 100));
+    `);
+  }
+  if (columnExists(db, "debt_transactions", "amount")) {
+    db.execSync(`
+      UPDATE debt_transactions
+      SET amount_kopecks = COALESCE(amount_kopecks, ROUND(amount * 100));
+    `);
+  }
+  if (columnExists(db, "sales", "total")) {
+    db.execSync(`
+      UPDATE sales
+      SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100)),
+          discount_kopecks = COALESCE(discount_kopecks, ROUND(discount * 100)),
+          paid_kopecks = COALESCE(paid_kopecks, ROUND(paid * 100)),
+          debt_kopecks = COALESCE(debt_kopecks, ROUND(debt * 100));
+    `);
+  }
+  if (columnExists(db, "expenses", "price")) {
+    db.execSync(`
+      UPDATE expenses
+      SET price_kopecks = COALESCE(price_kopecks, ROUND(price * 100)),
+          total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
+    `);
+  }
+  if (columnExists(db, "purchases", "total")) {
+    db.execSync(`
+      UPDATE purchases
+      SET total_kopecks = COALESCE(total_kopecks, ROUND(total * 100));
+    `);
+  }
+  if (tableExists(db, "sale_items") && columnExists(db, "sale_items", "unit_price")) {
     db.execSync(`
       UPDATE sale_items
       SET unit_price_kopecks = COALESCE(unit_price_kopecks, ROUND(unit_price * 100)),
@@ -1072,9 +1061,9 @@ function indexExists(db: SQLite.SQLiteDatabase, indexName: string): boolean {
 
 export async function clearLocalData() {
   const db = getDb();
+  // sync_queue was dropped in migration v31 — omit from this list.
   await db.execAsync(`
     DELETE FROM products;
-    DELETE FROM sync_queue;
     DELETE FROM debts;
     DELETE FROM debt_transactions;
     DELETE FROM sales;

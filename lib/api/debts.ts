@@ -9,6 +9,8 @@ export interface DebtTransaction {
   type: "give" | "take" | "repay";
   amount: number;
   note: string | null;
+  /** Display name of the user who logged this transaction. Server-populated. */
+  created_by_name?: string | null;
   created_at: string;
 }
 
@@ -16,6 +18,8 @@ export interface Debt {
   id: string;
   shop_id?: number;
   user_id?: number | null;
+  /** Display name of the user who originally opened this debt record. */
+  created_by_name?: string | null;
   person_name: string;
   opening_balance: number;
   balance: number;
@@ -53,21 +57,26 @@ export const debtsApi = {
   get: (id: string, token: string) =>
     request<Debt>(`/debts/${id}`, { token }),
 
-  create: (payload: CreateDebtPayload, token: string) =>
+  create: (payload: CreateDebtPayload, token: string, idempotencyKey?: string) =>
     request<Debt>("/debts", {
       method: "POST",
       body: JSON.stringify(payload),
       token,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
     }),
 
   addTransaction: (
     id: string,
     payload: CreateDebtTransactionPayload,
-    token: string
+    token: string,
+    idempotencyKey?: string
   ) =>
     request<Debt>(`/debts/${id}/transactions`, {
       method: "POST",
       body: JSON.stringify(payload),
       token,
+      headers: idempotencyKey
+        ? { "Idempotency-Key": idempotencyKey }
+        : undefined,
     }),
 };

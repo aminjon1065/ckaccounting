@@ -29,6 +29,10 @@ export interface Sale {
   id: string;
   type?: SaleType;
   user_id?: number | null;
+  /** Display name of the seller who rang up the receipt. Populated by the
+   *  server when `user` is eager-loaded; null for sales whose seller has
+   *  been deleted. */
+  seller_name?: string | null;
   customer_name: string | null;
   total: number;
   discount: number;
@@ -105,5 +109,33 @@ export const salesApi = {
       method: "POST",
       body: payload ? JSON.stringify(payload) : undefined,
       token,
+    }),
+
+  /**
+   * Partial metadata update — customer name, payment type, notes, paid
+   * amount. Sending `items` is supported by the backend but the mobile
+   * UI today only exposes the metadata-only shape; leaving `items` out
+   * keeps the sale's line items + stock untouched.
+   */
+  update: async (
+    id: string,
+    payload: Partial<Pick<Sale, "customer_name" | "payment_type" | "notes" | "paid">>,
+    token: string,
+    idempotencyKey?: string
+  ): Promise<Sale> => {
+    const raw = await request<Sale>(`/sales/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      token,
+    });
+    return parseOrLog(saleSchema, raw, { tag: "sales-update", extra: { saleId: id } }) as Sale;
+  },
+
+  delete: (id: string, token: string, idempotencyKey?: string) =>
+    request<void>(`/sales/${id}`, {
+      method: "DELETE",
+      token,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
     }),
 };

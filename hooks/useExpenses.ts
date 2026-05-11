@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import { api, type Expense, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalExpenses, markExpenseDeletedLocally, deleteLocalExpense, localScope } from "@/lib/db";
+import { getLocalExpenses, localScope } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
-import { useIsSyncing } from "@/lib/sync/syncStore";
+import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
 
 /**
  * Local-first expenses feed. Mirrors useSales: SQLite is the source of
@@ -18,7 +17,7 @@ import { useIsSyncing } from "@/lib/sync/syncStore";
  */
 export function useExpenses({ token, user }: { token: string | null; user: User | null | undefined }) {
   const { showToast } = useToast();
-  const { triggerSync, fetchOlderExpenses } = useSyncMethods();
+  const { triggerSync, fetchOlderExpenses } = useCacheMethods();
   const isSyncing = useIsSyncing();
   const [expenses, setExpenses] = useState<LocalExpense[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,14 +61,14 @@ export function useExpenses({ token, user }: { token: string | null; user: User 
         onPress: async () => {
           try {
             await api.expenses.delete(id, token!);
-            await deleteLocalExpense(id);
             setExpenses((prev) => prev.filter((e) => e.id !== id));
             showToast({ message: "Расход удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
-              await markExpenseDeletedLocally(id);
-              setExpenses((prev) => prev.filter((e) => e.id !== id));
-              showToast({ message: "Удалено локально. Будет удалено после синхронизации.", variant: "warning" });
+              showToast({
+                message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                variant: "error",
+              });
             } else {
               showToast({ message: "Не удалось удалить расход.", variant: "error" });
             }

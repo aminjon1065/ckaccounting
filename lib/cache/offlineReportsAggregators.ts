@@ -5,11 +5,11 @@
 // jest's babel-only transform without dragging in `expo-sqlite` (which
 // is ESM and breaks the pure-logic test environment).
 //
-// The compose layer in `OfflineReportsUseCase.ts` does the SQLite hop and
+// The compose layer in `offlineReports.ts` does the SQLite hop and
 // delegates here; tests import directly.
 
-import { fromKopecks } from "../../db/money";
-import type { SalesReport, ExpensesReport, ProfitReport, StockReport } from "../../api";
+import { fromKopecks } from "../db/money";
+import type { SalesReport, ExpensesReport, ProfitReport, StockReport } from "../api";
 
 export interface DateRange {
   dateFrom?: string;

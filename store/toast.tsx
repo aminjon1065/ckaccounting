@@ -4,6 +4,7 @@ import { Animated, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Text } from "@/components/ui";
+import * as haptics from "@/lib/haptics";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -155,12 +156,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const showToast = React.useCallback((opts: ToastOptions) => {
     const id = Math.random().toString(36).slice(2);
+    const variant = opts.variant ?? "success";
     const item: ToastItem = {
       id,
       message: opts.message,
-      variant: opts.variant ?? "success",
+      variant,
       duration: opts.duration ?? 3000,
     };
+    // Haptic intent mirrors the visual one. Info toasts stay silent so a
+    // chatty info-stream doesn't buzz the user's pocket.
+    if (variant === "success") haptics.success();
+    else if (variant === "error") haptics.error();
+    else if (variant === "warning") haptics.warning();
     setQueue((prev) => {
       const next = [...prev, item];
       return next.slice(-MAX_QUEUE); // keep newest MAX_QUEUE

@@ -5,25 +5,26 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   ScrollView,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import * as Crypto from "expo-crypto";
+
 import { Button, Input, Skeleton, Text } from "@/components/ui";
 import {
+  api,
   ApiError,
   type CreateDebtTransactionPayload,
   type Debt,
   type DebtTransaction,
 } from "@/lib/api";
-import { getLocalDebtById, insertOrUpdateDebtTransactions, queueSyncAction } from "@/lib/db";
-import { generateUUID } from "@/lib/uuid";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { getLocalDebtById } from "@/lib/db";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -85,7 +86,18 @@ function TxCard({ item }: { item: DebtTransaction }) {
         {item.note ? (
           <Text variant="small">{item.note}</Text>
         ) : null}
-        <Text variant="small">{fmtDate(item.created_at)}</Text>
+        <View className="flex-row items-center gap-1 mt-0.5">
+          <Text variant="small">{fmtDate(item.created_at)}</Text>
+          {item.created_by_name ? (
+            <>
+              <Text variant="small">·</Text>
+              <MaterialIcons name="person" size={11} color="#94a3b8" />
+              <Text variant="small" numberOfLines={1}>
+                {item.created_by_name}
+              </Text>
+            </>
+          ) : null}
+        </View>
       </View>
       <Text
         className="text-sm font-bold"
@@ -103,14 +115,16 @@ function AddTransactionModal({
   visible,
   debtId,
   currentBalance,
+  token,
   onClose,
   onAdded,
 }: {
   visible: boolean;
   debtId: string;
   currentBalance: number;
+  token: string;
   onClose: () => void;
-  onAdded: (tx: DebtTransaction, newBalance: number) => void;
+  onAdded: (updatedDebt: Debt) => void;
 }) {
   const [type, setType] = React.useState<TransactionType>(
     currentBalance >= 0 ? "give" : "take"
@@ -119,8 +133,7 @@ function AddTransactionModal({
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-
-  const { refreshPendingActions, triggerSync } = useSyncMethods();
+  const { showToast } = useToast();
 
   React.useEffect(() => {
     if (visible) {
@@ -138,84 +151,39 @@ function AddTransactionModal({
       setError("Введите корректную сумму.");
       return;
     }
-    if (type === "repay" && currentBalance === 0) {
-      setError("Текущий баланс уже закрыт.");
-      return;
-    }
-    if (type === "repay" && numericAmount > Math.abs(currentBalance)) {
-      setError("Сумма погашения больше текущего долга.");
-      return;
-    }
+    // Bazaar reality: customers routinely pay more than they owe (advance,
+    // tip rolled into the bill, partial barter). The old "amount > balance"
+    // guard rejected these. Now the backend accepts any amount, flips the
+    // debt direction if balance crosses zero, and the next render shows
+    // the resulting "Мы должны 500" instead of an error toast.
     setSubmitting(true);
     try {
+      // Map UI types to server types. The server only knows give/take/repay,
+      // and "take" in our UI for receivable debts maps to a server "give"
+      // (we give more, so the receivable grows). Repay is server-native.
       const serverType: TransactionType = type === "take" ? "give" : type;
-      const txId = generateUUID();
-      const payload: CreateDebtTransactionPayload & { id: string } = {
-        id: txId,
+      const payload: CreateDebtTransactionPayload = {
         type: serverType,
         amount: numericAmount,
       };
       if (note.trim()) payload.note = note.trim();
 
-      const tx: DebtTransaction = {
-        id: txId,
-        debt_id: debtId,
-        type,
-        amount: payload.amount,
-        note: payload.note ?? null,
-        created_at: new Date().toISOString()
-      };
-      const delta =
-        type === "give" ? numericAmount :
-        type === "take" ? -numericAmount :
-        currentBalance >= 0 ? -numericAmount : numericAmount;
+      // Idempotency-Key dedupes accidental double-taps on the submit button.
+      const idempotencyKey = await Crypto.randomUUID();
 
-      await insertOrUpdateDebtTransactions([tx]);
+      const updated = await api.debts.addTransaction(debtId, payload, token, idempotencyKey);
 
-      // Update the stored raw balance. Payable debts synced from the server are
-      // stored as a positive amount plus direction='payable', while old local
-      // rows may still be signed.
-      const { getDb } = await import("@/lib/db");
-      const db = getDb();
-      const row = await db.getFirstAsync<{
-        direction: string | null;
-        balance_kopecks: number | null;
-        version: number | null;
-      }>(
-        "SELECT direction, balance_kopecks, version FROM debts WHERE id = ?",
-        [debtId]
-      );
-      const rawBalance = (row?.balance_kopecks ?? 0) / 100;
-      const rawDelta = row?.direction === "payable" && rawBalance >= 0
-        ? -delta
-        : delta;
-      // Single source of truth: balance lives in balance_kopecks (INTEGER).
-      // The legacy REAL `balance` column is no longer maintained — see the
-      // money-canonicalization pass (phase 2.4).
-      await db.runAsync(
-        `UPDATE debts
-         SET balance_kopecks = COALESCE(balance_kopecks, 0) + ?
-         WHERE id = ?`,
-        [Math.round(rawDelta * 100), debtId]
-      );
-
-      // Optimistic locking: include the last-known server version so the
-      // backend can reject the transaction if another client already
-      // modified the parent debt (returns 409 + server_data).
-      await queueSyncAction(
-        "POST",
-        `/debts/${debtId}/transactions`,
-        { ...payload, version: row?.version ?? 1 },
-        { "Idempotency-Key": `debt-tx-${txId}` },
-        `debt-tx-${txId}`
-      );
-      await refreshPendingActions();
-
-      onAdded(tx, delta);
+      onAdded(updated);
       onClose();
-      triggerSync().catch((e) => reportError(e, { tag: "debt-tx-create-sync" }));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Что-то пошло не так.");
+      if (e instanceof ApiError && e.status === 0) {
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
+      } else {
+        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -248,7 +216,7 @@ function AddTransactionModal({
         </View>
 
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior="padding"
           className="flex-1"
         >
           <ScrollView
@@ -337,7 +305,7 @@ function AddTransactionModal({
 export default function DebtDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const canAddTransaction = can(user?.role, "debts:addTransaction");
 
   const [debt, setDebt] = React.useState<Debt | null>(null);
@@ -353,15 +321,10 @@ export default function DebtDetailScreen() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  function handleTxAdded(tx: DebtTransaction, balanceDelta: number) {
-    setDebt((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        balance: prev.balance + balanceDelta,
-        transactions: [tx, ...(prev.transactions ?? [])],
-      };
-    });
+  function handleTxAdded(updated: Debt) {
+    // Server returns the full updated debt including the new transaction
+    // and the freshly-computed balance — trust it as the source of truth.
+    setDebt((prev) => prev ? { ...prev, ...updated } : updated);
   }
 
   if (loading) {
@@ -464,11 +427,12 @@ export default function DebtDetailScreen() {
       </View>
 
       {/* Add transaction modal */}
-      {canAddTransaction && (
+      {canAddTransaction && token && (
         <AddTransactionModal
           visible={txVisible}
           debtId={debt.id}
           currentBalance={debt.balance}
+          token={token}
           onClose={() => setTxVisible(false)}
           onAdded={handleTxAdded}
         />

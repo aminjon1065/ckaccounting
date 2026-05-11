@@ -89,3 +89,57 @@ function stringifyUnknown(value: unknown): string {
     return String(value);
   }
 }
+
+// ─── Global handlers ─────────────────────────────────────────────────────────
+//
+// `installGlobalErrorHandlers()` wires the reporter into RN's two top-level
+// catch points:
+//
+//   1. `ErrorUtils.setGlobalHandler` — uncaught synchronous JS errors that
+//      escape every component's try/catch + ErrorBoundary. Without this they
+//      crash the JS thread and we never see them in production logs.
+//
+//   2. `process.on("unhandledRejection")` — promise rejections with no
+//      .catch handler. RN polyfills `process` in modern versions; we guard
+//      against environments where it isn't present.
+//
+// We CHAIN the previous handlers instead of replacing them so RN's own red-
+// box / LogBox still triggers in dev. The reporter sees the error first;
+// RN's default behaviour runs after.
+//
+// Call once at app startup (root layout). Re-calling is safe — installation
+// is idempotent.
+
+let _installed = false;
+
+interface ErrorUtilsLike {
+  getGlobalHandler?: () => (error: Error, isFatal?: boolean) => void;
+  setGlobalHandler?: (handler: (error: Error, isFatal?: boolean) => void) => void;
+}
+
+declare const ErrorUtils: ErrorUtilsLike | undefined;
+
+export function installGlobalErrorHandlers(): void {
+  if (_installed) return;
+  _installed = true;
+
+  if (typeof ErrorUtils !== "undefined" && ErrorUtils?.setGlobalHandler) {
+    const prev = ErrorUtils.getGlobalHandler?.();
+    ErrorUtils.setGlobalHandler((error, isFatal) => {
+      reportError(error, {
+        tag: "global-error-handler",
+        fatal: !!isFatal,
+      });
+      // Chain to RN's red-box so dev experience stays intact.
+      prev?.(error, isFatal);
+    });
+  }
+
+  // Promise rejection handler. Available on `process` in modern RN.
+  const proc = (globalThis as { process?: { on?: (event: string, cb: (...args: unknown[]) => void) => void } }).process;
+  if (proc?.on) {
+    proc.on("unhandledRejection", (reason: unknown) => {
+      reportError(reason, { tag: "unhandled-rejection" });
+    });
+  }
+}

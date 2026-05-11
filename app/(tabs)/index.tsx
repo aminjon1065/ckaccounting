@@ -12,7 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Avatar, Select, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
-import { useSyncMethods } from "@/lib/sync/SyncContext";
+import { useCacheMethods } from "@/lib/cache/CacheProvider";
 
 import { useDashboard } from "@/hooks/useDashboard";
 import { getGreeting, formatDate } from "@/lib/formatters";
@@ -36,7 +36,7 @@ import { can } from "@/lib/permissions";
 export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
-  const { refreshProducts } = useSyncMethods();
+  const { refreshProducts } = useCacheMethods();
   const isSuperAdmin = user?.role === "super_admin";
   const [isDataHidden, setIsDataHidden] = React.useState(false);
 
@@ -64,11 +64,35 @@ export default function DashboardScreen() {
     });
   }, []);
 
-  // Modals state
+  // Modals state — `mounted` is sticky once the user opens a modal, so we
+  // only pay the mount cost on first open instead of on every dashboard render.
+  // Closing only flips `visible`; the modal subtree stays in memory for
+  // instant reopen, but never mounts unless the user actually opens it.
   const [saleModalVisible, setSaleModalVisible] = React.useState(false);
+  const [saleModalMounted, setSaleModalMounted] = React.useState(false);
   const [purchaseModalVisible, setPurchaseModalVisible] = React.useState(false);
+  const [purchaseModalMounted, setPurchaseModalMounted] = React.useState(false);
   const [expenseModalVisible, setExpenseModalVisible] = React.useState(false);
+  const [expenseModalMounted, setExpenseModalMounted] = React.useState(false);
   const [customModalVisible, setCustomModalVisible] = React.useState(false);
+  const [customModalMounted, setCustomModalMounted] = React.useState(false);
+
+  const openSaleModal = React.useCallback(() => {
+    setSaleModalMounted(true);
+    setSaleModalVisible(true);
+  }, []);
+  const openPurchaseModal = React.useCallback(() => {
+    setPurchaseModalMounted(true);
+    setPurchaseModalVisible(true);
+  }, []);
+  const openExpenseModal = React.useCallback(() => {
+    setExpenseModalMounted(true);
+    setExpenseModalVisible(true);
+  }, []);
+  const openCustomModal = React.useCallback(() => {
+    setCustomModalMounted(true);
+    setCustomModalVisible(true);
+  }, []);
 
   const {
     period,
@@ -96,8 +120,7 @@ export default function DashboardScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={async () => {
-              await fetchDashboard(true);
-              await refreshProducts(true);
+              await Promise.all([fetchDashboard(true), refreshProducts(true)]);
             }}
             tintColor="#0a7ea4"
             colors={["#0a7ea4"]}
@@ -148,7 +171,7 @@ export default function DashboardScreen() {
           value={period}
           onChange={(p) => {
             if (p === "custom") {
-              setCustomModalVisible(true);
+              openCustomModal();
             } else {
               setDateFrom(null);
               setDateTo(null);
@@ -220,9 +243,9 @@ export default function DashboardScreen() {
         {/* ── Quick Actions ── */}
         {!loading && (
           <QuickActions
-            onAddSale={() => setSaleModalVisible(true)}
-            onAddPurchase={() => setPurchaseModalVisible(true)}
-            onAddExpense={() => setExpenseModalVisible(true)}
+            onAddSale={openSaleModal}
+            onAddPurchase={openPurchaseModal}
+            onAddExpense={openExpenseModal}
             userRole={user?.role}
           />
         )}
@@ -248,14 +271,16 @@ export default function DashboardScreen() {
         ) : null}
       </ScrollView>
 
-      {/* ── Modals ── */}
-      <CreateSaleModal
-        visible={saleModalVisible}
-        onClose={() => setSaleModalVisible(false)}
-        onCreated={() => { fetchDashboard(true); }}
-        token={token!}
-      />
-      {can(user?.role, "purchases:create") && (
+      {/* ── Modals (mounted lazily on first open) ── */}
+      {saleModalMounted && (
+        <CreateSaleModal
+          visible={saleModalVisible}
+          onClose={() => setSaleModalVisible(false)}
+          onCreated={() => { fetchDashboard(true); }}
+          token={token!}
+        />
+      )}
+      {purchaseModalMounted && can(user?.role, "purchases:create") && (
         <CreatePurchaseModal
           visible={purchaseModalVisible}
           onClose={() => setPurchaseModalVisible(false)}
@@ -263,7 +288,7 @@ export default function DashboardScreen() {
           token={token!}
         />
       )}
-      {can(user?.role, "expenses:create") && (
+      {expenseModalMounted && can(user?.role, "expenses:create") && (
         <ExpenseFormModal
           visible={expenseModalVisible}
           editing={null}
@@ -272,17 +297,19 @@ export default function DashboardScreen() {
           token={token!}
         />
       )}
-      <CustomPeriodModal
-        visible={customModalVisible}
-        onClose={() => setCustomModalVisible(false)}
-        initialFrom={dateFrom}
-        initialTo={dateTo}
-        onApply={(from, to) => {
-          setDateFrom(from);
-          setDateTo(to);
-          setPeriod("custom");
-        }}
-      />
+      {customModalMounted && (
+        <CustomPeriodModal
+          visible={customModalVisible}
+          onClose={() => setCustomModalVisible(false)}
+          initialFrom={dateFrom}
+          initialTo={dateTo}
+          onApply={(from, to) => {
+            setDateFrom(from);
+            setDateTo(to);
+            setPeriod("custom");
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

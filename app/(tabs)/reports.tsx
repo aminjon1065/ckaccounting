@@ -22,14 +22,14 @@ import { api, ApiError,
 } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
-import { useIsOnline } from "@/lib/sync/syncStore";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { reportError } from "@/lib/observability/reporter";
 import {
   computeLocalSalesReport,
   computeLocalExpensesReport,
   computeLocalProfitReport,
   computeLocalStockReport,
-} from "@/lib/sync/usecases/OfflineReportsUseCase";
+} from "@/lib/cache/offlineReports";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -551,10 +551,29 @@ export default function ReportsScreen() {
     }
   }, [activeTab, dateFrom, dateTo, token, isOnline, user?.shop_id]);
 
+  // Clear cached reports when the date range changes — the cached data is
+  // stale for the new range and we need to refetch.
   React.useEffect(() => {
-    if (!can(user?.role, "reports:view")) return; // Don't fire API call if no permission
+    setSalesReport(null);
+    setExpensesReport(null);
+    setProfitReport(null);
+    setStockReport(null);
+  }, [dateFrom, dateTo]);
+
+  // Skip the auto-fetch when we already have data for the active tab — tab
+  // switches feel instant instead of flashing a skeleton over data the user
+  // has already paid for. Date / preset changes invalidate the cache via
+  // the effect above, so they still trigger a fresh fetch.
+  React.useEffect(() => {
+    if (!can(user?.role, "reports:view")) return;
+    const alreadyLoaded =
+      (activeTab === "sales" && salesReport) ||
+      (activeTab === "expenses" && expensesReport) ||
+      (activeTab === "profit" && profitReport) ||
+      (activeTab === "stock" && stockReport);
+    if (alreadyLoaded) return;
     loadReport();
-  }, [loadReport, user?.role]);
+  }, [loadReport, user?.role, activeTab, salesReport, expensesReport, profitReport, stockReport]);
 
   const currentData =
     activeTab === "sales" ? salesReport :

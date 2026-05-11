@@ -5,7 +5,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Separator, Text } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
-import { queueSyncAction } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
@@ -61,15 +60,12 @@ export function EditProfileModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        await queueSyncAction("PATCH", "/profile", payload, {});
-        // Update local auth state optimistically
-        if (user) {
-          await updateUser({ ...user, name: name.trim() });
-        }
-        showToast({ message: "Нет сети. Профиль сохранён локально.", variant: "warning" });
-        onClose();
+        showToast({
+          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+          variant: "error",
+        });
       } else {
-        setError(e instanceof ApiError ? e.message : "Не удалось сохранить профиль.");
+        setError(e instanceof ApiError ? e.describeErrors() : "Не удалось сохранить профиль.");
       }
     } finally {
       setSubmitting(false);

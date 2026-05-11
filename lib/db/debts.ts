@@ -36,6 +36,7 @@ interface DebtRow {
   id: string;
   shop_id: number | null;
   user_id: number | null;
+  created_by_name: string | null;
   person_name: string;
   direction: "receivable" | "payable" | null;
   version: number | null;
@@ -52,6 +53,7 @@ interface DebtTransactionRow {
   debt_id: string;
   type: "give" | "take" | "repay";
   note: string | null;
+  created_by_name: string | null;
   created_at: string;
   amount_kopecks: number | null;
   sync_action: string | null;
@@ -78,11 +80,13 @@ export async function insertOrUpdateDebts(debts: DebtMergeInput[], shopId?: numb
       const openingBalance = d.opening_balance ?? 0;
       await db.runAsync(
         `INSERT OR REPLACE INTO debts (
-          id, shop_id, user_id, person_name, direction, version, updated_at, last_synced_at,
+          id, shop_id, user_id, created_by_name, person_name, direction, version, updated_at, last_synced_at,
           opening_balance_kopecks, balance_kopecks, sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          d.id, shopId ?? d.shop_id ?? null, d.user_id ?? null, d.person_name,
+          d.id, shopId ?? d.shop_id ?? null, d.user_id ?? null,
+          d.created_by_name ?? null,
+          d.person_name,
           d.direction ?? "receivable",
           d.version ?? 1,
           d.updated_at, new Date().toISOString(),
@@ -100,13 +104,14 @@ export async function insertOrUpdateDebts(debts: DebtMergeInput[], shopId?: numb
           }
           await db.runAsync(
             `INSERT OR REPLACE INTO debt_transactions (
-              id, debt_id, type, note, created_at, amount_kopecks, sync_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              id, debt_id, type, note, created_by_name, created_at, amount_kopecks, sync_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               tx.id,
               tx.debt_id ?? d.id,
               localDebtTransactionType(tx.type, d.direction),
               tx.note ?? null,
+              tx.created_by_name ?? null,
               tx.created_at,
               toKopecks(tx.amount),
               "none",
@@ -135,9 +140,13 @@ export async function insertOrUpdateDebtTransactions(transactions: DebtTransacti
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO debt_transactions (
-          id, debt_id, type, note, created_at, amount_kopecks, sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [tx.id, tx.debt_id, tx.type, tx.note ?? null, tx.created_at, toKopecks(tx.amount), "none"]
+          id, debt_id, type, note, created_by_name, created_at, amount_kopecks, sync_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          tx.id, tx.debt_id, tx.type, tx.note ?? null,
+          tx.created_by_name ?? null,
+          tx.created_at, toKopecks(tx.amount), "none",
+        ]
       );
     }
   });
@@ -177,6 +186,7 @@ export async function getLocalDebts(scope: LocalScope): Promise<Debt[]> {
   return results.map((r) => ({
     id: r.id,
     user_id: r.user_id ?? undefined,
+    created_by_name: r.created_by_name,
     person_name: r.person_name,
     opening_balance: signedDebtAmount(
       fromKopecks(r.opening_balance_kopecks),
@@ -203,6 +213,7 @@ export async function getLocalDebtById(id: string): Promise<Debt | null> {
   const txs = await getLocalDebtTransactions(r.id);
   return {
     id: r.id,
+    created_by_name: r.created_by_name,
     person_name: r.person_name,
     opening_balance: signedDebtAmount(
       fromKopecks(r.opening_balance_kopecks),
@@ -231,6 +242,7 @@ export async function getLocalDebtTransactions(debt_id: string): Promise<DebtTra
     type: r.type,
     amount: fromKopecks(r.amount_kopecks),
     note: r.note,
+    created_by_name: r.created_by_name,
     created_at: r.created_at,
   }));
 }

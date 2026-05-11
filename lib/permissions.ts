@@ -9,6 +9,8 @@ export type Action =
   | "products:delete"
   | "sales:view"
   | "sales:create"
+  | "sales:edit"
+  | "sales:delete"
   | "sales:return"
   | "expenses:view"
   | "expenses:create"
@@ -35,6 +37,10 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "products:delete":      ["super_admin", "owner"],
   "sales:view":           ["super_admin", "owner", "seller"],
   "sales:create":         ["super_admin", "owner", "seller"],
+  // Sellers can ring up sales but can't edit / delete afterwards — anti-
+  // fraud / audit boundary, mirrors SalePolicy on the server.
+  "sales:edit":           ["super_admin", "owner"],
+  "sales:delete":         ["super_admin", "owner"],
   "sales:return":         ["super_admin", "owner"],
   "expenses:view":        ["super_admin", "owner"],
   "expenses:create":      ["super_admin", "owner"],

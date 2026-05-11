@@ -1,12 +1,10 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Tabs } from "expo-router";
-import { Platform, View } from "react-native";
+import { Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { can, hasNoAccessibleShops } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
-import { usePendingActionsCount } from "@/lib/sync/syncStore";
-import { ConflictResolutionModal } from "@/components/sync/ConflictResolutionModal";
 import { NoShopsAssignedScreen } from "@/components/NoShopsAssignedScreen";
 
 const PRIMARY = "#0a7ea4";
@@ -16,31 +14,6 @@ type IconName = React.ComponentProps<typeof MaterialIcons>["name"];
 
 function TabIcon({ name, color }: { name: IconName; color: string }) {
   return <MaterialIcons name={name} size={24} color={color} />;
-}
-
-function SalesTabIcon({ color }: { color: string }) {
-  const pendingActionsCount = usePendingActionsCount();
-  return (
-    <View>
-      <MaterialIcons name="receipt-long" size={24} color={color} />
-      {pendingActionsCount > 0 && (
-        <View
-          style={{
-            position: "absolute",
-            top: -3,
-            right: -6,
-            backgroundColor: "#f59e0b",
-            borderRadius: 6,
-            minWidth: 12,
-            height: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            paddingHorizontal: 2,
-          }}
-        />
-      )}
-    </View>
-  );
 }
 
 export default function TabLayout() {
@@ -59,8 +32,6 @@ export default function TabLayout() {
   }
 
   return (
-    <>
-    <ConflictResolutionModal />
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -99,7 +70,7 @@ export default function TabLayout() {
         name="sales"
         options={{
           title: "Продажа",
-          tabBarIcon: ({ color }) => <SalesTabIcon color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="receipt-long" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -122,6 +93,5 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
-    </>
   );
 }

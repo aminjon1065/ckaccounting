@@ -148,7 +148,6 @@ export default function ProductMovementScreen() {
   const [loading, setLoading] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [error, setError] = React.useState("");
-  const [isOffline, setIsOffline] = React.useState(false);
   const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   const [hasMore, setHasMore] = React.useState(false);
 
@@ -165,15 +164,11 @@ export default function ProductMovementScreen() {
       } else {
         setMovements(data.movements);
       }
-      setIsOffline(false);
     } catch (e: any) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        setError("Нет сети. История движения недоступна офлайн.");
-      } else {
-        setError("Не удалось загрузить историю движения.");
-      }
+      setError(isOfflineError
+        ? "Нет сети. История движения недоступна офлайн."
+        : "Не удалось загрузить историю движения.");
     }
   }, [id, token]);
 
