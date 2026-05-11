@@ -8,20 +8,16 @@ import * as Sharing from "expo-sharing";
 import * as Crypto from "expo-crypto";
 
 import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
-import { api, type Sale, type SaleItem } from "@/lib/api";
+import { api, ApiError, type Sale, type SaleItem } from "@/lib/api";
 import { generateReceiptHtml } from "@/lib/receipt";
-import { getLocalSaleById } from "@/lib/db";
+import { deleteLocalSale, getLocalSaleById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { can } from "@/lib/permissions";
 import { ReturnSaleModal } from "@/components/sales/ReturnSaleModal";
 import { EditSaleModal } from "@/components/sales/EditSaleModal";
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+import { fmt } from "@/lib/formatters";
+import { useCacheMethods } from "@/lib/cache/CacheProvider";
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -49,18 +45,37 @@ const PAYMENT_LABELS: Record<string, string> = {
 function SaleItemRow({ item }: { item: SaleItem }) {
   const displayName = item.service_name ?? item.product_name ?? "—";
   const unitLabel = item.unit ? ` · ${item.unit}` : "";
+  const returnedQty = item.returned_quantity ?? 0;
+  const fullyReturned = returnedQty >= item.quantity;
 
   return (
     <View className="flex-row items-center py-3 border-b border-slate-100 dark:border-zinc-800">
       <View className="flex-1 mr-3">
-        <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
+        <Text
+          className={`text-sm font-medium ${
+            fullyReturned
+              ? "text-slate-400 line-through dark:text-slate-500"
+              : "text-slate-900 dark:text-slate-50"
+          }`}
+        >
           {displayName}
         </Text>
         <Text variant="small">
           {fmt(item.price)}{unitLabel} x {item.quantity}
         </Text>
+        {returnedQty > 0 ? (
+          <Text variant="small" className="text-amber-600 dark:text-amber-400 mt-0.5">
+            Возвращено: {returnedQty} из {item.quantity}
+          </Text>
+        ) : null}
       </View>
-      <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+      <Text
+        className={`text-sm font-semibold ${
+          fullyReturned
+            ? "text-slate-400 line-through dark:text-slate-500"
+            : "text-slate-900 dark:text-slate-50"
+        }`}
+      >
         {fmt(item.total)}
       </Text>
     </View>
@@ -109,6 +124,23 @@ export default function SaleDetailScreen() {
   const [editModalVisible, setEditModalVisible] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
 
+  const { triggerSync } = useCacheMethods();
+
+  const evictGhostAndExit = React.useCallback(
+    async (reason: string) => {
+      if (!sale) return;
+      try {
+        await deleteLocalSale(sale.id);
+      } catch {
+        // Best-effort cleanup; even if the local delete fails, we still bail
+        // out of the screen so the user isn't stuck on a ghost record.
+      }
+      showToast({ message: reason, variant: "error" });
+      router.back();
+    },
+    [sale, router, showToast]
+  );
+
   const handleDelete = React.useCallback(() => {
     if (!sale || !token) return;
     Alert.alert(
@@ -130,7 +162,12 @@ export default function SaleDetailScreen() {
               showToast({ message: "Продажа удалена", variant: "success" });
               router.back();
             } catch (e: any) {
-              Alert.alert("Ошибка", e?.message ?? "Не удалось удалить продажу.");
+              if (e instanceof ApiError && e.status === 404) {
+                // Already gone on the server — wipe the local copy too.
+                await evictGhostAndExit("Продажа уже была удалена. Локальная копия очищена.");
+              } else {
+                Alert.alert("Ошибка", e?.message ?? "Не удалось удалить продажу.");
+              }
             } finally {
               setDeleting(false);
             }
@@ -138,7 +175,7 @@ export default function SaleDetailScreen() {
         },
       ]
     );
-  }, [sale, token, router, showToast]);
+  }, [sale, token, router, showToast, evictGhostAndExit]);
 
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
@@ -186,6 +223,17 @@ export default function SaleDetailScreen() {
     const s = await api.sales.get(id, token);
     setSale(s);
   } catch (e: any) {
+    if (e instanceof ApiError && e.status === 404 && local) {
+      // Server confirms the sale is gone; the local cache still has it
+      // (delta sync missed the tombstone, or it was hard-deleted). Drop
+      // the ghost so the list view stops showing it on next render.
+      try {
+        await deleteLocalSale(id);
+      } catch {}
+      setSale(null);
+      setError("Продажа была удалена. Локальная копия очищена.");
+      return;
+    }
     if (!local) {
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
       setError(isOfflineError
@@ -332,7 +380,22 @@ export default function SaleDetailScreen() {
               <SummaryRow label="Скидка" value={`- ${fmt(sale.discount)}`} color="#f59e0b" />
             )}
             <SummaryRow label="Итого" value={fmt(sale.total)} bold />
-            <SummaryRow label="Оплачено" value={fmt(sale.paid)} color="#22c55e" />
+            <SummaryRow
+              label={(sale.returned_total ?? 0) > 0 ? "Оплачено (сейчас)" : "Оплачено"}
+              value={fmt(sale.paid)}
+              color="#22c55e"
+            />
+            {(sale.returned_total ?? 0) > 0 && (
+              // Show the refunded amount as a separate row so the user can
+              // tell at a glance why `paid` shrank. Without this the math
+              // looks broken: a receipt for 200 sold + 200 paid, refund 100,
+              // now reads "Оплачено 100" with no explanation.
+              <SummaryRow
+                label={sale.is_fully_returned ? "Возвращено полностью" : "Возвращено"}
+                value={`- ${fmt(sale.returned_total ?? 0)}`}
+                color="#f59e0b"
+              />
+            )}
             {hasDebt && (
               <SummaryRow label="Остаток долга" value={fmt(sale.debt)} color="#ef4444" />
             )}
@@ -398,7 +461,16 @@ export default function SaleDetailScreen() {
           onClose={() => setReturnModalVisible(false)}
           onSuccess={() => {
             setReturnModalVisible(false);
+            // Refresh the local cache so the list shows the new
+            // returned_total / is_fully_returned and the product stock bump.
+            // Don't await — back-navigation should feel instant; the sync
+            // completes in the background.
+            triggerSync().catch(() => {});
             router.back();
+          }}
+          onMissing={() => {
+            setReturnModalVisible(false);
+            evictGhostAndExit("Продажа была удалена. Локальная копия очищена.");
           }}
         />
       )}
@@ -412,6 +484,10 @@ export default function SaleDetailScreen() {
           onSuccess={(updated) => {
             setSale(updated);
             setEditModalVisible(false);
+          }}
+          onMissing={() => {
+            setEditModalVisible(false);
+            evictGhostAndExit("Продажа была удалена. Локальная копия очищена.");
           }}
         />
       )}

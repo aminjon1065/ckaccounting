@@ -8,14 +8,9 @@ import { Badge, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import { api, type ProductMovement, type ProductMovementType } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
 
 function fmtDate(iso: string) {
   const d = new Date(iso);

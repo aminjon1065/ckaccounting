@@ -174,3 +174,55 @@ export async function getLocalProductById(id: string): Promise<Product | null> {
   if (!r) return null;
   return mapProductRow(r);
 }
+
+/**
+ * Drop a product from the local cache without going through the server.
+ * Use after a 404 on a product write to evict the ghost row.
+ */
+export async function deleteLocalProduct(id: string | number): Promise<void> {
+  if (id === null || id === undefined || id === "") return;
+  const db = getDb();
+  await db.runAsync("DELETE FROM products WHERE id = ?", [id]);
+}
+
+/**
+ * Replace the local catalogue scope with the authoritative server set: keep
+ * rows whose id appears in `serverIds`, drop the rest. Called after a full
+ * id-only pull to evict ghost rows that the delta sync (`updated_since`) can
+ * never observe (i.e. server-side hard-deletes).
+ *
+ * `scope` mirrors the same scope the fetcher used so we never delete rows
+ * outside the user's visibility — e.g. an owner's reconcile must not touch
+ * other shops' cached products that happen to share this device.
+ */
+export async function reconcileLocalProducts(
+  scope: LocalScope,
+  serverIds: ReadonlyArray<string>,
+): Promise<void> {
+  const db = getDb();
+  const shopFilter = shopIdInClause(scope.shopIds);
+
+  if (serverIds.length === 0) {
+    await db.runAsync(`DELETE FROM products WHERE 1=1${shopFilter.sql}`, shopFilter.params);
+    return;
+  }
+
+  // Chunk to keep the IN-list comfortably under SQLite's 999-bound parameter
+  // limit (we also reserve some slots for the shop filter).
+  const CHUNK = 500;
+  const idSet = new Set(serverIds.map(String));
+
+  const existing = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM products WHERE 1=1${shopFilter.sql}`,
+    shopFilter.params,
+  );
+  const ghostIds = existing
+    .map((r) => String(r.id))
+    .filter((id) => !idSet.has(id));
+
+  for (let i = 0; i < ghostIds.length; i += CHUNK) {
+    const slice = ghostIds.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => "?").join(",");
+    await db.runAsync(`DELETE FROM products WHERE id IN (${placeholders})`, slice);
+  }
+}

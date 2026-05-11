@@ -23,6 +23,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
+import { fmt } from "@/lib/formatters";
 import { reportError } from "@/lib/observability/reporter";
 import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
@@ -151,12 +152,6 @@ interface CartItem {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
 
 // ─── Create purchase modal ────────────────────────────────────────────────────
 

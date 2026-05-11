@@ -223,6 +223,7 @@ export default function DashboardScreen() {
                 receivables={summary.debts_receivable ?? 0}
                 payables={summary.debts_payable ?? 0}
                 isDataHidden={isDataHidden}
+                onPress={can(user?.role, "debts:view") ? () => router.push("/debts") : undefined}
               />
             </View>
 

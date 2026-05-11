@@ -21,11 +21,12 @@ import { getLocalDebts, getLocalShops, localScope } from "@/lib/db";
 import { useLastSyncedAt } from "@/lib/cache/CacheProvider";
 import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
+import { fmt as fmtNumber } from "@/lib/formatters";
 
+// Debt amounts are signed in storage; the UI always shows the magnitude and
+// adds the +/- glyph at the call-site (different colour treatment per side).
 function fmt(n: number) {
-  return Math.round(Math.abs(n))
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return fmtNumber(Math.abs(n));
 }
 
 const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {

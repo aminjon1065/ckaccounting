@@ -1,56 +1,69 @@
-import React from "react";
-import { View } from "react-native";
-import { Text } from "@/components/ui";
+import * as React from "react";
+import { View, TouchableOpacity } from "react-native";
+import { Text, Card, CardContent } from "@/components/ui";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { DEFAULT_CURRENCY } from "@/constants/config";
+import { fmt as fmtNumber } from "@/lib/formatters";
 
 interface DebtsCardProps {
   receivables: number;
   payables: number;
   isDataHidden?: boolean;
+  onPress?: () => void;
 }
 
 function fmt(n: number, hidden: boolean) {
   if (hidden) return "***";
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return fmtNumber(n);
 }
 
 export function DebtsCard({
   receivables,
   payables,
   isDataHidden = false,
+  onPress,
 }: DebtsCardProps) {
-  const netDebt = receivables - payables;
+  const content = (
+    <CardContent className="pt-4 pb-4">
+      <View className="flex-row items-center justify-between mb-3 border-b border-slate-100 dark:border-zinc-800 pb-2">
+        <View className="flex-row items-center gap-2">
+          <View className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 items-center justify-center">
+            <MaterialIcons name="account-balance-wallet" size={18} color="#10b981" />
+          </View>
+          <Text className="font-semibold text-slate-900 dark:text-slate-50">
+            Баланс долгов
+          </Text>
+        </View>
+        {onPress ? (
+          <MaterialIcons name="chevron-right" size={20} color="#94a3b8" />
+        ) : null}
+      </View>
 
-  return (
-    <View className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-100 dark:border-zinc-800 p-4 flex-1 justify-center">
-      <View className="items-center mb-3">
-        <Text variant="small" className="mb-1">Баланс долгов</Text>
-        <Text
-          className={`text-2xl font-bold ${
-            netDebt > 0 ? "text-green-600" : netDebt < 0 ? "text-red-500" : "text-slate-900 dark:text-slate-50"
-          }`}
-        >
-          {isDataHidden ? "***" : netDebt > 0 ? `+${fmt(netDebt, false)}` : fmt(netDebt, false)}
+      <View className="flex-row justify-between mb-2">
+        <Text variant="small" className="text-slate-500 dark:text-slate-400">Нам должны:</Text>
+        <Text className="font-medium text-green-600">
+          {isDataHidden ? "***" : `${fmt(receivables, false)} ${DEFAULT_CURRENCY}`}
         </Text>
       </View>
 
-      <View className="h-[1px] bg-slate-100 dark:bg-zinc-800 w-full mb-3" />
-
-      <View className="flex-row items-center divide-x divide-slate-100 dark:divide-zinc-800">
-        <View className="flex-1 items-center px-1">
-          <Text variant="small" className="text-center mb-1 leading-tight">Нам должны</Text>
-          <Text className="text-base font-semibold text-green-600">
-            {fmt(receivables, isDataHidden)}
-          </Text>
-        </View>
-        <View className="flex-1 items-center px-1">
-          <Text variant="small" className="text-center mb-1 leading-tight">Мы должны</Text>
-          <Text className="text-base font-semibold text-red-500">
-            {fmt(payables, isDataHidden)}
-          </Text>
-        </View>
+      <View className="flex-row justify-between">
+        <Text variant="small" className="text-slate-500 dark:text-slate-400">Мы должны:</Text>
+        <Text className="font-medium text-red-500">
+          {isDataHidden ? "***" : `${fmt(payables, false)} ${DEFAULT_CURRENCY}`}
+        </Text>
       </View>
-    </View>
+    </CardContent>
+  );
+
+  return (
+    <Card className="flex-1">
+      {onPress ? (
+        <TouchableOpacity activeOpacity={0.7} onPress={onPress}>
+          {content}
+        </TouchableOpacity>
+      ) : (
+        content
+      )}
+    </Card>
   );
 }

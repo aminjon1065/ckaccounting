@@ -2,6 +2,7 @@ import { api, getLastServerTime } from "../../api";
 import {
   getShopsLastSyncedAt,
   insertOrUpdateShops,
+  reconcileLocalShops,
   setShopsLastSyncedAt,
 } from "../../db";
 import { reportError } from "@/lib/observability/reporter";
@@ -51,6 +52,29 @@ export class RemoteShopFetcher {
       await setShopsLastSyncedAt(serverTime ?? new Date().toISOString());
     } catch (error) {
       reportError(error, { tag: "remote-fetcher", entity: "shops" });
+    }
+  }
+
+  /**
+   * Lightweight ghost-eviction: fetch every shop id the actor can see via
+   * the dedicated `/shops/ids` endpoint and prune local rows whose id is
+   * absent. This catches server-side hard-deletes that can never reach the
+   * delta sync (no tombstone is emitted for hard-deletes).
+   *
+   * Cheap to call frequently — payload is `{id, updated_at}` per shop, not
+   * full rows. Pair with `fetch()` (delta) to keep details fresh: this method
+   * doesn't pull names, owners, or status.
+   */
+  async reconcile(): Promise<void> {
+    const { token } = this.deps();
+    if (!token) return;
+
+    try {
+      const rows = await api.shops.ids(token);
+      const ids = rows.map((r) => r.id);
+      await reconcileLocalShops(ids);
+    } catch (error) {
+      reportError(error, { tag: "remote-fetcher", entity: "shops", op: "reconcile" });
     }
   }
 }

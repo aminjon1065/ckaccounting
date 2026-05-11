@@ -29,6 +29,7 @@ import {
   suppressBiometricRelockForSystemUi,
 } from "@/lib/biometricRelock";
 import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { parseDecimal } from "@/lib/formatters";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
@@ -52,6 +53,12 @@ interface FormModalProps {
   initialShopId?: number | null;
   onClose: () => void;
   onSaved: (p: Product, wasEditing: boolean) => void;
+  /**
+   * Server reported the product no longer exists during an edit (404). The
+   * caller should evict the local row and refresh the list. Only fires for
+   * the edit path — create can't 404 on the entity itself.
+   */
+  onMissing?: (id: string) => void;
   token: string;
 }
 
@@ -118,6 +125,7 @@ export function ProductFormModal({
   initialShopId,
   onClose,
   onSaved,
+  onMissing,
   token,
 }: FormModalProps) {
   const { user } = useAuth();
@@ -318,26 +326,30 @@ export function ProductFormModal({
     setSubmitting(true);
 
     try {
+      // parseDecimal normalises Russian "3,5" → 3.5; plain parseFloat would
+      // truncate at the comma and silently store 3.
       const payload: CreateProductPayload = {
         name: name.trim(),
-        cost_price: parseFloat(costPrice),
+        cost_price: parseDecimal(costPrice),
         pricing_mode: pricingMode,
-        stock_quantity: parseFloat(stock),
+        stock_quantity: parseDecimal(stock),
       };
 
       if (pricingMode === "markup") {
-        payload.markup_percent = parseFloat(markupPercent);
-        payload.sale_price = parseFloat(computedMarkupPrice);
+        payload.markup_percent = parseDecimal(markupPercent);
+        payload.sale_price = parseDecimal(computedMarkupPrice);
       } else {
-        payload.sale_price = parseFloat(salePrice);
+        payload.sale_price = parseDecimal(salePrice);
       }
 
-      if (bulkPrice.trim() && !Number.isNaN(Number(bulkPrice))) {
-        payload.bulk_price = parseFloat(bulkPrice);
+      if (bulkPrice.trim()) {
+        const v = parseDecimal(bulkPrice);
+        if (!Number.isNaN(v)) payload.bulk_price = v;
       }
 
-      if (bulkThreshold.trim() && !Number.isNaN(Number(bulkThreshold))) {
-        payload.bulk_threshold = parseInt(bulkThreshold, 10);
+      if (bulkThreshold.trim()) {
+        const v = parseDecimal(bulkThreshold);
+        if (!Number.isNaN(v)) payload.bulk_threshold = Math.trunc(v);
       }
 
       if (code.trim()) {
@@ -348,8 +360,9 @@ export function ProductFormModal({
         payload.unit = unit.trim();
       }
 
-      if (lowAlert.trim() && !Number.isNaN(Number(lowAlert))) {
-        payload.low_stock_alert = parseFloat(lowAlert);
+      if (lowAlert.trim()) {
+        const v = parseDecimal(lowAlert);
+        if (!Number.isNaN(v)) payload.low_stock_alert = v;
       }
 
       if (!editing) {
@@ -377,6 +390,15 @@ export function ProductFormModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 404 && editing && onMissing) {
+        // Product was deleted on the server while a stale local row hung
+        // around. Hand off to the caller to evict + close.
+        onMissing(editing.id);
+        showToast({
+          message: "Товар был удалён. Локальная копия очищена.",
+          variant: "error",
+        });
+        onClose();
       } else {
         setError(
           e instanceof ApiError

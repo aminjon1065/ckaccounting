@@ -3,11 +3,13 @@ import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Crypto from "expo-crypto";
 
 import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
@@ -15,8 +17,12 @@ import { useToast } from "@/store/toast";
 
 import { SaleCard } from "@/components/sales/SaleCard";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
+import { EditSaleModal } from "@/components/sales/EditSaleModal";
 import { useSales } from "@/hooks/useSales";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
+import { api, ApiError, type Sale } from "@/lib/api";
+import { deleteLocalSale } from "@/lib/db";
+import { can } from "@/lib/permissions";
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -39,17 +45,85 @@ export default function SalesScreen() {
   } = useSales({ token, user });
 
   const [createVisible, setCreateVisible] = React.useState(false);
+  const [editingSale, setEditingSale] = React.useState<Sale | null>(null);
 
-  // Stable callback so memoized SaleCard doesn't break its prop equality.
+  const canEditSale = can(user?.role, "sales:edit");
+  const canDeleteSale = can(user?.role, "sales:delete");
+
+  // Stable callbacks so memoized SaleCard doesn't break its prop equality.
   const handleSelectSale = React.useCallback(
     (id: string) => router.push(`/sales/${id}`),
     [router]
   );
+
+  const handleEditSale = React.useCallback((sale: Sale) => {
+    setEditingSale(sale);
+  }, []);
+
+  const dropLocalSaleAndList = React.useCallback(async (id: string) => {
+    try {
+      await deleteLocalSale(id);
+    } catch {
+      // best-effort; the periodic reconcile / next sync will catch up
+    }
+    setSales((prev) => prev.filter((s) => s.id !== id));
+  }, [setSales]);
+
+  const handleDeleteSale = React.useCallback(
+    (sale: Sale) => {
+      if (!token) return;
+      Alert.alert(
+        "Удалить продажу?",
+        "Товары будут возвращены на склад. Действие нельзя отменить.",
+        [
+          { text: "Отмена", style: "cancel" },
+          {
+            text: "Удалить",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const bytes = await Crypto.getRandomBytesAsync(16);
+                const idempotencyKey = Array.from(bytes)
+                  .map((b) => b.toString(16).padStart(2, "0"))
+                  .join("");
+                await api.sales.delete(sale.id, token, idempotencyKey);
+                await dropLocalSaleAndList(sale.id);
+                showToast({ message: "Продажа удалена", variant: "success" });
+              } catch (e) {
+                if (e instanceof ApiError && e.status === 0) {
+                  showToast({
+                    message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                    variant: "error",
+                  });
+                } else if (e instanceof ApiError && e.status === 404) {
+                  // Already gone server-side. Reconcile the local view.
+                  await dropLocalSaleAndList(sale.id);
+                  showToast({
+                    message: "Продажа уже была удалена. Локальная копия очищена.",
+                    variant: "success",
+                  });
+                } else {
+                  showToast({ message: "Не удалось удалить продажу.", variant: "error" });
+                }
+              }
+            },
+          },
+        ]
+      );
+    },
+    [token, dropLocalSaleAndList, showToast]
+  );
+
   const renderSale = React.useCallback(
-    ({ item }: { item: import("@/lib/api").Sale }) => (
-      <SaleCard item={item} onSelect={handleSelectSale} />
+    ({ item }: { item: Sale }) => (
+      <SaleCard
+        item={item}
+        onSelect={handleSelectSale}
+        onEdit={canEditSale ? handleEditSale : undefined}
+        onDelete={canDeleteSale ? handleDeleteSale : undefined}
+      />
     ),
-    [handleSelectSale]
+    [handleSelectSale, handleEditSale, handleDeleteSale, canEditSale, canDeleteSale]
   );
 
   return (
@@ -140,6 +214,29 @@ export default function SalesScreen() {
         }}
         token={token!}
       />
+
+      {/* Edit modal — opened from the long-press menu on a SaleCard. */}
+      {editingSale && token && (
+        <EditSaleModal
+          visible={!!editingSale}
+          sale={editingSale}
+          token={token}
+          onClose={() => setEditingSale(null)}
+          onSuccess={(updated) => {
+            setSales((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+            setEditingSale(null);
+          }}
+          onMissing={() => {
+            const id = editingSale.id;
+            setEditingSale(null);
+            dropLocalSaleAndList(id).catch(() => {});
+            showToast({
+              message: "Продажа была удалена. Локальная копия очищена.",
+              variant: "error",
+            });
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

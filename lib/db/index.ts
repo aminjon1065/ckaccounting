@@ -25,6 +25,8 @@ export {
   insertOrUpdateProducts,
   getLocalProducts,
   getLocalProductById,
+  deleteLocalProduct,
+  reconcileLocalProducts,
 } from "./products";
 export type { LocalProduct } from "./products";
 
@@ -55,6 +57,7 @@ export {
   getLocalDebts,
   getLocalDebtById,
   getLocalDebtTransactions,
+  deleteLocalDebt,
 } from "./debts";
 
 // Sales repository — see lib/db/sales.ts
@@ -62,6 +65,7 @@ export {
   insertOrUpdateRemoteSales,
   getLocalSales,
   getLocalSaleById,
+  deleteLocalSale,
 } from "./sales";
 export type { LocalSale } from "./sales";
 
@@ -69,6 +73,7 @@ export type { LocalSale } from "./sales";
 export {
   insertOrUpdateExpenses,
   getLocalExpenses,
+  deleteLocalExpense,
 } from "./expenses";
 export type { LocalExpense } from "./expenses";
 
@@ -76,6 +81,7 @@ export type { LocalExpense } from "./expenses";
 export {
   insertOrUpdatePurchases,
   getLocalPurchases,
+  deleteLocalPurchase,
 } from "./purchases";
 export type { LocalPurchase } from "./purchases";
 
@@ -84,6 +90,8 @@ export {
   insertOrUpdateShops,
   getLocalShops,
   getLocalShopById,
+  deleteLocalShop,
+  reconcileLocalShops,
 } from "./shops";
 export type { LocalShop } from "./shops";
 

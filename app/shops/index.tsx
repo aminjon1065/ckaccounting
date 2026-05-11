@@ -233,6 +233,7 @@ function EditShopModal({
   editingShop,
   onClose,
   onSaved,
+  onMissing,
   token,
   showToast,
 }: {
@@ -240,6 +241,8 @@ function EditShopModal({
   editingShop: Shop | null;
   onClose: () => void;
   onSaved: (s: Shop) => void;
+  /** Server reported the shop no longer exists — caller should evict it locally. */
+  onMissing: (id: number) => void;
   token: string;
   showToast: ReturnType<typeof useToast>["showToast"];
 }) {
@@ -286,6 +289,15 @@ function EditShopModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 404) {
+        // Local cache had a ghost (server hard-deleted the shop and the
+        // tombstone never reached the delta sync). Evict locally + close.
+        onMissing(editingShop!.id);
+        showToast({
+          message: "Магазин был удалён. Локальная копия очищена.",
+          variant: "error",
+        });
+        onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
@@ -385,6 +397,7 @@ export default function ShopsScreen() {
     loading,
     refreshing,
     handleRefresh,
+    dropLocal,
   } = useShops({ token });
 
   const [createVisible, setCreateVisible] = React.useState(false);
@@ -395,9 +408,18 @@ export default function ShopsScreen() {
   const isSuperAdmin = user?.role === "super_admin";
 
   const displayedShops = React.useMemo(() => {
-    if (activeTab === "all") return shops;
-    if (activeTab === "active") return shops.filter((shop) => shop.is_active);
-    return shops.filter((shop) => !shop.is_active);
+    // Dedupe by id — optimistic insert + a fast refetch can briefly emit the
+    // same shop twice and FlatList crashes on duplicate keys.
+    const seen = new Set<number>();
+    const unique: Shop[] = [];
+    for (const s of shops) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      unique.push(s);
+    }
+    if (activeTab === "all") return unique;
+    if (activeTab === "active") return unique.filter((shop) => shop.is_active);
+    return unique.filter((shop) => !shop.is_active);
   }, [activeTab, shops]);
 
   if (!isSuperAdmin) {
@@ -441,6 +463,14 @@ export default function ShopsScreen() {
               if (e instanceof ApiError && e.status === 0) {
                 showToast({
                   message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
+              } else if (e instanceof ApiError && e.status === 404) {
+                // Server hard-deleted the shop; ghost survived in local cache.
+                // Drop it so the list reflects reality.
+                dropLocal(shop.id).catch(() => {});
+                showToast({
+                  message: "Магазин был удалён. Локальная копия очищена.",
                   variant: "error",
                 });
               } else {
@@ -539,6 +569,9 @@ export default function ShopsScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
+        }}
+        onMissing={(id) => {
+          dropLocal(id).catch(() => {});
         }}
         token={token!}
         showToast={showToast}

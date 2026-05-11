@@ -21,18 +21,19 @@ import {
   type Debt,
   type DebtTransaction,
 } from "@/lib/api";
-import { getLocalDebtById } from "@/lib/db";
+import { deleteLocalDebt, getLocalDebtById } from "@/lib/db";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
+import { fmt as fmtNumber } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Debt amounts are signed in storage; the UI shows the magnitude with a
+// separately-rendered sign glyph.
 function fmt(n: number) {
-  return Math.round(Math.abs(n))
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return fmtNumber(Math.abs(n));
 }
 
 function fmtDate(iso: string) {
@@ -118,6 +119,7 @@ function AddTransactionModal({
   token,
   onClose,
   onAdded,
+  onMissing,
 }: {
   visible: boolean;
   debtId: string;
@@ -125,6 +127,8 @@ function AddTransactionModal({
   token: string;
   onClose: () => void;
   onAdded: (updatedDebt: Debt) => void;
+  /** Server reported the debt no longer exists — caller should evict it locally. */
+  onMissing: () => void;
 }) {
   const [type, setType] = React.useState<TransactionType>(
     currentBalance >= 0 ? "give" : "take"
@@ -181,6 +185,15 @@ function AddTransactionModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 404) {
+        // Debt was deleted on the server while the local cache still had it.
+        // Evict the ghost and bounce the user back to the list.
+        onMissing();
+        showToast({
+          message: "Долг был удалён. Локальная копия очищена.",
+          variant: "error",
+        });
+        onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
@@ -435,6 +448,11 @@ export default function DebtDetailScreen() {
           token={token}
           onClose={() => setTxVisible(false)}
           onAdded={handleTxAdded}
+          onMissing={() => {
+            deleteLocalDebt(debt.id)
+              .catch((e) => reportError(e, { tag: "debt-detail-evict-ghost", debtId: debt.id }))
+              .finally(() => router.back());
+          }}
         />
       )}
     </SafeAreaView>

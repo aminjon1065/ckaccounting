@@ -1,7 +1,9 @@
-import { api, getLastServerTime } from "../../api";
+import { api, getLastServerTime, type User } from "../../api";
 import {
   getProductsLastSyncedAt,
   insertOrUpdateProducts,
+  localScope,
+  reconcileLocalProducts,
   setProductsLastSyncedAt,
 } from "../../db";
 import { reportError } from "@/lib/observability/reporter";
@@ -10,6 +12,13 @@ import { encodeCursor } from "../cursor";
 export interface ProductFetcherDeps {
   token: string;
   shopId: number | undefined;
+  /**
+   * Authenticated user (or null if signed out). Used by `reconcile()` to
+   * derive the local scope so ghost-pruning never touches rows outside the
+   * actor's visibility — e.g. an owner's reconcile must not delete cached
+   * products of a shop they don't own.
+   */
+  user?: Pick<User, "role" | "shop_id" | "id" | "owned_shop_ids"> | null;
 }
 
 export class RemoteProductFetcher {
@@ -79,6 +88,31 @@ export class RemoteProductFetcher {
       }
     } catch (error) {
       reportError(error, { tag: "remote-fetcher", entity: "products" });
+    }
+  }
+
+  /**
+   * Lightweight ghost-eviction. Pulls every product id the actor can see via
+   * `/products/ids` (just `{id, updated_at}` per row) and deletes any local
+   * row in the actor's scope whose id is not on the server.
+   *
+   * Catches server-side hard-deletes that the delta sync (`updated_since`)
+   * cannot observe — there is no tombstone for a hard-deleted row.
+   *
+   * Cheap by design: payload is a fraction of a full product row, no images,
+   * no descriptions. Safe to call on a periodic background timer.
+   */
+  async reconcile(): Promise<void> {
+    const { token, user } = this.deps();
+    if (!token) return;
+
+    try {
+      const rows = await api.products.ids(token);
+      const ids = rows.map((r) => String(r.id));
+      const scope = localScope(user ?? null);
+      await reconcileLocalProducts(scope, ids);
+    } catch (error) {
+      reportError(error, { tag: "remote-fetcher", entity: "products", op: "reconcile" });
     }
   }
 }

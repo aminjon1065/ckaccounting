@@ -5,15 +5,11 @@ import { ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Skeleton, Text } from "@/components/ui";
-import { api, type Purchase } from "@/lib/api";
+import { api, ApiError, type Purchase } from "@/lib/api";
+import { deleteLocalPurchase } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { reportError } from "@/lib/observability/reporter";
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+import { fmt } from "@/lib/formatters";
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -39,7 +35,17 @@ export default function PurchaseDetailScreen() {
     api.purchases
       .get(id, token)
       .then(setPurchase)
-      .catch((e) => reportError(e, { tag: "purchase-detail-load", purchaseId: id }))
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) {
+          // Server confirms the purchase is gone (deleted directly in DB,
+          // not via the API). Drop the ghost so it doesn't reappear in
+          // the cached list view.
+          deleteLocalPurchase(id).catch(() => {});
+          setPurchase(null);
+        } else {
+          reportError(e, { tag: "purchase-detail-load", purchaseId: id });
+        }
+      })
       .finally(() => setLoading(false));
   }, [token, id]);
 

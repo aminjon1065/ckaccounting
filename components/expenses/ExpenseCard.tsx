@@ -2,12 +2,7 @@ import * as React from "react";
 import { Alert, TouchableOpacity, View } from "react-native";
 import { Text } from "@/components/ui";
 import { type Expense } from "@/lib/api";
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+import { fmt } from "@/lib/formatters";
 
 function fmtDate(iso: string) {
   const d = new Date(iso);

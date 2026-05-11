@@ -34,6 +34,7 @@ export default function ExpensesScreen() {
     handleSaved,
     handleRefresh,
     handleLoadMore,
+    dropLocalExpense,
     retryFetch,
   } = useExpenses({ token, user });
 
@@ -148,6 +149,9 @@ export default function ExpensesScreen() {
         editing={editing}
         onClose={() => setFormVisible(false)}
         onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
+        onMissing={(id) => {
+          dropLocalExpense(id).catch(() => {});
+        }}
         token={token!}
       />
     </SafeAreaView>

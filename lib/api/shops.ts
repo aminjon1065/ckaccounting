@@ -50,6 +50,20 @@ export const shopsApi = {
       { token }
     ).then(normalizeShopsPage),
 
+  /**
+   * Lightweight id-only listing for client-side reconcile. Returns every shop
+   * id the actor can see plus its `updated_at`. Backend route:
+   * `GET /api/v1/shops/ids` — see ShopController::ids.
+   *
+   * Server wraps payloads via WrapApiResponse and `request` already unwraps
+   * the envelope, so the return type is the array directly.
+   */
+  ids: (token: string) =>
+    request<Array<{ id: number; updated_at: string | null }>>(
+      `/shops/ids`,
+      { token },
+    ),
+
   get: (id: number, token: string) =>
     request<any>(`/shops/${id}`, { token }).then(normalizeShop),
 

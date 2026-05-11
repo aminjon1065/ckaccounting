@@ -3,6 +3,7 @@ import { TextInput as RNTextInput, TouchableOpacity, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 
 import { Input, Text } from "@/components/ui";
+import { parseDecimal } from "@/lib/formatters";
 import { fmt } from "./helpers";
 import type { ServiceLineItem } from "./types";
 
@@ -71,7 +72,7 @@ export const ServiceItemRow = React.memo(function ServiceItemRow({
           />
         </View>
         <Text className="text-sm font-semibold text-primary-500 w-20 text-right">
-          {fmt((parseFloat(item.price) || 0) * item.quantity)}
+          {fmt((parseDecimal(item.price) || 0) * item.quantity)}
         </Text>
       </View>
     </View>

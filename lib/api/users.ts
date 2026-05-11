@@ -45,6 +45,20 @@ export const usersApi = {
     request<void>(`/users/${id}`, { method: "DELETE", token }),
 
   /**
+   * Lightweight id-only listing for client-side reconcile. Returns every user
+   * id in the actor's scope plus its `updated_at`. Backend route:
+   * `GET /api/v1/users/ids` — see UserController::ids.
+   *
+   * Server wraps payloads via WrapApiResponse and `request` already unwraps
+   * the envelope, so the return type is the array directly.
+   */
+  ids: (token: string) =>
+    request<Array<{ id: number; updated_at: string | null }>>(
+      `/users/ids`,
+      { token },
+    ),
+
+  /**
    * Super-admin only: queue a PIN reset for the target user.
    * The server invalidates the user's tokens; on next login the mobile
    * client clears its cached PIN and forces a fresh setup.

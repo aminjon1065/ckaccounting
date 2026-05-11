@@ -342,6 +342,7 @@ function EditUserModal({
   editingUser,
   onClose,
   onSaved,
+  onMissing,
   token,
   isSuperAdmin,
   showToast,
@@ -351,6 +352,8 @@ function EditUserModal({
   editingUser: AppUser | null;
   onClose: () => void;
   onSaved: (u: AppUser) => void;
+  /** Server reported the user no longer exists (404) — caller should evict locally. */
+  onMissing: (id: number) => void;
   token: string;
   isSuperAdmin: boolean;
   showToast: ReturnType<typeof useToast>["showToast"];
@@ -419,6 +422,15 @@ function EditUserModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 404) {
+        // User was deleted on the server while the modal was still open.
+        // Tell the parent to evict the local row + close.
+        onMissing(editingUser!.id);
+        showToast({
+          message: "Сотрудник был удалён. Список обновлён.",
+          variant: "error",
+        });
+        onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
@@ -560,6 +572,9 @@ export default function UsersScreen() {
             } catch (e) {
               if (e instanceof ApiError && e.status === 0) {
                 showToast({ message: "Нет сети. Сброс PIN требует подключения к интернету.", variant: "warning" });
+              } else if (e instanceof ApiError && e.status === 404) {
+                setUsers((prev) => prev.filter((u) => u.id !== id));
+                showToast({ message: "Сотрудник был удалён. Список обновлён.", variant: "error" });
               } else {
                 showToast({ message: e instanceof ApiError ? e.message : "Не удалось сбросить PIN.", variant: "error" });
               }
@@ -589,6 +604,14 @@ export default function UsersScreen() {
                 showToast({
                   message: "Нет соединения. Проверьте интернет и попробуйте снова.",
                   variant: "error",
+                });
+              } else if (e instanceof ApiError && e.status === 404) {
+                // Already gone server-side. Drop the local row to keep the
+                // list aligned with the server.
+                setUsers((prev) => prev.filter((u) => u.id !== id));
+                showToast({
+                  message: "Сотрудник уже был удалён. Список обновлён.",
+                  variant: "success",
                 });
               } else {
                 showToast({ message: "Не удалось удалить сотрудника.", variant: "error" });
@@ -675,6 +698,9 @@ export default function UsersScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setUsers((prev) => prev.map((u) => u.id === updated.id ? updated : u));
+        }}
+        onMissing={(id) => {
+          setUsers((prev) => prev.filter((u) => u.id !== id));
         }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}

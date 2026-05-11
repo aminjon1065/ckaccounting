@@ -12,7 +12,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Crypto from "expo-crypto";
 
 import { Button, Input, Text } from "@/components/ui";
-import { api, type Sale } from "@/lib/api";
+import { api, ApiError, type Sale } from "@/lib/api";
 import { useToast } from "@/store/toast";
 
 type PaymentType = "cash" | "card" | "transfer";
@@ -35,6 +35,8 @@ interface EditSaleModalProps {
   token: string;
   onClose: () => void;
   onSuccess: (updated: Sale) => void;
+  /** Server reported the sale no longer exists — caller should evict it locally. */
+  onMissing?: () => void;
 }
 
 export function EditSaleModal({
@@ -43,6 +45,7 @@ export function EditSaleModal({
   token,
   onClose,
   onSuccess,
+  onMissing,
 }: EditSaleModalProps) {
   const { showToast } = useToast();
   const [customerName, setCustomerName] = React.useState(sale.customer_name ?? "");
@@ -83,7 +86,13 @@ export function EditSaleModal({
       showToast({ message: "Продажа обновлена", variant: "success" });
       onSuccess(updated);
     } catch (e: any) {
-      Alert.alert("Ошибка", e?.message ?? "Не удалось обновить продажу.");
+      if (e instanceof ApiError && e.status === 404 && onMissing) {
+        // Sale was deleted on the server while we were holding a stale local
+        // copy. Hand off to the caller to evict + close the modal.
+        onMissing();
+      } else {
+        Alert.alert("Ошибка", e?.message ?? "Не удалось обновить продажу.");
+      }
     } finally {
       setSubmitting(false);
     }

@@ -72,6 +72,17 @@ export async function getLocalExpenses(scope: LocalScope): Promise<LocalExpense[
   return results.map(mapRowToLocalExpense);
 }
 
+/**
+ * Drop an expense from the local cache. Used after a 404 on a write to
+ * evict the ghost row.
+ */
+export async function deleteLocalExpense(id: string | number): Promise<void> {
+  if (id === null || id === undefined || id === "") return;
+  const db = getDb();
+  await db.runAsync("DELETE FROM expenses WHERE id = ?", [id]);
+  await invalidateAggregatedCaches();
+}
+
 export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: number) {
   const db = getDb();
   await db.withTransactionAsync(async () => {

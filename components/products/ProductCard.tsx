@@ -4,12 +4,7 @@ import { Alert, TouchableOpacity, View } from "react-native";
 import { Image } from "expo-image";
 import { Badge, Text } from "@/components/ui";
 import { resolveBackendAssetUrl, type Product } from "@/lib/api";
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+import { fmt } from "@/lib/formatters";
 
 function stockColor(product: Product) {
   if (product.stock_quantity === 0) {

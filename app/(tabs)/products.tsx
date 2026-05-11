@@ -39,6 +39,7 @@ export default function ProductsScreen() {
     handleSearchChange,
     handleDelete,
     handleSaved,
+    dropLocalProduct,
     retryFetch,
   } = useProducts({ token, user });
 
@@ -176,6 +177,9 @@ export default function ProductsScreen() {
         editing={editing}
         onClose={() => setFormVisible(false)}
         onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
+        onMissing={(id) => {
+          dropLocalProduct(id).catch(() => {});
+        }}
         token={token!}
       />
 

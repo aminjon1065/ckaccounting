@@ -23,6 +23,12 @@ export interface SaleItem {
   quantity: number;
   price: number;
   total: number;
+  /**
+   * How much of this item has already been refunded across all returns for
+   * the parent sale. Defaults to 0. Mobile clamps the return modal at
+   * `quantity - returned_quantity` so a sale can't be refunded twice.
+   */
+  returned_quantity?: number;
 }
 
 export interface Sale {
@@ -41,6 +47,10 @@ export interface Sale {
   payment_type: "cash" | "card" | "transfer";
   notes?: string | null;
   items: SaleItem[];
+  /** Sum of money refunded for this sale across all returns. 0 by default. */
+  returned_total?: number;
+  /** True when every line has been fully returned. */
+  is_fully_returned?: boolean;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;

@@ -79,3 +79,25 @@ export async function getLocalShopById(id: string | number): Promise<LocalShop |
   if (!r) return null;
   return mapRowToLocalShop(r);
 }
+
+export async function deleteLocalShop(id: number): Promise<void> {
+  if (!Number.isFinite(id)) return;
+  const db = getDb();
+  await db.runAsync("DELETE FROM shops WHERE id = ?", [id]);
+}
+
+/**
+ * Replace the local shops cache with the authoritative server set: keep rows
+ * whose id appears in `serverIds`, drop the rest. Used after a full pull to
+ * evict ghosts (rows hard-deleted on the server, where soft-delete tombstones
+ * never reach the delta sync).
+ */
+export async function reconcileLocalShops(serverIds: number[]): Promise<void> {
+  const db = getDb();
+  if (serverIds.length === 0) {
+    await db.runAsync("DELETE FROM shops");
+    return;
+  }
+  const placeholders = serverIds.map(() => "?").join(",");
+  await db.runAsync(`DELETE FROM shops WHERE id NOT IN (${placeholders})`, serverIds);
+}

@@ -15,14 +15,9 @@ import { can } from "@/lib/permissions";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { useAuth } from "@/store/auth";
 import { usePurchases } from "@/hooks/usePurchases";
+import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
 
 function fmtDate(iso: string) {
   const d = new Date(iso);

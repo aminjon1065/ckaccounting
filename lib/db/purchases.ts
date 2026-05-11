@@ -79,6 +79,17 @@ export async function insertOrUpdatePurchases(purchases: Purchase[], shopId?: nu
   await invalidateAggregatedCaches();
 }
 
+/**
+ * Drop a purchase from the local cache. Used after a 404 on read of a
+ * purchase that's gone server-side (no write endpoints exist yet).
+ */
+export async function deleteLocalPurchase(id: string | number): Promise<void> {
+  if (id === null || id === undefined || id === "") return;
+  const db = getDb();
+  await db.runAsync("DELETE FROM purchases WHERE id = ?", [id]);
+  await invalidateAggregatedCaches();
+}
+
 export async function getLocalPurchases(scope: LocalScope): Promise<LocalPurchase[]> {
   const db = getDb();
   let query = "SELECT * FROM purchases WHERE 1=1";

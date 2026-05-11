@@ -31,13 +31,13 @@ import {
   computeLocalStockReport,
 } from "@/lib/cache/offlineReports";
 
+import { fmt as fmtNumber } from "@/lib/formatters";
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(n: number) {
+function fmt(n: number | null | undefined) {
   if (n == null) return "0";
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return fmtNumber(n);
 }
 
 function today() {

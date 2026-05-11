@@ -2,14 +2,13 @@ import * as React from "react";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 
 import { Product } from "@/lib/api";
+import { fmt as fmtNumber } from "@/lib/formatters";
 
 import { PriceMode } from "./types";
 
-export function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+// Re-export the canonical decimal-preserving formatter so existing imports
+// `import { fmt } from "./helpers"` keep working without touching every file.
+export const fmt = fmtNumber;
 
 export function fmtDate(iso: string) {
   const d = new Date(iso);

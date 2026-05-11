@@ -6,6 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text, Button, Input, Select } from "@/components/ui";
 import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
+import { parseDecimal } from "@/lib/formatters";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
@@ -481,10 +482,10 @@ export function CreateSaleModal({
   const subtotal =
     saleType === "product"
       ? cart.reduce((s, c) => s + c.price * c.quantity, 0)
-      : serviceItems.reduce((s, i) => s + (parseFloat(i.price) || 0) * i.quantity, 0);
-  const discountVal = parseFloat(discount) || 0;
+      : serviceItems.reduce((s, i) => s + (parseDecimal(i.price) || 0) * i.quantity, 0);
+  const discountVal = parseDecimal(discount) || 0;
   const total = Math.max(0, subtotal - discountVal);
-  const paidVal = parseFloat(paid) || 0;
+  const paidVal = parseDecimal(paid) || 0;
   const unpaid = Math.max(0, total - paidVal); // amount still owed
   const overpaid = Math.max(0, paidVal - total); // amount paid above the bill
 
@@ -537,7 +538,7 @@ export function CreateSaleModal({
               name: s.name.trim(),
               unit: s.unit.trim() || undefined,
               quantity: s.quantity,
-              price: parseFloat(s.price) || 0,
+              price: parseDecimal(s.price) || 0,
             })),
       shop_id: showShopPicker && shopId ? Number(shopId) : (implicitShopId ?? undefined),
     };

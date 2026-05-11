@@ -204,6 +204,20 @@ export const productsApi = {
       { token }
     ).then(normalizeProductsPage),
 
+  /**
+   * Lightweight id-only listing for client-side reconcile. Returns every
+   * product id the actor can see plus its `updated_at`. Backend route:
+   * `GET /api/v1/products/ids` — see ProductController::ids.
+   *
+   * The server wraps payloads via WrapApiResponse, and `request` already
+   * unwraps the envelope, so the typing here is the array directly.
+   */
+  ids: (token: string) =>
+    request<Array<{ id: string; updated_at: string | null }>>(
+      `/products/ids`,
+      { token },
+    ),
+
   get: (id: string, token: string) =>
     request<Product>(`/products/${id}`, { token }).then(normalizeProductImageUrls),
 

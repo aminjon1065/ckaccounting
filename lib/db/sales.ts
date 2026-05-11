@@ -219,3 +219,18 @@ export async function getLocalSaleById(id: string): Promise<LocalSale | null> {
   if (!r) return null;
   return await mapRowToLocalSale(r);
 }
+
+/**
+ * Drop a sale and its line items from the local cache. Used when the server
+ * reports the sale no longer exists (404 on a write) so subsequent reads
+ * don't resurrect a ghost row.
+ */
+export async function deleteLocalSale(id: string | number): Promise<void> {
+  if (id === null || id === undefined || id === "") return;
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM sale_items WHERE sale_id = ?", [id]);
+    await db.runAsync("DELETE FROM sales WHERE id = ?", [id]);
+  });
+  invalidateAggregatedCaches();
+}

@@ -72,6 +72,19 @@ export interface CacheMethods {
   refreshProducts: (forceFullSync?: boolean) => Promise<void>;
   fetchRemoteDebts: () => Promise<void>;
   fetchRemoteShops: () => Promise<void>;
+  /**
+   * Lightweight ghost-eviction for shops: pulls only `{id, updated_at}` from
+   * `/shops/ids` and prunes local rows the server no longer returns. Cheap
+   * enough to call on screen open and on a periodic background timer.
+   */
+  reconcileRemoteShops: () => Promise<void>;
+  /**
+   * Lightweight ghost-eviction for products: pulls only `{id, updated_at}`
+   * from `/products/ids` (filtered to the actor's scope server-side) and
+   * prunes local rows the server no longer returns. Same call profile as
+   * `reconcileRemoteShops`.
+   */
+  reconcileRemoteProducts: () => Promise<void>;
   fetchOlderSales: (pages?: number) => Promise<boolean>;
   fetchOlderExpenses: (pages?: number) => Promise<boolean>;
   fetchOlderPurchases: (pages?: number) => Promise<boolean>;
@@ -83,6 +96,8 @@ const noopMethods: CacheMethods = {
   refreshProducts: async () => {},
   fetchRemoteDebts: async () => {},
   fetchRemoteShops: async () => {},
+  reconcileRemoteShops: async () => {},
+  reconcileRemoteProducts: async () => {},
   fetchOlderSales: async () => false,
   fetchOlderExpenses: async () => false,
   fetchOlderPurchases: async () => false,
@@ -95,6 +110,16 @@ const CacheMethodsContext = React.createContext<CacheMethods>(noopMethods);
 
 const PERIODIC_REFRESH_MS = 60_000;
 
+/**
+ * How often to run the lightweight ID-only reconcile pass on top of the
+ * delta sync. The delta path (every 60s) handles soft-deletes via
+ * tombstones; this longer interval catches the rare hard-delete by
+ * comparing the actor's local ids against the server's authoritative
+ * `{id, updated_at}` listing. Cheaper than a full pull, but still a
+ * round-trip we don't need every minute.
+ */
+const PERIODIC_RECONCILE_MS = 5 * 60_000;
+
 export function CacheProvider({ children }: { children: React.ReactNode }) {
   const { token, user, tokenExpired } = useAuth();
   const isOnline = useIsOnline();
@@ -104,12 +129,14 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
     shopId: user?.shop_id,
     role: user?.role,
     userId: user?.id,
+    user,
   });
   authRef.current = {
     token: token ?? "",
     shopId: user?.shop_id,
     role: user?.role,
     userId: user?.id,
+    user,
   };
 
   const tokenRef = React.useRef<string | null>(null);
@@ -205,6 +232,26 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isOnline]);
 
+  const reconcileRemoteShops = React.useCallback(async (): Promise<void> => {
+    if (!isOnline || !tokenRef.current || tokenExpiredRef.current) return;
+    try {
+      await fetchers.current.shops.reconcile();
+      useCacheStore.setState({ lastSyncedAt: new Date() });
+    } catch (e) {
+      reportError(e, { tag: "cache-reconcile", entity: "shops" });
+    }
+  }, [isOnline]);
+
+  const reconcileRemoteProducts = React.useCallback(async (): Promise<void> => {
+    if (!isOnline || !tokenRef.current || tokenExpiredRef.current) return;
+    try {
+      await fetchers.current.products.reconcile();
+      useCacheStore.setState({ lastSyncedAt: new Date() });
+    } catch (e) {
+      reportError(e, { tag: "cache-reconcile", entity: "products" });
+    }
+  }, [isOnline]);
+
   const fetchOlderSales = React.useCallback(async (pages = 5): Promise<boolean> => {
     if (!isOnline || !tokenRef.current || tokenExpiredRef.current) return false;
     return fetchers.current.sales.fetchOlder(pages);
@@ -296,11 +343,20 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
       triggerSync().catch(() => {});
     }, PERIODIC_REFRESH_MS);
 
+    // Periodic ghost eviction. Runs less often than the delta sync because
+    // hard-deletes are rare and the reconcile path is a separate round-trip.
+    // Calls go through the methods, which already guard on online/auth state.
+    const reconcileInterval = setInterval(() => {
+      reconcileRemoteShops().catch(() => {});
+      reconcileRemoteProducts().catch(() => {});
+    }, PERIODIC_RECONCILE_MS);
+
     return () => {
       clearTimeout(lowStockTimer);
       clearInterval(interval);
+      clearInterval(reconcileInterval);
     };
-  }, [isOnline, token, tokenExpired, triggerSync]);
+  }, [isOnline, token, tokenExpired, triggerSync, reconcileRemoteShops, reconcileRemoteProducts]);
 
   // ─── Methods context value ─────────────────────────────────────────────────
 
@@ -310,6 +366,8 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
       refreshProducts,
       fetchRemoteDebts,
       fetchRemoteShops,
+      reconcileRemoteShops,
+      reconcileRemoteProducts,
       fetchOlderSales,
       fetchOlderExpenses,
       fetchOlderPurchases,
@@ -320,6 +378,8 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
       refreshProducts,
       fetchRemoteDebts,
       fetchRemoteShops,
+      reconcileRemoteShops,
+      reconcileRemoteProducts,
       fetchOlderSales,
       fetchOlderExpenses,
       fetchOlderPurchases,

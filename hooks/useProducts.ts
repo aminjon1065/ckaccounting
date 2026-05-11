@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Alert } from "react-native";
-import { api, type Product, type User } from "@/lib/api";
+import { api, ApiError, type Product, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalProducts, localScope } from "@/lib/db";
+import { deleteLocalProduct, getLocalProducts, localScope } from "@/lib/db";
 import type { LocalProduct } from "@/lib/db";
 
 /**
@@ -129,6 +129,15 @@ export function useProducts({ token, user }: { token: string | null; user: User 
     }, 250);
   }, [fetchProducts, user]);
 
+  const dropLocalProduct = useCallback(async (id: string) => {
+    try {
+      await deleteLocalProduct(id);
+    } catch {
+      // best-effort; the periodic reconcile will catch up regardless
+    }
+    setProducts((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
   const handleDelete = useCallback((id: string) => {
     Alert.alert("Удалить товар", "Товар будет удалён безвозвратно.", [
       { text: "Отмена", style: "cancel" },
@@ -138,13 +147,21 @@ export function useProducts({ token, user }: { token: string | null; user: User 
         onPress: async () => {
           try {
             await api.products.delete(id, token!, `prod-delete-${id}`);
-            setProducts((prev) => prev.filter((p) => p.id !== id));
+            await dropLocalProduct(id);
             showToast({ message: "Товар удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
               showToast({
                 message: "Нет соединения. Проверьте интернет и попробуйте снова.",
                 variant: "error",
+              });
+            } else if (e instanceof ApiError && e.status === 404) {
+              // Server already considers it gone (hard-deleted, or another
+              // device beat us to it). Quietly evict the local ghost.
+              await dropLocalProduct(id);
+              showToast({
+                message: "Товар уже был удалён. Локальная копия очищена.",
+                variant: "success",
               });
             } else {
               showToast({ message: "Не удалось удалить товар.", variant: "error" });
@@ -153,7 +170,7 @@ export function useProducts({ token, user }: { token: string | null; user: User 
         },
       },
     ]);
-  }, [token, showToast]);
+  }, [token, showToast, dropLocalProduct]);
 
   const handleSaved = useCallback((saved: Product | LocalProduct, wasEditing: boolean) => {
     setProducts((prev) => {
@@ -190,6 +207,8 @@ export function useProducts({ token, user }: { token: string | null; user: User 
     handleSearchChange,
     handleDelete,
     handleSaved,
+    /** Evict a stale local product after the server confirms it's gone. */
+    dropLocalProduct,
     retryFetch,
   };
 }

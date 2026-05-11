@@ -1,54 +1,77 @@
+// ─── useShops ────────────────────────────────────────────────────────────────
+//
+// Local SQLite is the single source of truth for the screen. The cache layer
+// (RemoteShopFetcher) keeps SQLite in sync with the server — including
+// applying soft-delete tombstones and, on reconcile, pruning ghost rows the
+// server hard-deleted. This hook just reads from SQLite and asks the cache
+// to refresh; it does not merge a transient API response into local state.
+//
+// Why this matters: an earlier version called `api.shops.list` directly and
+// merged the result with local rows, keeping any local row that was absent
+// from the server response. That preserved deleted shops indefinitely and
+// produced "Resource not found" on subsequent edits.
+
 import { useCallback, useEffect, useState } from "react";
-import { api, type Shop } from "@/lib/api";
-import { getLocalShops, type LocalShop } from "@/lib/db";
+import { useCacheMethods } from "@/lib/cache/CacheProvider";
+import { deleteLocalShop, getLocalShops } from "@/lib/db";
+import type { Shop } from "@/lib/api";
+import { reportError } from "@/lib/observability/reporter";
 
 export function useShops({ token }: { token: string | null }) {
+  const { reconcileRemoteShops } = useCacheMethods();
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [isOffline, setIsOffline] = useState(false);
 
-  const fetchShops = useCallback(async (reset = false) => {
-    if (!token) return;
+  const loadFromLocal = useCallback(async () => {
+    const local = await getLocalShops();
+    setShops(local);
+  }, []);
+
+  const reconcileAndLoad = useCallback(async () => {
     setError("");
-
-    // Always load local shops first — instant, always works
-    const localShops = await getLocalShops();
-
     try {
-      const res = await api.shops.list(token);
-      setIsOffline(false);
-      const serverShops: Shop[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-      // Merge: server shops + any local-only pending shops
-      const merged = mergeShops(localShops, serverShops);
-      setShops(merged);
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        setIsOffline(true);
-        setShops(localShops as Shop[]);
-      } else {
-        if (reset) setError("Не удалось загрузить магазины.");
-      }
+      await reconcileRemoteShops();
+    } catch (e) {
+      reportError(e, { tag: "useShops-reconcile" });
     }
-  }, [token]);
+    try {
+      await loadFromLocal();
+    } catch (e) {
+      reportError(e, { tag: "useShops-load" });
+      setError("Не удалось загрузить магазины.");
+    }
+  }, [reconcileRemoteShops, loadFromLocal]);
 
   useEffect(() => {
-    if (token) {
-      fetchShops(true).finally(() => setLoading(false));
-    }
-  }, [token]);
+    if (!token) return;
+    let cancelled = false;
+    loadFromLocal()
+      .catch((e) => reportError(e, { tag: "useShops-initial-load" }))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    reconcileAndLoad().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [token, loadFromLocal, reconcileAndLoad]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchShops(true).finally(() => setRefreshing(false));
-  }, [fetchShops]);
+    reconcileAndLoad().finally(() => setRefreshing(false));
+  }, [reconcileAndLoad]);
 
-  const retryFetch = useCallback(() => {
-    setLoading(true);
-    fetchShops(true).finally(() => setLoading(false));
-  }, [fetchShops]);
+  /**
+   * Drop a shop from local SQLite without going through the server. Use when
+   * the server has already told us the row is gone (e.g. 404 on update) so
+   * the next render doesn't show the ghost.
+   */
+  const dropLocal = useCallback(async (id: number) => {
+    await deleteLocalShop(id);
+    await loadFromLocal();
+  }, [loadFromLocal]);
 
   return {
     shops,
@@ -56,43 +79,7 @@ export function useShops({ token }: { token: string | null }) {
     loading,
     refreshing,
     error,
-    isOffline,
     handleRefresh,
-    retryFetch,
+    dropLocal,
   };
-}
-
-/**
- * Merge local shops with server shops.
- * - Server shops replace any local with same id
- * - Local shops with negative id (pending sync) that don't exist on server are kept
- */
-function mergeShops(local: LocalShop[], server: Shop[]): Shop[] {
-  const serverMap = new Map<number, Shop>();
-  for (const s of server) {
-    serverMap.set(s.id, s);
-  }
-
-  const result: Shop[] = [];
-  for (const l of local) {
-    if (l.id < 0) {
-      // Local pending — keep if not on server
-      if (!serverMap.has(l.id)) {
-        result.push(l);
-      }
-    } else if (serverMap.has(l.id)) {
-      // Server version supersedes
-      result.push(serverMap.get(l.id)!);
-      serverMap.delete(l.id);
-    } else {
-      result.push(l);
-    }
-  }
-
-  for (const s of serverMap.values()) {
-    result.push(s);
-  }
-
-  result.sort((a, b) => a.name.localeCompare(b.name));
-  return result;
 }

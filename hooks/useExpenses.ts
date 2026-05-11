@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
-import { api, type Expense, type User } from "@/lib/api";
+import { api, ApiError, type Expense, type User } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { getLocalExpenses, localScope } from "@/lib/db";
+import { deleteLocalExpense, getLocalExpenses, localScope } from "@/lib/db";
 import type { LocalExpense } from "@/lib/db";
 import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
 
@@ -52,6 +52,15 @@ export function useExpenses({ token, user }: { token: string | null; user: User 
     wasSyncingRef.current = isSyncing;
   }, [isSyncing, loadFromLocal]);
 
+  const dropLocalExpense = useCallback(async (id: string) => {
+    try {
+      await deleteLocalExpense(id);
+    } catch {
+      // best-effort
+    }
+    setExpenses((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
   const handleDelete = useCallback((id: string) => {
     Alert.alert("Удалить расход", "Расход будет удалён безвозвратно.", [
       { text: "Отмена", style: "cancel" },
@@ -61,13 +70,19 @@ export function useExpenses({ token, user }: { token: string | null; user: User 
         onPress: async () => {
           try {
             await api.expenses.delete(id, token!);
-            setExpenses((prev) => prev.filter((e) => e.id !== id));
+            await dropLocalExpense(id);
             showToast({ message: "Расход удалён", variant: "success" });
           } catch (e: any) {
             if (e?.status === 0) {
               showToast({
                 message: "Нет соединения. Проверьте интернет и попробуйте снова.",
                 variant: "error",
+              });
+            } else if (e instanceof ApiError && e.status === 404) {
+              await dropLocalExpense(id);
+              showToast({
+                message: "Расход уже был удалён. Локальная копия очищена.",
+                variant: "success",
               });
             } else {
               showToast({ message: "Не удалось удалить расход.", variant: "error" });
@@ -76,7 +91,7 @@ export function useExpenses({ token, user }: { token: string | null; user: User 
         },
       },
     ]);
-  }, [token, showToast]);
+  }, [token, showToast, dropLocalExpense]);
 
   const handleSaved = useCallback((saved: Expense | LocalExpense, wasEditing: boolean) => {
     setExpenses((prev) => {
@@ -138,6 +153,8 @@ export function useExpenses({ token, user }: { token: string | null; user: User 
     handleSaved,
     handleRefresh,
     handleLoadMore,
+    /** Evict a stale local expense after the server confirms it's gone. */
+    dropLocalExpense,
     retryFetch,
   };
 }

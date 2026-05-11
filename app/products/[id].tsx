@@ -7,17 +7,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import { api, resolveBackendAssetUrl, type Product } from "@/lib/api";
-import { getLocalProductById } from "@/lib/db";
+import { api, ApiError, resolveBackendAssetUrl, type Product } from "@/lib/api";
+import { deleteLocalProduct, getLocalProductById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
+import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n: number) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -92,6 +87,17 @@ export default function ProductDetailScreen() {
       const p = await api.products.get(id, token);
       setProduct(p);
     } catch (e: any) {
+      if (e instanceof ApiError && e.status === 404 && local) {
+        // Local row outlived the server — server hard-deleted it (soft-delete
+        // tombstones would have been applied by the delta sync already).
+        // Drop the ghost so the list view stops showing it on next render.
+        try {
+          await deleteLocalProduct(id);
+        } catch {}
+        setProduct(null);
+        setError("Товар был удалён. Локальная копия очищена.");
+        return;
+      }
       const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
       if (isOfflineError) {
         if (!local) setError("Нет сети. Данные недоступны.");

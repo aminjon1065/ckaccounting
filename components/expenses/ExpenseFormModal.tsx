@@ -14,6 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense, type Shop } from "@/lib/api";
+import { fmt, parseDecimal } from "@/lib/formatters";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
 import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
@@ -25,12 +26,15 @@ export function ExpenseFormModal({
   editing,
   onClose,
   onSaved,
+  onMissing,
   token,
 }: {
   visible: boolean;
   editing: Expense | null;
   onClose: () => void;
   onSaved: (e: Expense, wasEditing: boolean) => void;
+  /** Server reported the expense no longer exists (404 on edit). */
+  onMissing?: (id: string) => void;
   token: string;
 }) {
   const [name, setName] = React.useState("");
@@ -84,16 +88,18 @@ export function ExpenseFormModal({
   }, [visible, editing]);
 
   const total =
-    (parseFloat(quantity) || 0) * (parseFloat(price) || 0);
+    (parseDecimal(quantity) || 0) * (parseDecimal(price) || 0);
 
   async function handleSubmit() {
     setError("");
     if (!name.trim()) { setError("Введите название расхода."); return; }
-    if (!quantity || isNaN(Number(quantity)) || Number(quantity) <= 0) {
+    const quantityNum = parseDecimal(quantity);
+    if (Number.isNaN(quantityNum) || quantityNum <= 0) {
       setError("Некорректное количество.");
       return;
     }
-    if (!price || isNaN(Number(price)) || Number(price) <= 0) {
+    const priceNum = parseDecimal(price);
+    if (Number.isNaN(priceNum) || priceNum <= 0) {
       setError("Некорректная цена.");
       return;
     }
@@ -115,8 +121,8 @@ export function ExpenseFormModal({
 
     const payload: CreateExpensePayload & { shop_id?: number } = {
       name: name.trim(),
-      quantity: parseFloat(quantity),
-      price: parseFloat(price),
+      quantity: quantityNum,
+      price: priceNum,
     };
     if (note.trim()) payload.note = note.trim();
     if (targetShopId !== null) payload.shop_id = targetShopId;
@@ -143,18 +149,21 @@ export function ExpenseFormModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 404 && editing && onMissing) {
+        // Expense was deleted on the server while the local cache still
+        // pointed at it. Hand off to the caller to evict + close.
+        onMissing(editing.id);
+        showToast({
+          message: "Расход был удалён. Локальная копия очищена.",
+          variant: "error",
+        });
+        onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function fmt(n: number) {
-    return Math.round(n)
-      .toString()
-      .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
   }
 
   return (

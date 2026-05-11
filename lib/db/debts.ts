@@ -230,6 +230,21 @@ export async function getLocalDebtById(id: string): Promise<Debt | null> {
   };
 }
 
+/**
+ * Drop a debt and its transactions from the local cache. Used when the server
+ * reports the debt no longer exists (404 on a write) so the next read doesn't
+ * resurrect a ghost row.
+ */
+export async function deleteLocalDebt(id: string): Promise<void> {
+  if (!id) return;
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM debt_transactions WHERE debt_id = ?", [id]);
+    await db.runAsync("DELETE FROM debts WHERE id = ?", [id]);
+  });
+  invalidateAggregatedCaches();
+}
+
 export async function getLocalDebtTransactions(debt_id: string): Promise<DebtTransaction[]> {
   const db = getDb();
   const results = await db.getAllAsync<DebtTransactionRow>(
