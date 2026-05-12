@@ -38,6 +38,13 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { refreshProducts } = useCacheMethods();
   const isSuperAdmin = user?.role === "super_admin";
+  // Multi-shop owners get the same shop picker on the dashboard so they
+  // can flip between an aggregated view and a single-shop view. Single-
+  // shop owners and sellers don't need the picker — their data is already
+  // scoped server-side.
+  const ownedShopIds = user?.owned_shop_ids ?? [];
+  const isMultiShopOwner = user?.role === "owner" && ownedShopIds.length > 1;
+  const showShopPicker = isSuperAdmin || isMultiShopOwner;
   const [isDataHidden, setIsDataHidden] = React.useState(false);
 
   React.useEffect(() => {
@@ -110,7 +117,7 @@ export default function DashboardScreen() {
     setDateFrom,
     dateTo,
     setDateTo,
-  } = useDashboard({ token, isSuperAdmin });
+  } = useDashboard({ token, isSuperAdmin, isMultiShopOwner });
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -146,8 +153,12 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* ── Shop name chip ── */}
-        {isSuperAdmin ? (
+        {/* ── Shop name chip / picker ──
+            super_admin and multi-shop owners get a picker (default = "Все
+            магазины", which the backend interprets as the actor's full
+            accessible set). Sellers and single-shop owners see a static
+            chip — their scope is fixed server-side. */}
+        {showShopPicker ? (
           <View className="px-5 pb-2 pt-1">
             <Select
               value={activeShopId ? String(activeShopId) : ""}

@@ -4,7 +4,16 @@ import { getDashboardCache, setDashboardCache } from "@/lib/db";
 
 const FILTER_DEBOUNCE_MS = 250;
 
-export function useDashboard({ token, isSuperAdmin }: { token: string | null; isSuperAdmin: boolean }) {
+export function useDashboard({
+  token,
+  isSuperAdmin,
+  isMultiShopOwner = false,
+}: {
+  token: string | null;
+  isSuperAdmin: boolean;
+  /** Owner with more than one assigned shop — show the same shop picker. */
+  isMultiShopOwner?: boolean;
+}) {
   const [period, setPeriod] = useState<DashboardPeriod>("day");
   const [activeShopId, setActiveShopId] = useState<number | null>(null);
   const [shops, setShops] = useState<Shop[]>([]);
@@ -26,10 +35,18 @@ export function useDashboard({ token, isSuperAdmin }: { token: string | null; is
   );
 
   useEffect(() => {
-    if (isSuperAdmin && token) {
-      api.shops.list(token).then((res: any) => setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [])).catch(console.error);
+    // Load the shop list for anyone who needs the dashboard picker:
+    // super_admin (sees every shop) and multi-shop owners (sees their
+    // owned set — server-side scoped via accessibleShopIds).
+    if ((isSuperAdmin || isMultiShopOwner) && token) {
+      api.shops
+        .list(token)
+        .then((res: any) =>
+          setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []),
+        )
+        .catch(console.error);
     }
-  }, [isSuperAdmin, token]);
+  }, [isSuperAdmin, isMultiShopOwner, token]);
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (!token) return;

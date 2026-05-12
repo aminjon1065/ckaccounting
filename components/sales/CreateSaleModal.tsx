@@ -5,7 +5,7 @@ import { Modal, TouchableOpacity, View, KeyboardAvoidingView, Platform, ScrollVi
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text, Button, Input, Select } from "@/components/ui";
-import { api, ApiError, type CreateSalePayload, type Product, type Sale, type SaleType, type Shop } from "@/lib/api";
+import { api, ApiError, type CreateSalePayload, type Product, type Sale, type Shop } from "@/lib/api";
 import { parseDecimal } from "@/lib/formatters";
 import { useAuth } from "@/store/auth";
 import { ProductPicker } from "./ProductPicker";
@@ -14,11 +14,12 @@ import { defaultPriceMode, deriveProductPrice, fmt, PAYMENT_ICONS, PAYMENT_LABEL
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
 import { CartRow } from "./CartRow";
 import { ServiceItemRow } from "./ServiceItemRow";
-import { getLocalProducts, insertOrUpdateProducts, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, localScope } from "@/lib/db";
+import { deleteLocalProduct, getLocalProducts, insertOrUpdateProducts, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, localScope } from "@/lib/db";
 import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
 import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
+import { useCacheMethods } from "@/lib/cache/CacheProvider";
 import { STORAGE_KEYS } from "@/constants/config";
 
 type PaymentType = "cash" | "card" | "transfer";
@@ -40,13 +41,13 @@ export function CreateSaleModal({
   token: string;
 }) {
   const { user } = useAuth();
+  const { reconcileRemoteProducts } = useCacheMethods();
   // Multi-shop UX: super_admin and multi-shop owners pick a shop in the
   // form; sellers and single-shop owners get an implicit shop and no
   // picker.
   const showShopPicker = needsShopPicker(user);
   const implicitShopId = effectiveShopId(user);
   const canEditPrice = user?.role !== "seller";
-  const [saleType, setSaleType] = React.useState<SaleType>("product");
   const { showToast } = useToast();
 
   const [shopId, setShopId] = React.useState<string>("");
@@ -169,7 +170,6 @@ export function CreateSaleModal({
   // Reset form state on each open
   React.useEffect(() => {
     if (!visible) return;
-    setSaleType("product");
     setCart([]); setServiceItems([]);
     setCustomerName(""); setDiscount("");
     setPaid(""); setNotes("");
@@ -194,10 +194,19 @@ export function CreateSaleModal({
       setCart([]);
       return;
     }
+    // Reconcile FIRST so the picker doesn't show ghost products the admin
+    // soft- or hard-deleted on the server. Without this the cashier would
+    // happily add a stale row, hit submit, and only then see "Товар не
+    // найден" — by which point recovery costs them their cart and time.
+    // Both calls are non-blocking from the user's perspective: the picker
+    // shows whatever's in the local cache instantly, then refreshes.
+    reconcileRemoteProducts().catch((e) =>
+      reportError(e, { tag: "sale-modal-products-reconcile", shopId: activeShopId })
+    );
     loadProductsForSale(activeShopId ?? undefined).catch((e) =>
       reportError(e, { tag: "sale-modal-products-effect", shopId: activeShopId })
     );
-  }, [visible, showShopPicker, activeShopId, loadProductsForSale]);
+  }, [visible, showShopPicker, activeShopId, loadProductsForSale, reconcileRemoteProducts]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
@@ -479,10 +488,10 @@ export function CreateSaleModal({
 
   // ── Calculations ────────────────────────────────────────────────────────────
 
+  // Subtotal across both products and services so a mixed cart sums correctly.
   const subtotal =
-    saleType === "product"
-      ? cart.reduce((s, c) => s + c.price * c.quantity, 0)
-      : serviceItems.reduce((s, i) => s + (parseDecimal(i.price) || 0) * i.quantity, 0);
+    cart.reduce((s, c) => s + c.price * c.quantity, 0)
+    + serviceItems.reduce((s, i) => s + (parseDecimal(i.price) || 0) * i.quantity, 0);
   const discountVal = parseDecimal(discount) || 0;
   const total = Math.max(0, subtotal - discountVal);
   const paidVal = parseDecimal(paid) || 0;
@@ -505,17 +514,17 @@ export function CreateSaleModal({
     if (showShopPicker && !shopId) { setError("Выберите магазин."); return; }
     if (!showShopPicker && implicitShopId === null) { setError("Магазин не назначен."); return; }
 
-    if (saleType === "product") {
-      if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
-    } else {
-      if (serviceItems.length === 0) { setError("Добавьте хотя бы одну услугу."); return; }
-      if (serviceItems.some((i) => !i.name.trim())) {
-        setError("Укажите название каждой услуги."); return;
-      }
+    // Mixed cart: a sale can carry products, services, or both. Require at
+    // least one row total.
+    if (cart.length === 0 && serviceItems.length === 0) {
+      setError("Добавьте товар или услугу."); return;
+    }
+    if (serviceItems.some((i) => !i.name.trim())) {
+      setError("Укажите название каждой услуги."); return;
     }
 
     // Validate Seller cannot sell below sale_price
-    if (user?.role === "seller" && saleType === "product") {
+    if (user?.role === "seller" && cart.length > 0) {
       for (const c of cart) {
         if (c.price < (c.product.sale_price ?? 0)) {
           setError(`Цена "${c.product.name}" ниже прайса (${c.product.sale_price})`);
@@ -524,22 +533,26 @@ export function CreateSaleModal({
       }
     }
 
+    // Build the unified items array. Server derives `sale.type` from this
+    // payload — see SaleService::createSale.
+    const productItems = cart.map((c) => ({
+      product_id: c.product.id,
+      quantity: c.quantity,
+      price: c.price,
+    }));
+    const serviceItemsPayload = serviceItems.map((s) => ({
+      name: s.name.trim(),
+      unit: s.unit.trim() || undefined,
+      quantity: s.quantity,
+      price: parseDecimal(s.price) || 0,
+    }));
+
     const payload: CreateSalePayload = {
-      type: saleType,
+      // Hint to legacy clients/dashboards — server may override based on
+      // the actual cart contents. Mixed carts come back as "product".
+      type: cart.length > 0 ? "product" : "service",
       payment_type: paymentType,
-      items:
-        saleType === "product"
-          ? cart.map((c) => ({
-              product_id: c.product.id,
-              quantity: c.quantity,
-              price: c.price,
-            }))
-          : serviceItems.map((s) => ({
-              name: s.name.trim(),
-              unit: s.unit.trim() || undefined,
-              quantity: s.quantity,
-              price: parseDecimal(s.price) || 0,
-            })),
+      items: [...productItems, ...serviceItemsPayload] as CreateSalePayload["items"],
       shop_id: showShopPicker && shopId ? Number(shopId) : (implicitShopId ?? undefined),
     };
     if (customerName.trim()) payload.customer_name = customerName.trim();
@@ -562,7 +575,10 @@ export function CreateSaleModal({
         SecureStore.setItemAsync(STORAGE_KEYS.prefLastShopId, shopId).catch(() => {});
       }
       // Check low stock for sold products (online case)
-      if (saleType === "product") {
+      // Low-stock alerts only apply to product lines (services don't deplete
+      // a tracked stock figure). Loop over the cart regardless of the
+      // (now-derived) `saleType` flag.
+      if (cart.length > 0) {
         for (const c of cart) {
           const prod = await api.products.get(c.product.id, token).catch(() => null);
           if (prod && prod.low_stock_alert && prod.low_stock_alert > 0) {
@@ -590,6 +606,123 @@ export function CreateSaleModal({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
+      } else if (e instanceof ApiError && e.status === 422 && e.errors) {
+        // Server validation failed. Two recoverable cases:
+        //   1) `items.{i}.product_id` — the product was deleted or moved
+        //      to another shop. Evict it from local cache + cart.
+        //   2) `items.{i}.quantity` / `items.{i}.price` — stale stock or
+        //      price in the local cache. Refresh those products from the
+        //      server so the cart row reflects the actual values; the
+        //      user then sees the new numbers and decides whether to
+        //      reduce qty / accept the new price.
+        // The original per-field error stays in the form-level banner so
+        // the user can read what failed and where.
+        const ghostIndices = new Set<number>();
+        const staleIndices = new Set<number>();
+        for (const key of Object.keys(e.errors)) {
+          const ghostMatch = key.match(/^items\.(\d+)\.product_id$/);
+          if (ghostMatch) {
+            ghostIndices.add(Number(ghostMatch[1]));
+            continue;
+          }
+          // `items.{i}.{quantity|price}` — server's view of the cart line
+          // disagrees with the local cache. Refresh those products so
+          // the user sees the truth.
+          const staleMatch = key.match(/^items\.(\d+)\.(quantity|price)$/);
+          if (staleMatch) {
+            staleIndices.add(Number(staleMatch[1]));
+          }
+        }
+
+        let evictedNames: string[] = [];
+        if (ghostIndices.size > 0 && cart.length > 0) {
+          const ghostIds = [...ghostIndices]
+            .map((i) => cart[i]?.product?.id)
+            .filter((id): id is string => !!id);
+          evictedNames = [...ghostIndices]
+            .map((i) => cart[i]?.product?.name)
+            .filter((n): n is string => !!n);
+
+          // Evict the ghost rows from local SQLite + the in-memory list so
+          // the picker stops offering them on retry. Best-effort — failures
+          // here are not user-actionable.
+          await Promise.all(
+            ghostIds.map((id) =>
+              deleteLocalProduct(id).catch(() => {}),
+            ),
+          );
+          setProducts((prev) => prev.filter((p) => !ghostIds.includes(p.id)));
+          setCart((prev) => prev.filter((c) => !ghostIds.includes(c.product.id)));
+
+          // Trigger a fresh reconcile so the next picker open is clean.
+          reconcileRemoteProducts().catch(() => {});
+        }
+
+        // Refresh stale cart products from the server. Done after the
+        // ghost-eviction so we don't try to GET ids we just confirmed don't
+        // exist. Updates BOTH the picker list and the in-cart product
+        // reference so prices / stock numbers shown in the row match what
+        // the server enforced.
+        if (staleIndices.size > 0 && cart.length > 0) {
+          const staleProductIds = [...staleIndices]
+            .map((i) => cart[i]?.product?.id)
+            .filter((id): id is string => !!id && !evictedNames.length);
+
+          if (staleProductIds.length > 0) {
+            const refreshed = await Promise.all(
+              staleProductIds.map((id) =>
+                api.products.get(id, token).catch(() => null),
+              ),
+            );
+            const byId = new Map<string, Product>();
+            for (const p of refreshed) {
+              if (p) byId.set(p.id, p);
+            }
+            if (byId.size > 0) {
+              await insertOrUpdateProducts([...byId.values()]).catch(() => {});
+              setProducts((prev) =>
+                prev.map((p) => byId.get(p.id) ?? p),
+              );
+              setCart((prev) =>
+                prev.map((c) => {
+                  const fresh = byId.get(c.product.id);
+                  if (!fresh) return c;
+                  // Clamp qty to the new stock if the user was over the limit;
+                  // keep their typed price but flag it on retry through the
+                  // existing seller "below sale_price" check.
+                  const maxQty = fresh.stock_quantity ?? c.quantity;
+                  const clampedQty = Math.min(c.quantity, maxQty);
+                  return {
+                    ...c,
+                    product: fresh,
+                    quantity: clampedQty,
+                    quantityInput: String(clampedQty),
+                  };
+                }),
+              );
+            }
+          }
+        }
+
+        if (evictedNames.length > 0) {
+          showToast({
+            message:
+              evictedNames.length === 1
+                ? `«${evictedNames[0]}» был удалён администратором и убран из корзины.`
+                : `${evictedNames.length} товара(ов) были удалены администратором и убраны из корзины.`,
+            variant: "warning",
+          });
+        } else if (staleIndices.size > 0) {
+          showToast({
+            message: "Данные товаров обновлены. Проверьте остатки и цены и сохраните снова.",
+            variant: "warning",
+          });
+        }
+
+        // Always show the per-field breakdown so the user knows exactly
+        // which line and field failed. After our auto-recovery above, the
+        // values they see should match the server.
+        setError(e.describeErrors());
       } else {
         // Show the full per-field error breakdown when the server
         // returned a 422 with `errors`. Just `e.message` often shows only
@@ -662,36 +795,6 @@ export function CreateSaleModal({
               </View>
             )}
 
-            {/* ── Sale type toggle ─────────────────────────────────────────── */}
-            <View className="flex-row bg-slate-100 dark:bg-zinc-800 rounded-xl p-1 mb-5">
-              {(["product", "service"] as const).map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  onPress={() => setSaleType(t)}
-                  className={`flex-1 flex-row items-center justify-center gap-2 py-2.5 rounded-lg ${
-                    saleType === t
-                      ? "bg-white dark:bg-zinc-900"
-                      : ""
-                  }`}
-                >
-                  <MaterialIcons
-                    name={t === "product" ? "inventory-2" : "handyman"}
-                    size={16}
-                    color={saleType === t ? "#0a7ea4" : "#94a3b8"}
-                  />
-                  <Text
-                    className={`text-sm font-semibold ${
-                      saleType === t
-                        ? "text-primary-500"
-                        : "text-slate-400 dark:text-slate-500"
-                    }`}
-                  >
-                    {t === "product" ? "Товары" : "Услуги"}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
             {/* Customer */}
             <Input
               label="Покупатель"
@@ -701,107 +804,107 @@ export function CreateSaleModal({
               className="mb-4"
             />
 
-            {/* ── Product cart ─────────────────────────────────────────────── */}
-            {saleType === "product" && (
-              <>
-                <View className="mb-2 flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    Товары ({cart.length})
+            {/* ── Products section ─────────────────────────────────────────
+                Always rendered alongside services so the cashier can sell
+                e.g. a TV + delivery + installation in a single sale. The
+                sale type is now derived server-side from the cart contents
+                (any product line ⇒ "product"). */}
+            <View className="mb-2 flex-row items-center justify-between">
+              <View className="flex-row items-center gap-2">
+                <MaterialIcons name="inventory-2" size={16} color="#0a7ea4" />
+                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                  Товары ({cart.length})
+                </Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <TouchableOpacity
+                  onPress={() => {
+                    if (showShopPicker && !shopId) { setError("Сначала выберите магазин."); return; }
+                    setScannerVisible(true);
+                  }}
+                  className="flex-row items-center gap-1 bg-slate-100 dark:bg-zinc-800 px-3 py-1.5 rounded-lg"
+                >
+                  <MaterialIcons name="qr-code-scanner" size={16} color="#64748b" />
+                  <Text className="text-xs font-semibold text-slate-600 dark:text-slate-400">Скан</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (showShopPicker && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
+                    setPickerVisible(true);
+                  }}
+                  className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
+                >
+                  <MaterialIcons name="add" size={16} color="#0a7ea4" />
+                  <Text className="text-xs font-semibold text-primary-500">
+                    Добавить товар
                   </Text>
-                  <View className="flex-row items-center gap-2">
-                    <TouchableOpacity
-                      onPress={() => {
-                        if (showShopPicker && !shopId) { setError("Сначала выберите магазин."); return; }
-                        setScannerVisible(true);
-                      }}
-                      className="flex-row items-center gap-1 bg-slate-100 dark:bg-zinc-800 px-3 py-1.5 rounded-lg"
-                    >
-                      <MaterialIcons name="qr-code-scanner" size={16} color="#64748b" />
-                      <Text className="text-xs font-semibold text-slate-600 dark:text-slate-400">Скан</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => {
-                        if (showShopPicker && !shopId) { setError("Сначала выберите магазин для просмотра товаров."); return; }
-                        setPickerVisible(true);
-                      }}
-                      className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
-                    >
-                      <MaterialIcons name="add" size={16} color="#0a7ea4" />
-                      <Text className="text-xs font-semibold text-primary-500">
-                        Добавить товар
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                </TouchableOpacity>
+              </View>
+            </View>
 
-                {cart.length === 0 ? (
-                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
-                    <MaterialIcons name="shopping-cart" size={32} color="#94a3b8" />
-                    <Text variant="muted" className="mt-2 text-center text-sm">
-                      {productsLoading ? "Загрузка товаров..." : "Нет товаров"}
-                    </Text>
-                  </View>
-                ) : (
-                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
-                    {cart.map((c) => (
-                      <CartRow
-                        key={c.product.id}
-                        item={c}
-                        canEditPrice={canEditPrice}
-                        onRemove={removeCartItem}
-                        onPriceModeChange={updatePriceMode}
-                        onQuantityChange={updateCartQuantity}
-                        onQuantityBlur={finalizeCartQuantity}
-                        onQuantityAdjust={adjustCartQuantity}
-                        onMarkupChange={updateMarkup}
-                        onPriceChange={updatePrice}
-                      />
-                    ))}
-                  </View>
-                )}
-              </>
+            {cart.length === 0 ? (
+              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-4 items-center mb-4">
+                <Text variant="muted" className="text-center text-xs">
+                  {productsLoading ? "Загрузка товаров..." : "Товары не выбраны"}
+                </Text>
+              </View>
+            ) : (
+              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
+                {cart.map((c) => (
+                  <CartRow
+                    key={c.product.id}
+                    item={c}
+                    canEditPrice={canEditPrice}
+                    onRemove={removeCartItem}
+                    onPriceModeChange={updatePriceMode}
+                    onQuantityChange={updateCartQuantity}
+                    onQuantityBlur={finalizeCartQuantity}
+                    onQuantityAdjust={adjustCartQuantity}
+                    onMarkupChange={updateMarkup}
+                    onPriceChange={updatePrice}
+                  />
+                ))}
+              </View>
             )}
 
-            {/* ── Service items ────────────────────────────────────────────── */}
-            {saleType === "service" && (
-              <>
-                <View className="mb-2 flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    Услуги ({serviceItems.length})
-                  </Text>
-                  <TouchableOpacity
-                    onPress={addServiceItem}
-                    className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
-                  >
-                    <MaterialIcons name="add" size={16} color="#0a7ea4" />
-                    <Text className="text-xs font-semibold text-primary-500">
-                      Добавить
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+            {/* ── Services section ─────────────────────────────────────── */}
+            <View className="mb-2 flex-row items-center justify-between">
+              <View className="flex-row items-center gap-2">
+                <MaterialIcons name="handyman" size={16} color="#0a7ea4" />
+                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                  Услуги ({serviceItems.length})
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={addServiceItem}
+                className="flex-row items-center gap-1 bg-primary-50 dark:bg-blue-900/20 px-3 py-1.5 rounded-lg"
+              >
+                <MaterialIcons name="add" size={16} color="#0a7ea4" />
+                <Text className="text-xs font-semibold text-primary-500">
+                  Добавить услугу
+                </Text>
+              </TouchableOpacity>
+            </View>
 
-                {serviceItems.length === 0 ? (
-                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-6 items-center mb-4">
-                    <MaterialIcons name="handyman" size={32} color="#94a3b8" />
-                    <Text variant="muted" className="mt-2 text-center text-sm">
-                      Нет услуг
-                    </Text>
-                  </View>
-                ) : (
-                  <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
-                    {serviceItems.map((item) => (
-                      <ServiceItemRow
-                        key={item.id}
-                        item={item}
-                        onPatch={updateServiceItem}
-                        onRemove={removeServiceItem}
-                        onQuantityChange={updateServiceQuantity}
-                        onQuantityBlur={finalizeServiceQuantity}
-                      />
-                    ))}
-                  </View>
-                )}
-              </>
+            {serviceItems.length === 0 ? (
+              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-4 items-center mb-4">
+                <Text variant="muted" className="text-center text-xs">
+                  Услуги не добавлены
+                </Text>
+              </View>
+            ) : (
+              <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl mb-4 overflow-hidden">
+                {serviceItems.map((item) => (
+                  <ServiceItemRow
+                    key={item.id}
+                    item={item}
+                    onPatch={updateServiceItem}
+                    onRemove={removeServiceItem}
+                    onQuantityChange={updateServiceQuantity}
+                    onQuantityBlur={finalizeServiceQuantity}
+                  />
+                ))}
+              </View>
             )}
 
             {/* ── Discount ─────────────────────────────────────────────────── */}
@@ -927,28 +1030,26 @@ export function CreateSaleModal({
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* Product picker — only rendered for product type */}
-      {saleType === "product" && (
-        <ProductPicker
-          visible={pickerVisible}
-          products={products}
-          onSelect={addToCart}
-          onClose={handlePickerClose}
-          loading={productsLoading && products.length === 0}
-          loadingMore={productsLoading && products.length > 0}
-          hasMore={productsHasMore}
-          onLoadMore={loadMoreProducts}
-          canCreate={canCreateProduct}
-          onRequestCreate={handleRequestCreateProduct}
-        />
-      )}
+      {/* Product picker — always rendered now that a sale can mix products
+          and services. Visibility is gated by `pickerVisible` which only
+          flips true via the "Добавить товар" button. */}
+      <ProductPicker
+        visible={pickerVisible}
+        products={products}
+        onSelect={addToCart}
+        onClose={handlePickerClose}
+        loading={productsLoading && products.length === 0}
+        loadingMore={productsLoading && products.length > 0}
+        hasMore={productsHasMore}
+        onLoadMore={loadMoreProducts}
+        canCreate={canCreateProduct}
+        onRequestCreate={handleRequestCreateProduct}
+      />
 
       {/* Inline product create — opens from the picker's "+ Создать" CTA.
-          Skipped for service-type sales (no catalogue to extend) and for
-          users without products:edit permission. The new product is locked
-          to the sale's shop so the sale submission later doesn't 404 on
-          a cross-shop product_id. */}
-      {saleType === "product" && canCreateProduct && (
+          The new product is locked to the sale's shop so the sale
+          submission later doesn't 404 on a cross-shop product_id. */}
+      {canCreateProduct && (
         <ProductFormModal
           visible={createProductVisible}
           editing={null}
