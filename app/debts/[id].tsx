@@ -13,7 +13,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import * as Crypto from "expo-crypto";
 
-import { Button, Input, Skeleton, Text } from "@/components/ui";
+import { Avatar, Button, Input, Skeleton, Text } from "@/components/ui";
+import { DEFAULT_CURRENCY } from "@/constants/config";
+import { Pressable } from "react-native";
 import {
   api,
   ApiError,
@@ -73,27 +75,27 @@ function TxCard({ item }: { item: DebtTransaction }) {
   const cfg = TX_CONFIG[item.type] ?? TX_CONFIG.give;
 
   return (
-    <View className="flex-row items-center py-3.5 border-b border-slate-100 dark:border-zinc-800">
+    <View className="flex-row items-center py-3 gap-3">
       <View
-        className="w-9 h-9 rounded-full items-center justify-center mr-3"
+        className="w-9 h-9 rounded-[10px] items-center justify-center"
         style={{ backgroundColor: cfg.color + "20" }}
       >
         <MaterialIcons name={cfg.icon} size={18} color={cfg.color} />
       </View>
-      <View className="flex-1">
-        <Text className="text-sm font-medium text-slate-900 dark:text-slate-50">
+      <View className="flex-1 min-w-0">
+        <Text className="text-[14px] font-medium text-slate-900 dark:text-white" numberOfLines={1}>
           {cfg.label}
+          {item.note ? ` · ${item.note}` : ""}
         </Text>
-        {item.note ? (
-          <Text variant="small">{item.note}</Text>
-        ) : null}
         <View className="flex-row items-center gap-1 mt-0.5">
-          <Text variant="small">{fmtDate(item.created_at)}</Text>
+          <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">
+            {fmtDate(item.created_at)}
+          </Text>
           {item.created_by_name ? (
             <>
-              <Text variant="small">·</Text>
+              <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">·</Text>
               <MaterialIcons name="person" size={11} color="#94a3b8" />
-              <Text variant="small" numberOfLines={1}>
+              <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400" numberOfLines={1}>
                 {item.created_by_name}
               </Text>
             </>
@@ -101,8 +103,8 @@ function TxCard({ item }: { item: DebtTransaction }) {
         </View>
       </View>
       <Text
-        className="text-sm font-bold"
-        style={{ color: cfg.color }}
+        className="font-heading text-[14px] tracking-tight"
+        style={{ color: cfg.color, fontVariantLigatures: "none" }}
       >
         {fmt(item.amount)}
       </Text>
@@ -220,12 +222,22 @@ function AddTransactionModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Добавить операцию</Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              Добавить операцию
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Платёж, выдача или возврат
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -363,81 +375,100 @@ export default function DebtDetailScreen() {
 
   const isPositive = debt.balance >= 0;
   const transactions = debt.transactions ?? [];
-  const accentColor = isPositive ? "#16a34a" : "#ef4444";
+  const amountClass = isPositive
+    ? "text-emerald-600 dark:text-emerald-400"
+    : "text-red-500";
+  const sinceLabel = `${isPositive ? "Дебитор" : "Кредитор"} · с ${new Date(debt.created_at).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3">
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
         <View className="flex-1 min-w-0">
-          <Text variant="h4" numberOfLines={1}>{debt.person_name}</Text>
-          <Text variant="small">{isPositive ? "Нам должны" : "Мы должны"}</Text>
-        </View>
-        {canAddTransaction && (
-          <TouchableOpacity
-            onPress={() => setTxVisible(true)}
-            className="w-11 h-11 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center"
+          <Text
+            className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white"
+            numberOfLines={1}
           >
-            <MaterialIcons name="add" size={22} color="#0a7ea4" />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Balance card */}
-      <View className="mx-4 mt-4 bg-white dark:bg-zinc-900 rounded-2xl p-5 border border-slate-100 dark:border-zinc-800">
-        <View className="flex-row items-start justify-between">
-          <View className="flex-1">
-            <Text variant="muted" className="mb-1">Текущий баланс</Text>
-            <Text className="text-3xl font-bold" style={{ color: accentColor }}>
-              {isPositive ? "+" : "-"}{fmt(debt.balance)}
-            </Text>
-            <Text variant="small" className="mt-1">
-              {isPositive ? "Этот контрагент должен вам" : "Вы должны этому контрагенту"}
-            </Text>
-          </View>
-          <View
-            className="w-12 h-12 rounded-full items-center justify-center"
-            style={{ backgroundColor: `${accentColor}18` }}
-          >
-            <MaterialIcons name={isPositive ? "call-made" : "call-received"} size={22} color={accentColor} />
-          </View>
-        </View>
-        <View className="h-[1px] bg-slate-100 dark:bg-zinc-800 my-4" />
-        <View className="flex-row justify-between">
-          <Text variant="small">Начальная сумма</Text>
-          <Text className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-            {debt.opening_balance >= 0 ? "+" : "-"}{fmt(debt.opening_balance)}
+            {debt.person_name}
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {sinceLabel}
           </Text>
         </View>
       </View>
 
-      {/* Transactions */}
-      <View className="flex-1 mx-4 mt-4">
-        <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50 mb-3">
-          Операции ({transactions.length})
-        </Text>
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero card */}
+        <View className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 p-5 items-center mb-3.5">
+          <Avatar name={debt.person_name} size="lg" />
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 font-medium mt-3">
+            {isPositive ? "Должен нам" : "Мы должны"}
+          </Text>
+          <View className="flex-row items-baseline gap-1.5 mt-1">
+            <Text
+              className={`font-heading text-[34px] leading-[38px] tracking-tight ${amountClass}`}
+              style={{ fontVariantLigatures: "none" }}
+            >
+              {isPositive ? "+" : "−"}{fmt(debt.balance)}
+            </Text>
+            <Text className="text-[14px] font-medium text-slate-500 dark:text-zinc-400">
+              {DEFAULT_CURRENCY}
+            </Text>
+          </View>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1">
+            Старт: {debt.opening_balance >= 0 ? "+" : "−"}{fmt(debt.opening_balance)} {DEFAULT_CURRENCY}
+            {transactions.length > 0 ? `  ·  ${transactions.length} операций` : ""}
+          </Text>
+          {canAddTransaction && (
+            <View className="flex-row gap-2 mt-4 w-full">
+              <Pressable
+                onPress={() => setTxVisible(true)}
+                className="flex-1 bg-primary-500 rounded-2xl py-3 flex-row items-center justify-center gap-1.5 active:opacity-80"
+              >
+                <MaterialIcons name="payments" size={18} color="#fff" />
+                <Text className="text-[14px] font-semibold text-white">
+                  {isPositive ? "Принять оплату" : "Внести оплату"}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
 
+        {/* History */}
+        <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+          История ({transactions.length})
+        </Text>
         {transactions.length === 0 ? (
-          <View className="bg-white dark:bg-zinc-900 rounded-2xl p-8 items-center border border-slate-100 dark:border-zinc-800">
+          <View className="bg-white dark:bg-zinc-900 rounded-2xl p-8 items-center border border-slate-200 dark:border-zinc-800">
             <MaterialIcons name="receipt" size={36} color="#94a3b8" />
             <Text variant="muted" className="mt-2 text-center">
               Операций нет.
             </Text>
           </View>
         ) : (
-          <FlatList
-            data={transactions}
-            keyExtractor={(item) => String(item.id)}
-            className="bg-white dark:bg-zinc-900 rounded-2xl px-4 border border-slate-100 dark:border-zinc-800"
-            contentContainerStyle={{ paddingBottom: 16 }}
-            showsVerticalScrollIndicator={false}
-            renderItem={({ item }) => <TxCard item={item} />}
-          />
+          <View className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden">
+            {transactions.map((tx, idx) => (
+              <View
+                key={tx.id}
+                className={idx === transactions.length - 1 ? "px-3.5" : "px-3.5 border-b border-slate-100 dark:border-zinc-800"}
+              >
+                <TxCard item={tx} />
+              </View>
+            ))}
+          </View>
         )}
-      </View>
+      </ScrollView>
 
       {/* Add transaction modal */}
       {canAddTransaction && token && (

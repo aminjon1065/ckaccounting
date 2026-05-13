@@ -5,8 +5,6 @@ import {
   Alert,
   Platform,
   Pressable,
-  StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -22,6 +20,8 @@ import {
 } from "@/hooks/useBiometricAuth";
 import { useAuth } from "@/store/auth";
 import { reportError } from "@/lib/observability/reporter";
+import { Avatar, Text } from "@/components/ui";
+import { PinKeypad } from "@/components/auth/PinKeypad";
 
 // ─── Public component ────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ interface BiometricGuardProps {
  * Fallback: When biometric fails and PIN is set, shows PIN entry screen.
  */
 export function BiometricGuard({ children }: BiometricGuardProps) {
-  const { token, user, verifyPin, hasPin, pinSetupPending, signOut } = useAuth();
+  const { token, user, verifyPin, hasPin, pinSetupPending, signOut, setLocalUnlocked, isLoaded } = useAuth();
   const segments = useSegments();
   const isEnabled = !!token;
   const inAuthGroup = segments[0] === "(auth)";
@@ -57,6 +57,13 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   const [pinError, setPinError] = useState("");
   const [isVerifyingPin, setIsVerifyingPin] = useState(false);
   const [pinAvailable, setPinAvailable] = useState(false);
+  /**
+   * True once `hasPin()` has resolved at least once after biometric probe
+   * completed. We rely on this to defer the local-unlock signal until we
+   * actually know whether a PIN gate is needed; before this resolves,
+   * `pinAvailable=false` is just "not yet known", not "definitively no PIN".
+   */
+  const [pinChecked, setPinChecked] = useState(false);
   // Explicit "the user successfully entered their PIN this session" flag.
   // Cleared on session change (token flip) and on background→foreground
   // resume so the relock semantics match biometric flow. This avoids the
@@ -65,13 +72,23 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
   const [unlockedViaPin, setUnlockedViaPin] = useState(false);
 
   // Check PIN availability whenever the biometric layer reports a state
-  // where a PIN may be needed (failed / cancelled / unavailable).
+  // where a PIN may be needed (failed / cancelled / unavailable). The
+  // resolved value gates the `localUnlocked` signal below — until this fires
+  // we don't know whether to show the PIN fallback or pass through.
   useEffect(() => {
     if (!isEnabled) return;
     if (status === "failed" || status === "cancelled" || status === "unavailable") {
-      hasPin().then(setPinAvailable);
+      hasPin().then((has) => {
+        setPinAvailable(has);
+        setPinChecked(true);
+      });
     }
   }, [status, isEnabled, hasPin]);
+
+  // Reset the check on session change so a fresh session re-resolves.
+  useEffect(() => {
+    if (!isEnabled) setPinChecked(false);
+  }, [isEnabled]);
 
   // Sign-out / sign-in boundary clears the manual unlock so a different user
   // can't inherit the previous session's authorization.
@@ -105,6 +122,26 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
       setPinError("");
     }
   }, [status]);
+
+  // Mirror the local-auth gate into auth state so background services
+  // (CacheProvider's sync, future biometric-gated APIs, etc.) can wait until
+  // the user has cleared the lock. "Unlocked enough" conditions:
+  //   1. Biometric succeeded (status === "unlocked"), or
+  //   2. PIN was just verified (unlockedViaPin), or
+  //   3. Device offers neither biometric nor PIN — no local lock to clear.
+  //      For (3) we MUST wait for `pinChecked` first; otherwise on cold
+  //      launch the probe flips status="unavailable" while pinAvailable is
+  //      still its stale `false`, and we'd auto-unlock before the PIN
+  //      lookup confirmed there's no PIN — leaking sync past the lock.
+  // The pinSetupPending branch is excluded; the PIN setup flow itself follows
+  // a fresh login which already set localUnlocked=true in the auth store.
+  useEffect(() => {
+    if (!isEnabled) return;
+    const noLocalLock = status === "unavailable" && pinChecked && !pinAvailable;
+    if (status === "unlocked" || unlockedViaPin || noLocalLock) {
+      setLocalUnlocked(true);
+    }
+  }, [isEnabled, status, unlockedViaPin, pinAvailable, pinChecked, setLocalUnlocked]);
 
   // Accepts the pin as an argument so the auto-submit path (called from
   // inside the keypad's onPress) doesn't race against the setPinValue
@@ -163,14 +200,38 @@ export function BiometricGuard({ children }: BiometricGuardProps) {
     );
   }, [signOut]);
 
+  // ── Auth-loading gate ─────────────────────────────────────────────────────
+  // On cold launch expo-router restores the last route before AuthProvider
+  // has finished reading the saved token from SecureStore. During that
+  // window `token` is null → `isEnabled=false` → the pass-through case
+  // below would render the restored route (e.g. Dashboard) and its data
+  // hooks would fire BEFORE the lock screen ever appeared. Block render
+  // entirely until auth state is loaded so the protected tree stays mounted-
+  // off until we know which screen to show.
+  if (!isLoaded) {
+    return <View className="flex-1 bg-slate-50 dark:bg-zinc-950" />;
+  }
+
   // ── Pass-through cases ────────────────────────────────────────────────────
   // Not logged in: let AuthGuard in _layout handle routing.
   if (!isEnabled || inAuthGroup || pinSetupPending) return <>{children}</>;
 
-  // Still probing hardware capabilities — pass through to avoid mounting a
-  // full-screen overlay during an active Fabric navigation transition.
-  // The lock screen will appear once the probe resolves to "locked".
-  if (status === "checking") return <>{children}</>;
+  // Still probing hardware capabilities — render a neutral background
+  // (NOT children) so the wrapped Dashboard / tabs don't mount and fire
+  // their own data fetches during the ~400ms probe. Once status resolves
+  // we either pass through or overlay the lock UI.
+  if (status === "checking") {
+    return <View className="flex-1 bg-slate-50 dark:bg-zinc-950" />;
+  }
+
+  // After the probe completes we know whether a PIN check is even needed.
+  // For the "unavailable" branch we still have to wait until `hasPin()`
+  // has reported in (`pinChecked`) before deciding pass-through vs PIN
+  // fallback — otherwise we'd briefly render children and trigger their
+  // data fetches before the PIN screen took over.
+  if (status === "unavailable" && !pinChecked) {
+    return <View className="flex-1 bg-slate-50 dark:bg-zinc-950" />;
+  }
 
   // No biometrics, but the user has a PIN — require it before showing the app.
   // No onBack prop: there's no biometric to fall back to.
@@ -262,99 +323,94 @@ function LockScreen({
   const subtitle = resolveSubtitle(capabilities, status);
 
   return (
-    <View style={styles.root}>
-      <SafeAreaView style={styles.safeArea}>
-
-        {/* ── Branding ── */}
-        <View style={styles.brandRow}>
-          <MaterialIcons name="account-balance" size={22} color={COLORS.tint} />
-          <Text style={styles.brandText}>CK Accounting</Text>
+    <View
+      className="absolute inset-0 bg-slate-50 dark:bg-zinc-950"
+      style={{ zIndex: 9999 }}
+    >
+      <SafeAreaView className="flex-1 px-6 py-4">
+        {/* ── Brand row ── */}
+        <View className="flex-row items-center gap-2.5 mb-4">
+          <View className="w-11 h-11 rounded-xl bg-primary-500 items-center justify-center">
+            <Text className="font-heading text-white text-[20px] tracking-tighter">ck</Text>
+          </View>
+          <View>
+            <Text className="font-heading text-[17px] text-slate-900 dark:text-white tracking-tight">
+              CK Accounting
+            </Text>
+            <Text className="text-slate-500 dark:text-zinc-400 text-[12px] mt-px">
+              Защищено биометрией
+            </Text>
+          </View>
         </View>
 
-        {/* ── Center content ── */}
-        <View style={styles.center}>
-          {/* Icon */}
-          <View style={styles.iconRing}>
+        {/* ── Centre ── */}
+        <View className="flex-1 items-center justify-center px-2">
+          <View className="w-[120px] h-[120px] rounded-[32px] bg-primary-100 dark:bg-primary-900/30 items-center justify-center border-2 border-primary-200 dark:border-primary-900/60">
             {isAuthenticating ? (
-              <ActivityIndicator size="large" color={COLORS.tint} />
+              <ActivityIndicator size="large" color="#0a7ea4" />
             ) : (
-              <MaterialIcons name={iconName} size={52} color={COLORS.tint} />
+              <MaterialIcons name={iconName} size={52} color="#0a7ea4" />
             )}
           </View>
 
-          {/* Title */}
-          <Text style={styles.title}>
-            {isAuthenticating ? "Verifying…" : "App Locked"}
+          <Text className="font-heading text-[24px] tracking-tight text-slate-900 dark:text-white mt-5">
+            {isAuthenticating ? "Подтверждение…" : "Приложение заблокировано"}
+          </Text>
+          <Text className="text-[13.5px] text-slate-500 dark:text-zinc-400 text-center mt-2 max-w-[280px] leading-[20px]">
+            {subtitle}
           </Text>
 
-          {/* Subtitle */}
-          <Text style={styles.subtitle}>{subtitle}</Text>
-
-          {/* Error message */}
-          {(isFailed && errorMessage) && (
-            <View style={styles.errorBox}>
-              <MaterialIcons name="error-outline" size={16} color={COLORS.error} />
-              <Text style={styles.errorText}>{errorMessage}</Text>
+          {/* Error / cancelled message */}
+          {isFailed && errorMessage ? (
+            <View className="flex-row items-start gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/40 rounded-xl px-3.5 py-2.5 mt-4 max-w-[320px]">
+              <MaterialIcons name="error-outline" size={16} color="#ef4444" />
+              <Text className="text-[13px] text-red-600 dark:text-red-400 flex-1 leading-[18px]">
+                {errorMessage}
+              </Text>
             </View>
-          )}
-
-          {/* Cancelled message */}
+          ) : null}
           {isCancelled && (
-            <Text style={styles.cancelledText}>
-              Authentication was cancelled. Tap below to try again.
+            <Text className="text-[12.5px] text-slate-500 dark:text-zinc-400 text-center mt-3 max-w-[260px] leading-[18px]">
+              Подтверждение отменено. Нажмите кнопку ниже, чтобы попробовать снова.
             </Text>
           )}
 
-          {/* Primary action button */}
+          {/* Primary action */}
           {showRetry && (
             <Pressable
-              style={({ pressed }) => [
-                styles.button,
-                pressed && styles.buttonPressed,
-              ]}
               onPress={onAuthenticate}
+              className="flex-row items-center justify-center gap-2 bg-primary-500 rounded-2xl px-6 mt-5 active:opacity-80"
+              style={{ height: 52, minWidth: 240 }}
               accessibilityRole="button"
               accessibilityLabel={buttonLabel}
             >
-              <MaterialIcons
-                name={iconName}
-                size={20}
-                color="#fff"
-                style={styles.buttonIcon}
-              />
-              <Text style={styles.buttonText}>{buttonLabel}</Text>
+              <MaterialIcons name={iconName} size={20} color="#fff" />
+              <Text className="text-[15px] font-semibold text-white">{buttonLabel}</Text>
             </Pressable>
           )}
 
-          {/* PIN fallback button */}
+          {/* PIN fallback */}
           {showPinFallback && (
             <Pressable
-              style={({ pressed }) => [
-                styles.pinButton,
-                pressed && styles.buttonPressed,
-              ]}
               onPress={onUsePinFallback}
-              accessibilityRole="button"
+              hitSlop={8}
+              className="flex-row items-center justify-center gap-1.5 mt-3 py-2 active:opacity-60"
             >
-              <MaterialIcons
-                name="pin"
-                size={18}
-                color={COLORS.muted}
-                style={styles.buttonIcon}
-              />
-              <Text style={styles.pinButtonText}>Use PIN instead</Text>
+              <MaterialIcons name="pin" size={16} color="#64748b" />
+              <Text className="text-[13.5px] font-medium text-slate-600 dark:text-zinc-300">
+                Войти по PIN-коду
+              </Text>
             </Pressable>
           )}
         </View>
 
         {/* ── Footer ── */}
-        <View style={styles.footer}>
-          <MaterialIcons name="lock" size={14} color={COLORS.muted} />
-          <Text style={styles.footerText}>
-            Your data is protected with {Platform.OS === "ios" ? "iOS" : "Android"} security
+        <View className="flex-row items-center justify-center gap-1.5 pb-2">
+          <MaterialIcons name="lock" size={13} color="#94a3b8" />
+          <Text className="text-[12px] text-slate-400 dark:text-zinc-500">
+            Данные защищены {Platform.OS === "ios" ? "iOS" : "Android"} Keystore
           </Text>
         </View>
-
       </SafeAreaView>
     </View>
   );
@@ -390,124 +446,86 @@ function PinFallbackScreen({
   userIdentity,
   onSignOut,
 }: PinFallbackScreenProps) {
-  // Light haptic on every numeric tap; medium on backspace; ignore platform
-  // failures (e.g. Android device without a haptic motor).
-  const tapHaptic = useCallback((kind: "tap" | "back") => {
-    const style = kind === "tap"
-      ? Haptics.ImpactFeedbackStyle.Light
-      : Haptics.ImpactFeedbackStyle.Medium;
-    Haptics.impactAsync(style).catch(() => {});
-  }, []);
-
   return (
-    <View style={styles.root}>
-      <SafeAreaView style={styles.safeArea}>
+    <View
+      className="absolute inset-0 bg-slate-50 dark:bg-zinc-950"
+      style={{ zIndex: 9999 }}
+    >
+      <SafeAreaView className="flex-1 px-6 py-4">
+        {/* ── Back link (only when a biometric fallback is possible) ── */}
+        {onBack ? (
+          <Pressable
+            onPress={onBack}
+            hitSlop={12}
+            className="flex-row items-center -ml-1.5 self-start active:opacity-60"
+          >
+            <MaterialIcons name="chevron-left" size={22} color="#64748b" />
+            <Text className="text-slate-500 dark:text-zinc-400 text-[14px]">
+              Назад к биометрии
+            </Text>
+          </Pressable>
+        ) : (
+          <View className="h-[26px]" />
+        )}
 
-        {/* ── Branding + greeting ── */}
-        <View style={styles.brandRow}>
-          <MaterialIcons name="account-balance" size={22} color={COLORS.tint} />
-          <Text style={styles.brandText}>CK Accounting</Text>
-        </View>
-
-        {/* ── Center content ── */}
-        <View style={styles.center}>
-          {/* Icon */}
-          <View style={styles.iconRing}>
-            {isVerifying ? (
-              <ActivityIndicator size="large" color={COLORS.tint} />
-            ) : (
-              <MaterialIcons name="lock" size={48} color={COLORS.tint} />
-            )}
-          </View>
-
-          {/* Title */}
-          <Text style={styles.title}>Введите PIN</Text>
-
-          {/* Subtitle: identity if available, otherwise generic prompt */}
-          <Text style={styles.subtitle}>
-            {userIdentity
-              ? `Введите 4-значный PIN для входа\n${userIdentity}`
-              : "Введите 4-значный PIN для разблокировки приложения"}
-          </Text>
-
-          {/* PIN dots — exactly 4. Highlighted red on error so the failure
-              is unmistakable even if the user dismissed the error banner. */}
-          <View style={styles.pinDotsRow}>
-            {[0, 1, 2, 3].map((i) => (
-              <View
-                key={i}
-                style={[
-                  styles.pinDot,
-                  i < pinValue.length && styles.pinDotFilled,
-                  !!pinError && styles.pinDotError,
-                ]}
-              />
-            ))}
-          </View>
-
-          {/* Error message */}
-          {!!pinError && (
-            <View style={styles.errorBox}>
-              <MaterialIcons name="error-outline" size={16} color={COLORS.error} />
-              <Text style={styles.errorText}>{pinError}</Text>
+        {/* ── Identity ── */}
+        <View className="items-center mt-4">
+          {userIdentity ? (
+            <Avatar name={userIdentity} size="lg" />
+          ) : (
+            <View className="w-14 h-14 rounded-2xl bg-primary-500 items-center justify-center">
+              <MaterialIcons name="lock-outline" size={26} color="#fff" />
             </View>
           )}
+          {userIdentity && (
+            <Text
+              className="font-heading text-[18px] tracking-tight text-slate-900 dark:text-white mt-3"
+              numberOfLines={1}
+            >
+              {userIdentity}
+            </Text>
+          )}
+        </View>
 
-          {/* Keypad. Capped at 4 digits with auto-submit on the 4th digit
-              so users don't have to hunt for an "Unlock" button. */}
-          <View style={styles.keypad}>
-            {[["1","2","3"],["4","5","6"],["7","8","9"],[null,"0","⌫"]].map((row, ri) => (
-              <View key={ri} style={styles.keypadRow}>
-                {row.map((key, ki) => key ? (
-                  <Pressable
-                    key={key}
-                    style={({ pressed }) => [
-                      styles.keypadKey,
-                      pressed && styles.keypadKeyPressed,
-                    ]}
-                    onPress={() => {
-                      if (isVerifying) return;
-                      if (key === "⌫") {
-                        if (pinValue.length === 0) return;
-                        tapHaptic("back");
-                        setPinValue(pinValue.slice(0, -1));
-                        return;
-                      }
-                      if (pinValue.length >= 4) return;
-                      tapHaptic("tap");
-                      const newPin = pinValue + key;
-                      setPinValue(newPin);
-                      if (newPin.length === 4) {
-                        // Auto-submit with the local value — relying on the
-                        // closed-over pinValue would race against React's
-                        // async state flush.
-                        onSubmit(newPin);
-                      }
-                    }}
-                    disabled={isVerifying}
-                  >
-                    <Text style={styles.keypadKeyText}>{key}</Text>
-                  </Pressable>
-                ) : <View key={`empty-${ri}-${ki}`} style={styles.keypadKey} />)}
-              </View>
-            ))}
+        {/* ── Title + subtitle ── */}
+        <View className="items-center mt-4 px-4">
+          <Text className="font-heading text-[22px] tracking-tight text-slate-900 dark:text-white">
+            Введите PIN-код
+          </Text>
+          <Text className="text-[13px] text-slate-500 dark:text-zinc-400 text-center mt-1 leading-[18px]">
+            4-значный PIN для входа в приложение
+          </Text>
+        </View>
+
+        {/* ── Keypad ── */}
+        <View className="flex-1 justify-end">
+          {isVerifying && (
+            <View className="flex-row items-center justify-center gap-2 mb-3">
+              <ActivityIndicator size="small" color="#0a7ea4" />
+              <Text className="text-[13px] text-slate-500 dark:text-zinc-400">
+                Проверка…
+              </Text>
+            </View>
+          )}
+          <PinKeypad
+            value={pinValue}
+            onChange={setPinValue}
+            onComplete={onSubmit}
+            error={pinError || null}
+            disabled={isVerifying}
+          />
+        </View>
+
+        {/* ── Forgot-PIN escape ── */}
+        {onSignOut && (
+          <View className="items-center pt-3">
+            <Pressable onPress={onSignOut} hitSlop={10} className="py-2 active:opacity-60">
+              <Text className="text-[13px] text-slate-500 dark:text-zinc-400">
+                Забыли PIN? Выйти
+              </Text>
+            </Pressable>
           </View>
-        </View>
-
-        {/* ── Footer actions ── */}
-        <View style={styles.footerActions}>
-          {onBack && (
-            <Pressable onPress={onBack} hitSlop={10}>
-              <Text style={styles.linkText}>Назад к биометрии</Text>
-            </Pressable>
-          )}
-          {onSignOut && (
-            <Pressable onPress={onSignOut} hitSlop={10}>
-              <Text style={styles.linkText}>Забыли PIN? Выйти</Text>
-            </Pressable>
-          )}
-        </View>
-
+        )}
       </SafeAreaView>
     </View>
   );
@@ -545,234 +563,3 @@ function resolveSubtitle(
   return "Use your device passcode to unlock";
 }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const COLORS = {
-  bg: "#0f172a",         // slate-900
-  surface: "#1e293b",    // slate-800
-  tint: "#0a7ea4",       // brand primary
-  tintLight: "#0e9dc8",  // hover/ring
-  text: "#f1f5f9",       // slate-100
-  muted: "#64748b",      // slate-500
-  error: "#f87171",      // red-400
-  errorBg: "#450a0a",    // red-950
-  border: "#334155",     // slate-700
-};
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  root: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: COLORS.bg,
-    zIndex: 9999,
-  },
-  safeArea: {
-    flex: 1,
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-  },
-
-  // Branding
-  brandRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingTop: 8,
-  },
-  brandText: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: "600",
-    letterSpacing: 0.3,
-  },
-
-  // Center
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 16,
-  },
-  iconRing: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1.5,
-    borderColor: COLORS.tint,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-  },
-  title: {
-    color: COLORS.text,
-    fontSize: 26,
-    fontWeight: "700",
-    letterSpacing: 0.2,
-  },
-  subtitle: {
-    color: COLORS.muted,
-    fontSize: 15,
-    textAlign: "center",
-    maxWidth: 280,
-    lineHeight: 22,
-  },
-
-  // Error
-  errorBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: COLORS.errorBg,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    maxWidth: 320,
-  },
-  errorText: {
-    color: COLORS.error,
-    fontSize: 13,
-    flex: 1,
-    lineHeight: 19,
-  },
-  cancelledText: {
-    color: COLORS.muted,
-    fontSize: 13,
-    textAlign: "center",
-    maxWidth: 260,
-    lineHeight: 19,
-  },
-
-  // Button
-  button: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    backgroundColor: COLORS.tint,
-    borderRadius: 14,
-    height: 54,
-    paddingHorizontal: 32,
-    marginTop: 8,
-    minWidth: 240,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  buttonPressed: {
-    opacity: 0.8,
-  },
-  buttonIcon: {
-    // icon sits inline with text
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-
-  // PIN button (secondary)
-  pinButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    marginTop: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-  },
-  pinButtonText: {
-    color: COLORS.muted,
-    fontSize: 14,
-  },
-
-  // Footer
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingBottom: 8,
-  },
-  footerText: {
-    color: COLORS.muted,
-    fontSize: 12,
-  },
-
-  // PIN Fallback Screen
-  pinDotsRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginVertical: 8,
-  },
-  pinDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: COLORS.muted,
-    backgroundColor: "transparent",
-  },
-  pinDotFilled: {
-    backgroundColor: COLORS.tint,
-    borderColor: COLORS.tint,
-  },
-  pinDotError: {
-    borderColor: COLORS.error,
-    backgroundColor: "transparent",
-  },
-
-  // Keypad
-  keypad: {
-    marginTop: 16,
-    gap: 8,
-  },
-  keypadRow: {
-    flexDirection: "row",
-    gap: 16,
-    justifyContent: "center",
-  },
-  keypadKey: {
-    width: 72,
-    height: 56,
-    borderRadius: 12,
-    backgroundColor: COLORS.surface,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  keypadKeyPressed: {
-    backgroundColor: COLORS.border,
-  },
-  keypadKeyText: {
-    color: COLORS.text,
-    fontSize: 24,
-    fontWeight: "600",
-  },
-
-  // Back button
-  backButton: {
-    marginTop: 16,
-    paddingVertical: 8,
-  },
-  backButtonText: {
-    color: COLORS.muted,
-    fontSize: 14,
-  },
-
-  // Footer action row (back to biometric / sign out links)
-  footerActions: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingBottom: 8,
-    minHeight: 24,
-  },
-  linkText: {
-    color: COLORS.muted,
-    fontSize: 13,
-    fontWeight: "500",
-  },
-});

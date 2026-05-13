@@ -1,7 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { ScrollView, TouchableOpacity, View } from "react-native";
+import { Pressable, ScrollView, TouchableOpacity, View } from "react-native";
 import { Image, type ImageSource } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -23,28 +23,88 @@ function fmtDate(iso: string) {
   });
 }
 
-function stockBadge(p: Product) {
-  if (p.stock_quantity === 0)
-    return <Badge variant="destructive">Нет в наличии</Badge>;
-  if (p.low_stock_alert != null && p.stock_quantity <= p.low_stock_alert)
-    return <Badge variant="warning">Мало</Badge>;
-  return <Badge variant="success">В наличии</Badge>;
+function pricingLabel(p: Product): string {
+  if (p.pricing_mode === "markup") return `Наценка ${p.markup_percent ?? 0}%`;
+  if (p.pricing_mode === "manual") return "Ручная";
+  return "Фикс.";
 }
 
-// ─── Info row ─────────────────────────────────────────────────────────────────
+function stockColorClass(p: Product): string {
+  if (p.stock_quantity === 0) return "text-red-500";
+  if (p.low_stock_alert != null && p.stock_quantity <= p.low_stock_alert) {
+    return "text-amber-500";
+  }
+  return "text-emerald-600 dark:text-emerald-400";
+}
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+// ─── KPI tile ────────────────────────────────────────────────────────────────
+
+function Kpi({
+  label,
+  value,
+  tone,
+  sub,
+}: {
+  label: string;
+  value: string;
+  tone?: "primary" | "success" | "neutral";
+  sub?: string;
+}) {
+  const valueClass =
+    tone === "primary"
+      ? "text-primary-500"
+      : tone === "success"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-slate-700 dark:text-zinc-200";
   return (
-    <View className="flex-row items-start justify-between py-2.5 border-b border-slate-100 dark:border-zinc-800 last:border-0">
-      <Text variant="muted" className="text-sm">{label}</Text>
-      <Text className="text-sm font-medium text-slate-900 dark:text-slate-50 text-right flex-1 ml-4">
+    <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3">
+      <Text className="text-[10.5px] font-semibold uppercase tracking-[0.4px] text-slate-500 dark:text-zinc-400">
+        {label}
+      </Text>
+      <Text
+        className={`font-heading text-[17px] tracking-tight mt-1 ${valueClass}`}
+        style={{ fontVariantLigatures: "none" }}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+      >
+        {value}
+      </Text>
+      <Text className="text-[10px] text-slate-500 dark:text-zinc-400 mt-0.5">
+        {sub ?? DEFAULT_CURRENCY}
+      </Text>
+    </View>
+  );
+}
+
+// ─── Info row ────────────────────────────────────────────────────────────────
+
+function InfoRow({
+  label,
+  value,
+  last,
+}: {
+  label: string;
+  value: string;
+  last?: boolean;
+}) {
+  return (
+    <View
+      className={`flex-row items-center justify-between px-3.5 py-3 ${
+        last ? "" : "border-b border-slate-100 dark:border-zinc-800"
+      }`}
+    >
+      <Text className="text-[13px] text-slate-500 dark:text-zinc-400">{label}</Text>
+      <Text
+        className="text-[14px] font-medium text-slate-900 dark:text-white flex-1 text-right ml-3"
+        numberOfLines={1}
+      >
         {value}
       </Text>
     </View>
   );
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
+// ─── Screen ──────────────────────────────────────────────────────────────────
 
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -79,7 +139,6 @@ export default function ProductDetailScreen() {
     if (!token || !id) return;
     setError("");
 
-    // Always load local first — instant, always works
     const local = await getLocalProductById(id);
     if (local) setProduct(local);
 
@@ -88,9 +147,6 @@ export default function ProductDetailScreen() {
       setProduct(p);
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 404 && local) {
-        // Local row outlived the server — server hard-deleted it (soft-delete
-        // tombstones would have been applied by the delta sync already).
-        // Drop the ghost so the list view stops showing it on next render.
         try {
           await deleteLocalProduct(id);
         } catch {}
@@ -111,174 +167,250 @@ export default function ProductDetailScreen() {
     fetchProduct().finally(() => setLoading(false));
   }, [fetchProduct]);
 
+  // ── Loading ──
+  if (loading) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
+        <View className="flex-row items-center gap-3 px-4 pt-4 pb-3">
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+          >
+            <MaterialIcons name="arrow-back" size={20} color="#475569" />
+          </Pressable>
+          <Skeleton className="h-5 w-32 rounded-lg flex-1" />
+        </View>
+        <View className="px-4 gap-3">
+          <Skeleton className="h-44 rounded-2xl" />
+          <Skeleton className="h-24 rounded-2xl" />
+          <Skeleton className="h-32 rounded-2xl" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Error / not found ──
+  if (error || !product) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons name="inventory-2" size={48} color="#94a3b8" />
+        <Text variant="h5" className="mt-4 text-center">
+          {error || "Товар не найден"}
+        </Text>
+        <View className="flex-row gap-3 mt-4">
+          <TouchableOpacity
+            onPress={() => router.back()}
+            className="px-5 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800"
+          >
+            <Text className="text-[14px] font-semibold text-slate-700 dark:text-zinc-300">
+              Назад
+            </Text>
+          </TouchableOpacity>
+          {!!error && (
+            <TouchableOpacity
+              onPress={() => {
+                setLoading(true);
+                fetchProduct().finally(() => setLoading(false));
+              }}
+              className="px-5 py-2.5 rounded-xl bg-primary-500 flex-row items-center gap-2"
+            >
+              <MaterialIcons name="refresh" size={16} color="#fff" />
+              <Text className="text-[14px] font-semibold text-white">Повторить</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const margin =
+    product.cost_price > 0
+      ? Math.round(((product.sale_price - product.cost_price) / product.cost_price) * 100)
+      : 0;
+  const marginDelta = product.sale_price - product.cost_price;
+  const stockValueCost = product.stock_quantity * product.cost_price;
+  const stockValueSale = product.stock_quantity * product.sale_price;
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
-        <View className="flex-1 mr-3">
-          {product ? (
-            <Text variant="h5" numberOfLines={1}>{product.name}</Text>
-          ) : (
-            <Text variant="h5">Товар</Text>
-          )}
-        </View>
-        {product && stockBadge(product)}
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3">
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
+        <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white flex-1">
+          Товар
+        </Text>
+        <Pressable
+          onPress={() =>
+            router.push({
+              pathname: "/products/movement",
+              params: { id: product.id, name: product.name },
+            })
+          }
+          hitSlop={8}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="history" size={18} color="#475569" />
+        </Pressable>
       </View>
 
-      {/* Content */}
-      {loading ? (
-        <ScrollView
-          contentContainerStyle={{ padding: 16, gap: 12 }}
-          showsVerticalScrollIndicator={false}
-        >
-          <Skeleton className="h-36 rounded-2xl" />
-          <Skeleton className="h-28 rounded-2xl" />
-          <Skeleton className="h-20 rounded-2xl" />
-        </ScrollView>
-      ) : error ? (
-        <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
-          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
-          <Text variant="muted" className="mt-1 text-center">{error}</Text>
-          <TouchableOpacity
-            onPress={() => { setLoading(true); fetchProduct().finally(() => setLoading(false)); }}
-            className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
-          >
-            <MaterialIcons name="refresh" size={18} color="#fff" />
-            <Text className="text-sm font-semibold text-white">Повторить</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            className="mt-3 px-5 py-2.5"
-          >
-            <Text className="text-sm text-slate-500">Назад</Text>
-          </TouchableOpacity>
-        </View>
-      ) : product ? (
-        <ScrollView
-          contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 12 }}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Product photo */}
-          {imageSource && !imageFailed && (
-            <Image
-              source={imageSource}
-              style={{ width: "100%", aspectRatio: 1, borderRadius: 16 }}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              transition={120}
-              onError={() => setImageFailed(true)}
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero */}
+        <Card className="mb-3.5">
+          <CardContent className="items-center py-5">
+            {imageSource && !imageFailed ? (
+              <Image
+                source={imageSource}
+                style={{ width: 92, height: 92, borderRadius: 22, marginBottom: 14 }}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={120}
+                onError={() => setImageFailed(true)}
+              />
+            ) : (
+              <View
+                className="rounded-[22px] bg-slate-100 dark:bg-zinc-800 items-center justify-center mb-3.5"
+                style={{ width: 92, height: 92 }}
+              >
+                <MaterialIcons name="inventory-2" size={44} color="#94a3b8" />
+              </View>
+            )}
+            <Text
+              className="font-heading text-[20px] leading-[24px] text-slate-900 dark:text-white tracking-tight text-center"
+              numberOfLines={2}
+            >
+              {product.name}
+            </Text>
+            <Text className="text-[12.5px] text-slate-500 dark:text-zinc-400 mt-1 text-center">
+              {[product.code, product.unit].filter(Boolean).join(" · ") || "—"}
+              {" · "}
+              {pricingLabel(product)}
+            </Text>
+            <View className="flex-row items-baseline gap-1.5 mt-3">
+              <Text
+                className={`font-heading text-[28px] leading-[32px] tracking-tight ${stockColorClass(product)}`}
+                style={{ fontVariantLigatures: "none" }}
+              >
+                {product.stock_quantity}
+              </Text>
+              <Text className="text-[13px] text-slate-500 dark:text-zinc-400">
+                {product.unit ?? "шт"} в остатке
+              </Text>
+            </View>
+            <View className="mt-2">
+              {product.stock_quantity === 0 ? (
+                <Badge variant="destructive">Нет в наличии</Badge>
+              ) : product.low_stock_alert != null
+                && product.stock_quantity <= product.low_stock_alert ? (
+                <Badge variant="warning">Мало</Badge>
+              ) : (
+                <Badge variant="success">В наличии</Badge>
+              )}
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* KPIs */}
+        <View className="flex-row gap-2 mb-3.5">
+          {canViewCost && (
+            <Kpi label="Закупка" value={fmt(product.cost_price)} />
+          )}
+          <Kpi label="Продажа" value={fmt(product.sale_price)} tone="primary" />
+          {canViewCost && (
+            <Kpi
+              label="Маржа"
+              value={`${margin >= 0 ? "+" : ""}${margin}%`}
+              tone="success"
+              sub={`${marginDelta >= 0 ? "+" : ""}${fmt(marginDelta)} ${DEFAULT_CURRENCY}`}
             />
           )}
+        </View>
 
-          {/* Prices card */}
-          <Card>
-            <CardContent className="pt-3 pb-1">
-              <View className="flex-row items-center gap-2 mb-3">
-                <View className="w-7 h-7 rounded-lg bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
-                  <MaterialIcons name="sell" size={16} color="#0a7ea4" />
-                </View>
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Цены
+        {/* Stock value */}
+        {canViewCost && (
+          <>
+            <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+              Оценка склада
+            </Text>
+            <View className="flex-row gap-2 mb-3.5">
+              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3">
+                <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">
+                  По себестоимости
+                </Text>
+                <Text
+                  className="font-heading text-[16px] tracking-tight text-slate-900 dark:text-white mt-0.5"
+                  style={{ fontVariantLigatures: "none" }}
+                >
+                  {fmt(stockValueCost)} {DEFAULT_CURRENCY}
                 </Text>
               </View>
-              {canViewCost && (
-                <InfoRow label="Цена закупки" value={fmt(product.cost_price)} />
-              )}
-              <InfoRow label="Цена продажи" value={fmt(product.sale_price)} />
-              <InfoRow label="Ед. изм." value={product.unit ?? "—"} />
-              <InfoRow label="Артикул" value={product.code ?? "—"} />
-            </CardContent>
-          </Card>
-
-          {/* Stock card */}
-          <Card>
-            <CardContent className="pt-3 pb-1">
-              <View className="flex-row items-center gap-2 mb-3">
-                <View className="w-7 h-7 rounded-lg bg-amber-50 dark:bg-amber-900/20 items-center justify-center">
-                  <MaterialIcons name="inventory-2" size={16} color="#d97706" />
-                </View>
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Склад
+              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3">
+                <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">
+                  По цене продажи
                 </Text>
-              </View>
-              <View className="flex-row items-start justify-between py-2.5 border-b border-slate-100 dark:border-zinc-800">
-                <Text variant="muted" className="text-sm">Остаток</Text>
-                <View className="flex-row items-center gap-2">
-                  <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    {product.stock_quantity} {product.unit ?? ""}
-                  </Text>
-                  {stockBadge(product)}
-                </View>
-              </View>
-              <InfoRow
-                label="Порог остатка"
-                value={
-                  product.low_stock_alert != null
-                    ? `${product.low_stock_alert} ${product.unit ?? ""}`
-                    : "Не задан"
-                }
-              />
-            </CardContent>
-          </Card>
-
-          {/* Info card */}
-          <Card>
-            <CardContent className="pt-3 pb-1">
-              <View className="flex-row items-center gap-2 mb-3">
-                <View className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-zinc-800 items-center justify-center">
-                  <MaterialIcons name="info-outline" size={16} color="#64748b" />
-                </View>
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Информация
-                </Text>
-              </View>
-              <InfoRow label="Дата добавления" value={fmtDate(product.created_at)} />
-              <InfoRow label="Дата обновления" value={fmtDate(product.updated_at)} />
-            </CardContent>
-          </Card>
-
-          {/* Action buttons */}
-          <View className="gap-3 mt-1">
-            {/* View movement */}
-            <TouchableOpacity
-              onPress={() =>
-                router.push({
-                  pathname: "/products/movement",
-                  params: { id: product.id, name: product.name },
-                })
-              }
-              className="flex-row items-center justify-center gap-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3.5"
-            >
-              <MaterialIcons name="swap-vert" size={20} color="#0a7ea4" />
-              <Text className="text-sm font-semibold text-primary-600 dark:text-primary-400">
-                История движения
-              </Text>
-            </TouchableOpacity>
-
-            {/* Stock value info row */}
-            <View className="flex-row gap-3">
-              {canViewCost && (
-                <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
-                  <Text variant="muted" className="text-xs mb-0.5">Себестоимость склада</Text>
-                  <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
-                    {fmt(product.stock_quantity * product.cost_price)} {DEFAULT_CURRENCY}
-                  </Text>
-                </View>
-              )}
-              <View className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-2xl py-3 px-4 items-center">
-                <Text variant="muted" className="text-xs mb-0.5">По цене продажи</Text>
-                <Text className="text-sm font-bold text-slate-900 dark:text-slate-50">
-                  {fmt(product.stock_quantity * product.sale_price)} {DEFAULT_CURRENCY}
+                <Text
+                  className="font-heading text-[16px] tracking-tight text-primary-500 mt-0.5"
+                  style={{ fontVariantLigatures: "none" }}
+                >
+                  {fmt(stockValueSale)} {DEFAULT_CURRENCY}
                 </Text>
               </View>
             </View>
-          </View>
-        </ScrollView>
-      ) : null}
+          </>
+        )}
+
+        {/* Details */}
+        <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+          Детали
+        </Text>
+        <Card className="p-0 overflow-hidden mb-3.5">
+          <InfoRow label="Артикул" value={product.code ?? "—"} />
+          <InfoRow label="Единица" value={product.unit ?? "—"} />
+          <InfoRow label="Режим цены" value={pricingLabel(product)} />
+          <InfoRow
+            label="Порог остатка"
+            value={
+              product.low_stock_alert != null
+                ? `${product.low_stock_alert} ${product.unit ?? ""}`
+                : "Не задан"
+            }
+          />
+          {product.bulk_price != null && product.bulk_threshold != null && (
+            <InfoRow
+              label="Опт. цена"
+              value={`${fmt(product.bulk_price)} (от ${product.bulk_threshold})`}
+            />
+          )}
+          <InfoRow label="Добавлен" value={fmtDate(product.created_at)} />
+          <InfoRow label="Обновлён" value={fmtDate(product.updated_at)} last />
+        </Card>
+
+        {/* Movement link */}
+        <TouchableOpacity
+          onPress={() =>
+            router.push({
+              pathname: "/products/movement",
+              params: { id: product.id, name: product.name },
+            })
+          }
+          className="flex-row items-center justify-center gap-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl py-3.5 active:opacity-80"
+        >
+          <MaterialIcons name="swap-vert" size={20} color="#0a7ea4" />
+          <Text className="text-[14px] font-semibold text-primary-600 dark:text-primary-300">
+            История движения
+          </Text>
+        </TouchableOpacity>
+      </ScrollView>
     </SafeAreaView>
   );
 }

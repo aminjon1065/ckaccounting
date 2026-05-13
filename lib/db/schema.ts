@@ -255,10 +255,12 @@ async function performInitDb() {
     { version: 5, sql: "ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'pending';", check: (db) => !columnExists(db, "products", "status") },
     { version: 6, sql: "ALTER TABLE purchases ADD COLUMN shop_id INTEGER;", check: (db) => !columnExists(db, "purchases", "shop_id") },
     { version: 7, sql: "ALTER TABLE products ADD COLUMN created_at TEXT;", check: (db) => !columnExists(db, "products", "created_at") },
-    // Purge stale queue entries created with negative temp IDs (PATCH /entity/-timestamp)
-    { version: 8, sql: "DELETE FROM sync_queue WHERE path LIKE '%/-%'" },
+    // Purge stale queue entries created with negative temp IDs (PATCH /entity/-timestamp).
+    // sync_queue belonged to the old offline-first build and is dropped in v31.
+    // Fresh installs never had it — guard so this migration no-ops cleanly there.
+    { version: 8, sql: "DELETE FROM sync_queue WHERE path LIKE '%/-%'", check: (db) => tableExists(db, "sync_queue") },
     // Re-run purge in case version 8 was recorded with the broken SQL
-    { version: 9, sql: "DELETE FROM sync_queue WHERE path LIKE '%/-%'" },
+    { version: 9, sql: "DELETE FROM sync_queue WHERE path LIKE '%/-%'", check: (db) => tableExists(db, "sync_queue") },
     // Migration v10: sync_metadata table for storing sync timestamps
     { version: 10, sql: `
       CREATE TABLE IF NOT EXISTS sync_metadata (
@@ -520,14 +522,21 @@ async function performInitDb() {
           CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
           CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
           CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
-          CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, created_at);
-          CREATE INDEX IF NOT EXISTS idx_sync_queue_archived_status ON sync_queue(archived_at, status, created_at);
 
-          DELETE FROM sync_queue;
           DELETE FROM sync_metadata;
           DELETE FROM dashboard_cache;
           DELETE FROM reports_cache;
         `);
+
+        // sync_queue may not exist on fresh installs (it's dropped in v31).
+        // Indexes/wipe gated on its presence so this migration stays atomic.
+        if (tableExists(db, "sync_queue")) {
+          db.execSync(`
+            CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_sync_queue_archived_status ON sync_queue(archived_at, status, created_at);
+            DELETE FROM sync_queue;
+          `);
+        }
       },
       check: (db) => {
         // Re-run if products table still has a local_id column (old schema)
@@ -615,6 +624,7 @@ async function performInitDb() {
     // the 'processing' state. Enables a sweeper to detect rows whose claim
     // was orphaned by a crashed processor (foreground or background) and
     // return them to 'pending' so a subsequent outbox cycle retries them.
+    // Fresh installs (post-v31) never had sync_queue — skip when missing.
     {
       version: 28,
       sql: `
@@ -622,7 +632,7 @@ async function performInitDb() {
         CREATE INDEX IF NOT EXISTS idx_sync_queue_processing_claimed
           ON sync_queue(status, claimed_at) WHERE status = 'processing';
       `,
-      check: (db) => !columnExists(db, "sync_queue", "claimed_at"),
+      check: (db) => tableExists(db, "sync_queue") && !columnExists(db, "sync_queue", "claimed_at"),
     },
     // Migration v29: kopecks-only money columns.
     //

@@ -1,9 +1,11 @@
 import * as React from "react";
-import { Alert, TouchableOpacity, View } from "react-native";
-import { Text, Badge } from "@/components/ui";
+import { Alert, Pressable, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+
+import { Text, Badge } from "@/components/ui";
 import { type Sale } from "@/lib/api";
-import { fmt, fmtDate, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
+import { fmt, PAYMENT_ICONS, PAYMENT_LABELS } from "./helpers";
+import { fmtTime } from "@/lib/formatters";
 
 interface SaleCardProps {
   item: Sale;
@@ -21,9 +23,6 @@ function SaleCardImpl({ item, onSelect, onEdit, onDelete }: SaleCardProps) {
   const hasPartialReturn = returnedTotal > 0 && !isFullyReturned;
   const handlePress = React.useCallback(() => onSelect(item.id), [onSelect, item.id]);
 
-  // Long-press opens an action sheet mirroring ProductCard's pattern:
-  // Изменить / Удалить / Отмена. Only renders the entries the caller
-  // wired up — sellers without delete permission see Изменить + Отмена.
   const handleLongPress = React.useMemo(() => {
     if (!onEdit && !onDelete) return undefined;
     const customer = item.customer_name?.trim() || "Покупатель";
@@ -36,35 +35,74 @@ function SaleCardImpl({ item, onSelect, onEdit, onDelete }: SaleCardProps) {
     };
   }, [item, onEdit, onDelete]);
 
+  // Return-state styling — three visual signals working together so the user
+  // can't miss a returned sale in a long list:
+  //   1. Left accent stripe (3px, color per state)
+  //   2. `keyboard-return` icon next to the customer name
+  //   3. Card-level dim + bg tint for fully-returned rows
+  const hasAnyReturn = isFullyReturned || hasPartialReturn;
+  const stripeColor = isFullyReturned ? "#94a3b8" : hasPartialReturn ? "#f59e0b" : null;
+  const cardBgClass = isFullyReturned
+    ? "bg-slate-50 dark:bg-zinc-900/60"
+    : "bg-white dark:bg-zinc-900";
+
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={handlePress}
       onLongPress={handleLongPress}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
+      className={`relative ${cardBgClass} rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800 active:opacity-80 overflow-hidden`}
+      style={isFullyReturned ? { opacity: 0.78 } : undefined}
     >
+      {/* Left accent stripe — drawn as an absolute child so it spans the full
+          card height without fighting the rounded border. */}
+      {stripeColor && (
+        <View
+          className="absolute left-0 top-0 bottom-0"
+          style={{ width: 3, backgroundColor: stripeColor }}
+        />
+      )}
+
+      {/* Top row: customer + amount/badges */}
       <View className="flex-row items-start justify-between mb-2">
-        <View className="flex-1 mr-2">
-          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {item.customer_name || "Покупатель"}
-          </Text>
-          <Text variant="small" className="mt-0.5">
-            {fmtDate(item.created_at)}
+        <View className="flex-1 mr-3 min-w-0">
+          <View className="flex-row items-center gap-1.5">
+            {hasAnyReturn && (
+              <MaterialIcons
+                name="keyboard-return"
+                size={14}
+                color={isFullyReturned ? "#64748b" : "#f59e0b"}
+              />
+            )}
+            <Text
+              className={`text-[15px] font-semibold flex-shrink ${
+                isFullyReturned
+                  ? "text-slate-500 dark:text-zinc-400"
+                  : "text-slate-900 dark:text-white"
+              }`}
+              numberOfLines={1}
+            >
+              {item.customer_name || "Покупатель"}
+            </Text>
+          </View>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {fmtTime(item.created_at)}
           </Text>
         </View>
         <View className="items-end gap-1">
           <Text
-            className={`text-base font-bold ${
+            className={`font-heading text-[16px] tracking-tight ${
               isFullyReturned
-                ? "text-slate-400 line-through dark:text-slate-500"
-                : "text-slate-900 dark:text-slate-50"
+                ? "text-slate-400 line-through dark:text-zinc-500"
+                : "text-slate-900 dark:text-white"
             }`}
+            style={{ fontVariantLigatures: "none" }}
           >
             {fmt(item.total)}
           </Text>
           {isFullyReturned ? (
-            <Badge variant="secondary">Возврат</Badge>
+            <Badge variant="secondary">Возвращена</Badge>
           ) : hasPartialReturn ? (
-            <Badge variant="secondary">Возврат {fmt(returnedTotal)}</Badge>
+            <Badge variant="warning">Возврат {fmt(returnedTotal)}</Badge>
           ) : null}
           {hasDebt && !isFullyReturned && (
             <Badge variant="destructive">Долг {fmt(item.debt)}</Badge>
@@ -72,40 +110,44 @@ function SaleCardImpl({ item, onSelect, onEdit, onDelete }: SaleCardProps) {
         </View>
       </View>
 
-      <View className="flex-row items-center gap-2 mt-1">
+      {/* Bottom row: payment pill + items hint + seller */}
+      <View className="flex-row items-center gap-2">
         <View className="flex-row items-center gap-1 bg-slate-100 dark:bg-zinc-800 rounded-lg px-2 py-1">
           <MaterialIcons
             name={PAYMENT_ICONS[item.payment_type] ?? "payments"}
-            size={13}
+            size={12}
             color="#0a7ea4"
           />
-          <Text className="text-xs text-slate-600 dark:text-slate-400">
+          <Text className="text-[11px] font-medium text-slate-700 dark:text-zinc-300">
             {PAYMENT_LABELS[item.payment_type] ?? item.payment_type}
           </Text>
         </View>
         {item.type === "service" ? (
           <Badge variant="secondary">Услуга</Badge>
         ) : (
-          <Text variant="small">{item.items.length} поз.</Text>
+          <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">
+            {item.items.length} поз.
+          </Text>
         )}
         {item.discount > 0 && (
-          <Text variant="small">Скидка: {fmt(item.discount)}</Text>
+          <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400">
+            · скидка {fmt(item.discount)}
+          </Text>
         )}
-        {/* Seller pinned to the bottom-right corner. flex-1 spacer absorbs
-            any free space so this stays glued to the edge regardless of
-            which left-side chips are rendered. shrink + numberOfLines
-            handles long names without breaking the row. */}
         <View className="flex-1" />
         {item.seller_name ? (
           <View className="flex-row items-center gap-1 shrink">
-            <MaterialIcons name="person" size={13} color="#94a3b8" />
-            <Text variant="small" numberOfLines={1} className="max-w-[120px]">
+            <MaterialIcons name="person" size={12} color="#94a3b8" />
+            <Text
+              className="text-[11.5px] text-slate-500 dark:text-zinc-400 max-w-[110px]"
+              numberOfLines={1}
+            >
               {item.seller_name}
             </Text>
           </View>
         ) : null}
       </View>
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 

@@ -751,14 +751,22 @@ export function CreateSaleModal({
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
         {/* Header */}
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">
-            Новая продажа
-          </Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              Новая продажа
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Покупатель, товары и оплата
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -812,8 +820,8 @@ export function CreateSaleModal({
             <View className="mb-2 flex-row items-center justify-between">
               <View className="flex-row items-center gap-2">
                 <MaterialIcons name="inventory-2" size={16} color="#0a7ea4" />
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Товары ({cart.length})
+                <Text className="font-heading text-[14px] tracking-tight text-slate-900 dark:text-white">
+                  Товары{cart.length > 0 ? ` · ${cart.length}` : ""}
                 </Text>
               </View>
               <View className="flex-row items-center gap-2">
@@ -871,8 +879,8 @@ export function CreateSaleModal({
             <View className="mb-2 flex-row items-center justify-between">
               <View className="flex-row items-center gap-2">
                 <MaterialIcons name="handyman" size={16} color="#0a7ea4" />
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Услуги ({serviceItems.length})
+                <Text className="font-heading text-[14px] tracking-tight text-slate-900 dark:text-white">
+                  Услуги{serviceItems.length > 0 ? ` · ${serviceItems.length}` : ""}
                 </Text>
               </View>
               <TouchableOpacity
@@ -918,36 +926,38 @@ export function CreateSaleModal({
             />
 
             {/* ── Payment type ─────────────────────────────────────────────── */}
-            <Text className="text-xs font-medium text-slate-500 mb-2">
+            <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 mb-2">
               Способ оплаты
             </Text>
             <View className="flex-row gap-2 mb-4">
-              {(["cash", "card", "transfer"] as const).map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  onPress={() => setPaymentType(t)}
-                  className={`flex-1 flex-row items-center justify-center gap-1.5 py-2.5 rounded-xl border ${
-                    paymentType === t
-                      ? "bg-primary-500 border-primary-500"
-                      : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
-                  }`}
-                >
-                  <MaterialIcons
-                    name={PAYMENT_ICONS[t]}
-                    size={16}
-                    color={paymentType === t ? "#fff" : "#94a3b8"}
-                  />
-                  <Text
-                    className={`text-xs font-medium ${
-                      paymentType === t
-                        ? "text-white"
-                        : "text-slate-600 dark:text-slate-400"
+              {(["cash", "card", "transfer"] as const).map((t) => {
+                const active = paymentType === t;
+                return (
+                  <TouchableOpacity
+                    key={t}
+                    onPress={() => setPaymentType(t)}
+                    className={`flex-1 items-center gap-1.5 py-3 rounded-2xl border ${
+                      active
+                        ? "border-primary-500 bg-primary-100 dark:bg-primary-900/30"
+                        : "border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
                     }`}
+                    style={active ? { borderWidth: 1.5 } : undefined}
                   >
-                    {PAYMENT_LABELS[t]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <MaterialIcons
+                      name={PAYMENT_ICONS[t]}
+                      size={20}
+                      color={active ? "#0a7ea4" : "#64748b"}
+                    />
+                    <Text
+                      className={`text-[12.5px] font-semibold ${
+                        active ? "text-primary-600 dark:text-primary-300" : "text-slate-700 dark:text-zinc-300"
+                      }`}
+                    >
+                      {PAYMENT_LABELS[t]}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             {/* ── Paid ─────────────────────────────────────────────────────── */}
@@ -971,47 +981,60 @@ export function CreateSaleModal({
             />
 
             {/* ── Summary ──────────────────────────────────────────────────── */}
-            <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-4 gap-2 mb-6">
-              <View className="flex-row justify-between">
-                <Text variant="muted">Подытог</Text>
-                <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 mb-6">
+              <View className="flex-row justify-between mb-1.5">
+                <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Подытог</Text>
+                <Text
+                  className="font-heading text-[13px] tracking-tight text-slate-700 dark:text-zinc-200"
+                  style={{ fontVariantLigatures: "none" }}
+                >
                   {fmt(subtotal)}
                 </Text>
               </View>
               {discountVal > 0 && (
-                <View className="flex-row justify-between">
-                  <Text variant="muted">Скидка</Text>
-                  <Text className="text-sm font-medium text-amber-500">
+                <View className="flex-row justify-between mb-1.5">
+                  <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Скидка</Text>
+                  <Text className="font-heading text-[13px] tracking-tight text-amber-500">
                     − {fmt(discountVal)}
                   </Text>
                 </View>
               )}
-              <View className="flex-row justify-between border-t border-slate-200 dark:border-zinc-700 pt-2 mt-1">
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  Должно быть
+              <View
+                className="my-2 border-t border-dashed border-slate-200 dark:border-zinc-700"
+                style={{ borderStyle: "dashed" }}
+              />
+              <View className="flex-row justify-between items-baseline mb-1.5">
+                <Text className="text-[14px] font-semibold text-slate-900 dark:text-white">
+                  К оплате
                 </Text>
-                <Text className="text-base font-bold text-slate-900 dark:text-slate-50">
+                <Text
+                  className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white"
+                  style={{ fontVariantLigatures: "none" }}
+                >
                   {fmt(total)}
                 </Text>
               </View>
-              <View className="flex-row justify-between">
-                <Text variant="muted">Оплачено</Text>
-                <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">
+              <View className="flex-row justify-between mb-1.5">
+                <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Оплачено</Text>
+                <Text
+                  className="font-heading text-[13px] tracking-tight text-slate-700 dark:text-zinc-200"
+                  style={{ fontVariantLigatures: "none" }}
+                >
                   {fmt(paidVal)}
                 </Text>
               </View>
               {unpaid > 0 && (
-                <View className="flex-row justify-between">
-                  <Text variant="muted">Не доплачено</Text>
-                  <Text className="text-sm font-semibold text-red-500">
+                <View className="flex-row justify-between mb-1.5">
+                  <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Не доплачено</Text>
+                  <Text className="font-heading text-[13px] font-semibold tracking-tight text-red-500">
                     {fmt(unpaid)}
                   </Text>
                 </View>
               )}
               {overpaid > 0 && (
                 <View className="flex-row justify-between">
-                  <Text variant="muted">Переплата</Text>
-                  <Text className="text-sm font-semibold text-green-600">
+                  <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Переплата</Text>
+                  <Text className="font-heading text-[13px] font-semibold tracking-tight text-emerald-600 dark:text-emerald-400">
                     {fmt(overpaid)}
                   </Text>
                 </View>

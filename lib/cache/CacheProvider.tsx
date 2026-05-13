@@ -121,7 +121,7 @@ const PERIODIC_REFRESH_MS = 60_000;
 const PERIODIC_RECONCILE_MS = 5 * 60_000;
 
 export function CacheProvider({ children }: { children: React.ReactNode }) {
-  const { token, user, tokenExpired } = useAuth();
+  const { token, user, tokenExpired, pinSetupPending, localUnlocked } = useAuth();
   const isOnline = useIsOnline();
 
   const authRef = React.useRef({
@@ -180,14 +180,18 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
         );
       }
 
-      // expo-sqlite serializes writes internally, so parallel fetches are
-      // safe and ~6x faster than sequential on cold start.
-      const results = await Promise.allSettled(tasks.map((t) => t.task()));
-      results.forEach((r, i) => {
-        if (r.status === "rejected") {
-          reportError(r.reason, { tag: "cache-refresh", entity: tasks[i].name });
+      // Sequential: each fetcher wraps its SQLite writes in
+      // `withTransactionAsync`, which issues a raw BEGIN on the shared
+      // connection. Running them in parallel triggers "cannot start a
+      // transaction within a transaction" — expo-sqlite serializes
+      // individual `runAsync` calls but NOT explicit transactions.
+      for (const t of tasks) {
+        try {
+          await t.task();
+        } catch (e) {
+          reportError(e, { tag: "cache-refresh", entity: t.name });
         }
-      });
+      }
 
       useCacheStore.setState({ lastSyncedAt: new Date() });
       return true;
@@ -323,7 +327,15 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
   // ─── Lifecycle: pull on (online && authed), then periodically ──────────────
 
   React.useEffect(() => {
-    if (!isOnline || !token || tokenExpired) return;
+    // Gate the post-login sync flood on TWO things:
+    //   1. pinSetupPending — token flipped on but user is still setting PIN,
+    //      no point fetching data behind a not-yet-protected session.
+    //   2. localUnlocked — on cold-launch the token is restored before the
+    //      user has cleared the biometric/PIN lock screen. Fetching here
+    //      would push data into the cache while the user is still locked
+    //      out (battery + bandwidth + arguably a tiny privacy hole).
+    // BiometricGuard flips `localUnlocked` true once it lets the user through.
+    if (!isOnline || !token || tokenExpired || pinSetupPending || !localUnlocked) return;
 
     // Initial pull on (re)connect. If a pull is already in flight (e.g. from
     // a recent triggerSync), this attaches to it instead of spawning another.
@@ -356,7 +368,7 @@ export function CacheProvider({ children }: { children: React.ReactNode }) {
       clearInterval(interval);
       clearInterval(reconcileInterval);
     };
-  }, [isOnline, token, tokenExpired, triggerSync, reconcileRemoteShops, reconcileRemoteProducts]);
+  }, [isOnline, token, tokenExpired, pinSetupPending, localUnlocked, triggerSync, reconcileRemoteShops, reconcileRemoteProducts]);
 
   // ─── Methods context value ─────────────────────────────────────────────────
 

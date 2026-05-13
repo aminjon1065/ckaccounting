@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Pressable,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -23,6 +24,51 @@ import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { api, ApiError, type Sale } from "@/lib/api";
 import { deleteLocalSale } from "@/lib/db";
 import { can } from "@/lib/permissions";
+import { DEFAULT_CURRENCY } from "@/constants/config";
+import { fmt } from "@/lib/formatters";
+
+// ─── Date grouping ───────────────────────────────────────────────────────────
+
+type ListRow = { kind: "section"; key: string; label: string; total: number } | { kind: "sale"; sale: Sale };
+
+function localDay(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function dayLabel(key: string): string {
+  const today = new Date();
+  const yKey = localDay(today.toISOString());
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const yestKey = localDay(yesterday.toISOString());
+  if (key === yKey) return "Сегодня";
+  if (key === yestKey) return "Вчера";
+  const [y, m, d] = key.split("-").map(Number);
+  // ru month names, day + month
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
+function buildRows(sales: Sale[]): ListRow[] {
+  const rows: ListRow[] = [];
+  let currentKey = "";
+  let currentTotal = 0;
+  let sectionIdx = -1;
+  for (const sale of sales) {
+    const key = localDay(sale.created_at);
+    if (key !== currentKey) {
+      currentKey = key;
+      currentTotal = 0;
+      rows.push({ kind: "section", key, label: dayLabel(key), total: 0 });
+      sectionIdx = rows.length - 1;
+    }
+    currentTotal += sale.total;
+    (rows[sectionIdx] as Extract<ListRow, { kind: "section" }>).total = currentTotal;
+    rows.push({ kind: "sale", sale });
+  }
+  return rows;
+}
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -50,24 +96,26 @@ export default function SalesScreen() {
   const canEditSale = can(user?.role, "sales:edit");
   const canDeleteSale = can(user?.role, "sales:delete");
 
-  // Stable callbacks so memoized SaleCard doesn't break its prop equality.
   const handleSelectSale = React.useCallback(
     (id: string) => router.push(`/sales/${id}`),
-    [router]
+    [router],
   );
 
   const handleEditSale = React.useCallback((sale: Sale) => {
     setEditingSale(sale);
   }, []);
 
-  const dropLocalSaleAndList = React.useCallback(async (id: string) => {
-    try {
-      await deleteLocalSale(id);
-    } catch {
-      // best-effort; the periodic reconcile / next sync will catch up
-    }
-    setSales((prev) => prev.filter((s) => s.id !== id));
-  }, [setSales]);
+  const dropLocalSaleAndList = React.useCallback(
+    async (id: string) => {
+      try {
+        await deleteLocalSale(id);
+      } catch {
+        // best-effort; the periodic reconcile / next sync will catch up
+      }
+      setSales((prev) => prev.filter((s) => s.id !== id));
+    },
+    [setSales],
+  );
 
   const handleDeleteSale = React.useCallback(
     (sale: Sale) => {
@@ -96,7 +144,6 @@ export default function SalesScreen() {
                     variant: "error",
                   });
                 } else if (e instanceof ApiError && e.status === 404) {
-                  // Already gone server-side. Reconcile the local view.
                   await dropLocalSaleAndList(sale.id);
                   showToast({
                     message: "Продажа уже была удалена. Локальная копия очищена.",
@@ -108,36 +155,81 @@ export default function SalesScreen() {
               }
             },
           },
-        ]
+        ],
       );
     },
-    [token, dropLocalSaleAndList, showToast]
+    [token, dropLocalSaleAndList, showToast],
   );
 
-  const renderSale = React.useCallback(
-    ({ item }: { item: Sale }) => (
-      <SaleCard
-        item={item}
-        onSelect={handleSelectSale}
-        onEdit={canEditSale ? handleEditSale : undefined}
-        onDelete={canDeleteSale ? handleDeleteSale : undefined}
-      />
-    ),
-    [handleSelectSale, handleEditSale, handleDeleteSale, canEditSale, canDeleteSale]
+  // Flatten with date headers. Memoised on `sales` to keep FlatList stable.
+  const rows = React.useMemo(() => buildRows(sales), [sales]);
+
+  // Period stats for the header subtitle.
+  const periodStats = React.useMemo(() => {
+    const total = sales.reduce((s, x) => s + x.total, 0);
+    return { count: sales.length, total };
+  }, [sales]);
+
+  const renderRow = React.useCallback(
+    ({ item }: { item: ListRow }) => {
+      if (item.kind === "section") {
+        return (
+          <View className="flex-row items-center gap-2 px-1 pt-3 pb-2">
+            <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400">
+              {item.label}
+            </Text>
+            <View className="flex-1 h-px bg-slate-200 dark:bg-zinc-800" />
+            <Text
+              className="font-heading text-[12px] tracking-tight text-slate-700 dark:text-zinc-300"
+              style={{ fontVariantLigatures: "none" }}
+            >
+              {fmt(item.total)} {DEFAULT_CURRENCY}
+            </Text>
+          </View>
+        );
+      }
+      return (
+        <SaleCard
+          item={item.sale}
+          onSelect={handleSelectSale}
+          onEdit={canEditSale ? handleEditSale : undefined}
+          onDelete={canDeleteSale ? handleDeleteSale : undefined}
+        />
+      );
+    },
+    [handleSelectSale, handleEditSale, handleDeleteSale, canEditSale, canDeleteSale],
   );
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <Text variant="h4">Продажи</Text>
-        <Text variant="muted" className="mt-0.5">
-          Учёт продаж
-        </Text>
+      <View className="flex-row items-center gap-3 px-5 pt-4 pb-3 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
+        <View className="flex-1 min-w-0">
+          <Text className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white">
+            Продажи
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {isOnline
+              ? `${periodStats.count} продаж · ${fmt(periodStats.total)} ${DEFAULT_CURRENCY}`
+              : "Офлайн · показаны сохранённые"}
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => showToast({ message: "Поиск скоро будет добавлен", variant: "success" })}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="search" size={20} color="#475569" />
+        </Pressable>
+        <Pressable
+          onPress={() => showToast({ message: "Фильтры скоро будут добавлены", variant: "success" })}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="filter-list" size={20} color="#475569" />
+        </Pressable>
       </View>
 
       {!isOnline && (
-        <View className="mx-4 mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+        <View className="mx-4 mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
           <Text className="text-sm font-semibold text-amber-900 dark:text-amber-200">
             Офлайн-режим
           </Text>
@@ -151,16 +243,20 @@ export default function SalesScreen() {
       {loading ? (
         <View className="flex-1 px-4 pt-4">
           {[1, 2, 3, 4].map((i) => (
-            <View key={i} className="mb-3">
-              <Skeleton className="h-20 rounded-2xl" />
+            <View key={i} className="mb-2.5">
+              <Skeleton className="h-[88px] rounded-2xl" />
             </View>
           ))}
         </View>
       ) : error ? (
         <View className="flex-1 items-center justify-center px-8">
           <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
-          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
-          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <Text variant="h5" className="mt-4 text-center">
+            Ошибка загрузки
+          </Text>
+          <Text variant="muted" className="mt-1 text-center">
+            {error}
+          </Text>
           <TouchableOpacity
             onPress={retryFetch}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
@@ -171,11 +267,13 @@ export default function SalesScreen() {
         </View>
       ) : (
         <FlatList
-          data={sales}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
+          data={rows}
+          keyExtractor={(item) =>
+            item.kind === "section" ? `s:${item.key}` : item.sale.id
+          }
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 }}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
           windowSize={5}
           removeClippedSubviews
           refreshing={refreshing}
@@ -197,14 +295,12 @@ export default function SalesScreen() {
               </View>
             ) : null
           }
-          renderItem={renderSale}
+          renderItem={renderRow}
         />
       )}
 
-      {/* FAB */}
       <FAB onPress={() => setCreateVisible(true)} />
 
-      {/* Create modal */}
       <CreateSaleModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
@@ -215,7 +311,6 @@ export default function SalesScreen() {
         token={token!}
       />
 
-      {/* Edit modal — opened from the long-press menu on a SaleCard. */}
       {editingSale && token && (
         <EditSaleModal
           visible={!!editingSale}

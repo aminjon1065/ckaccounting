@@ -32,8 +32,8 @@ export function ZakatCard({
           Закят 2.5%
         </Text>
         <View className="items-center mt-2">
-          <Text className="text-xl font-bold text-emerald-700 dark:text-emerald-400 text-center">
-            {isDataHidden ? "***" : `${fmtMoney(displayValue)}`}
+          <Text className="font-heading text-[18px] tracking-tight text-emerald-700 dark:text-emerald-400 text-center">
+            {isDataHidden ? "∗∗∗" : `${fmtMoney(displayValue)}`}
           </Text>
           <Text className="text-xs text-emerald-600 dark:text-emerald-500 mt-0.5">{DEFAULT_CURRENCY}</Text>
         </View>

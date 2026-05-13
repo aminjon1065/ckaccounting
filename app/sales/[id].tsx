@@ -1,13 +1,13 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { Alert, ScrollView, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import * as Crypto from "expo-crypto";
 
-import { Badge, Button, Card, CardContent, Separator, Skeleton, Text } from "@/components/ui";
+import { Badge, Button, Card, CardContent, Skeleton, Text } from "@/components/ui";
 import { api, ApiError, type Sale, type SaleItem } from "@/lib/api";
 import { generateReceiptHtml } from "@/lib/receipt";
 import { deleteLocalSale, getLocalSaleById } from "@/lib/db";
@@ -18,6 +18,7 @@ import { ReturnSaleModal } from "@/components/sales/ReturnSaleModal";
 import { EditSaleModal } from "@/components/sales/EditSaleModal";
 import { fmt } from "@/lib/formatters";
 import { useCacheMethods } from "@/lib/cache/CacheProvider";
+import { DEFAULT_CURRENCY } from "@/constants/config";
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -25,9 +26,16 @@ function fmtDate(iso: string) {
     day: "numeric",
     month: "long",
     year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
   });
+}
+function fmtTimeShort(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+function shortId(id: string): string {
+  // UUIDs aren't human-friendly. Show "#xxxxx" using the last 5 chars.
+  const tail = id.replace(/-/g, "").slice(-5).toUpperCase();
+  return `#${tail}`;
 }
 
 const PAYMENT_ICONS: Record<string, React.ComponentProps<typeof MaterialIcons>["name"]> = {
@@ -42,39 +50,46 @@ const PAYMENT_LABELS: Record<string, string> = {
   transfer: "Перевод",
 };
 
-function SaleItemRow({ item }: { item: SaleItem }) {
+// ─── Item row ────────────────────────────────────────────────────────────────
+
+function SaleItemRow({ item, last }: { item: SaleItem; last: boolean }) {
   const displayName = item.service_name ?? item.product_name ?? "—";
-  const unitLabel = item.unit ? ` · ${item.unit}` : "";
+  const unitLabel = item.unit ? ` ${item.unit}` : "";
   const returnedQty = item.returned_quantity ?? 0;
   const fullyReturned = returnedQty >= item.quantity;
 
   return (
-    <View className="flex-row items-center py-3 border-b border-slate-100 dark:border-zinc-800">
-      <View className="flex-1 mr-3">
+    <View
+      className={`flex-row items-center gap-3 px-3.5 py-3 ${
+        last ? "" : "border-b border-slate-100 dark:border-zinc-800"
+      }`}
+    >
+      <View className="w-9 h-9 rounded-[10px] bg-slate-100 dark:bg-zinc-800 items-center justify-center">
+        <MaterialIcons name="inventory-2" size={18} color="#94a3b8" />
+      </View>
+      <View className="flex-1 min-w-0">
         <Text
-          className={`text-sm font-medium ${
+          className={`text-[14px] font-medium leading-[18px] ${
             fullyReturned
-              ? "text-slate-400 line-through dark:text-slate-500"
-              : "text-slate-900 dark:text-slate-50"
+              ? "text-slate-400 line-through dark:text-zinc-500"
+              : "text-slate-900 dark:text-white"
           }`}
+          numberOfLines={1}
         >
           {displayName}
         </Text>
-        <Text variant="small">
-          {fmt(item.price)}{unitLabel} x {item.quantity}
+        <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+          {item.quantity}{unitLabel} × {fmt(item.price)}
+          {returnedQty > 0 ? `  ·  возвращено ${returnedQty}` : ""}
         </Text>
-        {returnedQty > 0 ? (
-          <Text variant="small" className="text-amber-600 dark:text-amber-400 mt-0.5">
-            Возвращено: {returnedQty} из {item.quantity}
-          </Text>
-        ) : null}
       </View>
       <Text
-        className={`text-sm font-semibold ${
+        className={`font-heading text-[14px] tracking-tight ${
           fullyReturned
-            ? "text-slate-400 line-through dark:text-slate-500"
-            : "text-slate-900 dark:text-slate-50"
+            ? "text-slate-400 line-through dark:text-zinc-500"
+            : "text-slate-900 dark:text-white"
         }`}
+        style={{ fontVariantLigatures: "none" }}
       >
         {fmt(item.total)}
       </Text>
@@ -82,34 +97,71 @@ function SaleItemRow({ item }: { item: SaleItem }) {
   );
 }
 
-function SummaryRow({
+// ─── Key/value rows ──────────────────────────────────────────────────────────
+
+function TotalRow({
   label,
   value,
+  tone,
   bold,
-  color,
 }: {
   label: string;
   value: string;
+  tone?: "neutral" | "destructive" | "success" | "warning";
   bold?: boolean;
-  color?: string;
 }) {
+  const valueColor =
+    tone === "destructive"
+      ? "text-red-500"
+      : tone === "success"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : tone === "warning"
+          ? "text-amber-600 dark:text-amber-400"
+          : bold
+            ? "text-slate-900 dark:text-white"
+            : "text-slate-700 dark:text-zinc-300";
   return (
-    <View className="flex-row items-center justify-between py-2">
+    <View className="flex-row items-baseline justify-between mb-1.5">
       <Text
-        variant={bold ? undefined : "muted"}
-        className={bold ? "text-sm font-semibold text-slate-900 dark:text-slate-50" : undefined}
+        className={`text-[13px] ${
+          bold
+            ? "font-semibold text-slate-900 dark:text-white"
+            : "text-slate-500 dark:text-zinc-400"
+        }`}
       >
         {label}
       </Text>
       <Text
-        className={`text-sm ${bold ? "font-bold text-slate-900 dark:text-slate-50" : "font-medium text-slate-700 dark:text-slate-300"}`}
-        style={color ? { color } : undefined}
+        className={`${
+          bold ? "font-heading text-[16px] tracking-tight" : "text-[13px] font-medium"
+        } ${valueColor}`}
+        style={{ fontVariantLigatures: "none" }}
       >
         {value}
       </Text>
     </View>
   );
 }
+
+function MetaRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
+  return (
+    <View
+      className={`flex-row items-center justify-between px-3.5 py-3 ${
+        last ? "" : "border-b border-slate-100 dark:border-zinc-800"
+      }`}
+    >
+      <Text className="text-[13px] text-slate-500 dark:text-zinc-400">{label}</Text>
+      <Text
+        className="text-[14px] font-medium text-slate-900 dark:text-white flex-1 text-right ml-3"
+        numberOfLines={1}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
 
 export default function SaleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -132,13 +184,12 @@ export default function SaleDetailScreen() {
       try {
         await deleteLocalSale(sale.id);
       } catch {
-        // Best-effort cleanup; even if the local delete fails, we still bail
-        // out of the screen so the user isn't stuck on a ghost record.
+        // Best-effort cleanup
       }
       showToast({ message: reason, variant: "error" });
       router.back();
     },
-    [sale, router, showToast]
+    [sale, router, showToast],
   );
 
   const handleDelete = React.useCallback(() => {
@@ -163,7 +214,6 @@ export default function SaleDetailScreen() {
               router.back();
             } catch (e: any) {
               if (e instanceof ApiError && e.status === 404) {
-                // Already gone on the server — wipe the local copy too.
                 await evictGhostAndExit("Продажа уже была удалена. Локальная копия очищена.");
               } else {
                 Alert.alert("Ошибка", e?.message ?? "Не удалось удалить продажу.");
@@ -173,7 +223,7 @@ export default function SaleDetailScreen() {
             }
           },
         },
-      ]
+      ],
     );
   }, [sale, token, router, showToast, evictGhostAndExit]);
 
@@ -183,7 +233,11 @@ export default function SaleDetailScreen() {
       const { uri } = await Print.printToFileAsync({ html: generateReceiptHtml(sale) });
       const isAvailable = await Sharing.isAvailableAsync();
       if (isAvailable) {
-        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf', dialogTitle: `Чек #${sale.id}` });
+        await Sharing.shareAsync(uri, {
+          UTI: ".pdf",
+          mimeType: "application/pdf",
+          dialogTitle: `Чек ${shortId(sale.id)}`,
+        });
       } else {
         Alert.alert("Ошибка", "Функция шэринга файлов недоступна.");
       }
@@ -213,51 +267,50 @@ export default function SaleDetailScreen() {
     const local = await getLocalSaleById(id);
     if (local) setSale(local);
 
-    // Pending-sync sales exist only locally — attempting api.sales.get would fail
     if (local?.sync_action === "create") {
       setLoading(false);
       return;
     }
 
-  try {
-    const s = await api.sales.get(id, token);
-    setSale(s);
-  } catch (e: any) {
-    if (e instanceof ApiError && e.status === 404 && local) {
-      // Server confirms the sale is gone; the local cache still has it
-      // (delta sync missed the tombstone, or it was hard-deleted). Drop
-      // the ghost so the list view stops showing it on next render.
-      try {
-        await deleteLocalSale(id);
-      } catch {}
-      setSale(null);
-      setError("Продажа была удалена. Локальная копия очищена.");
-      return;
+    try {
+      const s = await api.sales.get(id, token);
+      setSale(s);
+    } catch (e: any) {
+      if (e instanceof ApiError && e.status === 404 && local) {
+        try {
+          await deleteLocalSale(id);
+        } catch {}
+        setSale(null);
+        setError("Продажа была удалена. Локальная копия очищена.");
+        return;
+      }
+      if (!local) {
+        const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
+        setError(isOfflineError ? "Нет сети. Продажа недоступна офлайн." : "Не удалось загрузить продажу.");
+      }
     }
-    if (!local) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      setError(isOfflineError
-        ? "Нет сети. Продажа недоступна офлайн."
-        : "Не удалось загрузить продажу.");
-    }
-  }
   }, [id, token]);
 
   React.useEffect(() => {
     fetchSale().finally(() => setLoading(false));
   }, [fetchSale]);
 
+  // ── Loading ──
   if (loading) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-          <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-            <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-          </TouchableOpacity>
-          <Skeleton className="h-5 w-40 rounded-lg" />
+        <View className="flex-row items-center gap-3 px-4 pt-4 pb-3">
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+          >
+            <MaterialIcons name="arrow-back" size={20} color="#475569" />
+          </Pressable>
+          <Skeleton className="h-5 w-40 rounded-lg flex-1" />
         </View>
-        <View className="flex-1 px-4 pt-4 gap-4">
-          <Skeleton className="h-28 rounded-2xl" />
+        <View className="px-4 pt-2 gap-3">
+          <Skeleton className="h-32 rounded-2xl" />
           <Skeleton className="h-48 rounded-2xl" />
           <Skeleton className="h-24 rounded-2xl" />
         </View>
@@ -265,6 +318,7 @@ export default function SaleDetailScreen() {
     );
   }
 
+  // ── Error ──
   if (error || !sale) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
@@ -273,7 +327,9 @@ export default function SaleDetailScreen() {
           {error || "Продажа не найдена"}
         </Text>
         <View className="flex-row gap-3 mt-4">
-          <Button variant="outline" onPress={() => router.back()}>Назад</Button>
+          <Button variant="outline" onPress={() => router.back()}>
+            Назад
+          </Button>
           {!!error && (
             <Button
               onPress={() => {
@@ -292,164 +348,201 @@ export default function SaleDetailScreen() {
   const hasDebt = sale.debt > 0;
   const hasDiscount = sale.discount > 0;
   const subtotal = sale.total + sale.discount;
+  const returnedTotal = sale.returned_total ?? 0;
+  const hasReturn = returnedTotal > 0;
+  const payIcon = PAYMENT_ICONS[sale.payment_type] ?? "payments";
+  const payLabel = PAYMENT_LABELS[sale.payment_type] ?? sale.payment_type;
+  const customer = sale.customer_name?.trim() || "Покупатель";
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
-        <View className="flex-1">
-          <Text variant="h4">
-            {sale.customer_name || "Покупатель"}
-          </Text>
-          <View className="flex-row items-center gap-1 mt-0.5">
-            <Text variant="muted">{fmtDate(sale.created_at)}</Text>
-            {sale.seller_name ? (
-              <>
-                <Text variant="muted">·</Text>
-                <MaterialIcons name="person" size={13} color="#94a3b8" />
-                <Text variant="muted" numberOfLines={1}>
-                  {sale.seller_name}
-                </Text>
-              </>
-            ) : null}
-          </View>
-        </View>
-        <TouchableOpacity
-          onPress={handleShareReceipt}
+      {/* Header */}
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3">
+        <Pressable
+          onPress={() => router.back()}
           hitSlop={10}
-          className="mr-2 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
         >
-          <MaterialIcons name="share" size={18} color="#0a7ea4" />
-        </TouchableOpacity>
-        {can(user?.role, "sales:edit") && (
-          <TouchableOpacity
-            onPress={() => setEditModalVisible(true)}
-            hitSlop={10}
-            className="mr-2 w-10 h-10 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
-          >
-            <MaterialIcons name="edit" size={18} color="#0a7ea4" />
-          </TouchableOpacity>
-        )}
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
+        <View className="flex-1 min-w-0">
+          <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+            Продажа
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5" numberOfLines={1}>
+            {shortId(sale.id)} · {fmtTimeShort(sale.created_at)}
+          </Text>
+        </View>
+        <Pressable
+          onPress={handleShareReceipt}
+          hitSlop={8}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="share" size={18} color="#475569" />
+        </Pressable>
         {can(user?.role, "sales:delete") && (
-          <TouchableOpacity
+          <Pressable
             onPress={handleDelete}
             disabled={deleting}
-            hitSlop={10}
-            className="mr-2 w-10 h-10 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center"
+            hitSlop={8}
+            className="w-9 h-9 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center active:opacity-70"
           >
             <MaterialIcons name="delete-outline" size={18} color="#ef4444" />
-          </TouchableOpacity>
+          </Pressable>
         )}
-        <View className="flex-row items-center gap-2">
-          {sale.type === "service" && <Badge variant="secondary">Услуга</Badge>}
-          {hasDebt && <Badge variant="destructive">Долг</Badge>}
-        </View>
       </View>
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
       >
-        <Card className="mb-4">
-          <CardContent className="pt-4">
-            <View className="flex-row items-center gap-2 mb-3">
-              <View className="w-9 h-9 rounded-xl bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
-                <MaterialIcons
-                  name={PAYMENT_ICONS[sale.payment_type] ?? "payments"}
-                  size={20}
-                  color="#0a7ea4"
-                />
-              </View>
-              <View>
-                <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                  {PAYMENT_LABELS[sale.payment_type] ?? sale.payment_type}
-                </Text>
-                <Text variant="small">Способ оплаты</Text>
-              </View>
-            </View>
-
-            <Separator className="mb-3" />
-
-            {hasDiscount && (
-              <SummaryRow label="Подытог" value={fmt(subtotal)} />
-            )}
-            {hasDiscount && (
-              <SummaryRow label="Скидка" value={`- ${fmt(sale.discount)}`} color="#f59e0b" />
-            )}
-            <SummaryRow label="Итого" value={fmt(sale.total)} bold />
-            <SummaryRow
-              label={(sale.returned_total ?? 0) > 0 ? "Оплачено (сейчас)" : "Оплачено"}
-              value={fmt(sale.paid)}
-              color="#22c55e"
-            />
-            {(sale.returned_total ?? 0) > 0 && (
-              // Show the refunded amount as a separate row so the user can
-              // tell at a glance why `paid` shrank. Without this the math
-              // looks broken: a receipt for 200 sold + 200 paid, refund 100,
-              // now reads "Оплачено 100" with no explanation.
-              <SummaryRow
-                label={sale.is_fully_returned ? "Возвращено полностью" : "Возвращено"}
-                value={`- ${fmt(sale.returned_total ?? 0)}`}
-                color="#f59e0b"
-              />
-            )}
-            {hasDebt && (
-              <SummaryRow label="Остаток долга" value={fmt(sale.debt)} color="#ef4444" />
-            )}
-            {!!sale.notes && (
-              <View className="border-t border-slate-100 dark:border-zinc-800 mt-1 pt-2">
-                <Text variant="muted" className="text-xs mb-0.5">Заметки</Text>
-                <Text className="text-sm text-slate-700 dark:text-slate-300">{sale.notes}</Text>
-              </View>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-3 pb-0">
-            <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                {sale.type === "service" ? "Услуги" : "Товары"}
-              </Text>
-              <Badge variant="secondary">{sale.items.length} поз.</Badge>
-            </View>
-            {sale.items.map((item, idx) => (
-              <SaleItemRow
-                key={item.id ?? idx}
-                item={item}
-              />
-            ))}
-            <View className="flex-row items-center justify-between py-3">
-              <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Сумма
-              </Text>
-              <Text className="text-base font-bold text-primary-500">
+        {/* ── Hero amount card ── */}
+        <Card className="mb-3.5">
+          <CardContent className="items-center py-5">
+            <Text className="text-[12px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5">
+              Сумма продажи
+            </Text>
+            <View className="flex-row items-baseline gap-1.5">
+              <Text
+                className={`font-heading text-[34px] leading-[38px] tracking-tight ${
+                  sale.is_fully_returned
+                    ? "text-slate-400 line-through dark:text-zinc-500"
+                    : "text-slate-900 dark:text-white"
+                }`}
+                style={{ fontVariantLigatures: "none" }}
+              >
                 {fmt(sale.total)}
               </Text>
+              <Text className="text-[14px] font-medium text-slate-500 dark:text-zinc-400">
+                {DEFAULT_CURRENCY}
+              </Text>
+            </View>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1.5 text-center">
+              {customer} · {fmtDate(sale.created_at)} {fmtTimeShort(sale.created_at)}
+            </Text>
+            <View className="flex-row flex-wrap justify-center gap-2 mt-3">
+              <View className="flex-row items-center gap-1.5 bg-primary-100 dark:bg-primary-900/40 px-2.5 py-1 rounded-full">
+                <MaterialIcons name={payIcon} size={12} color="#0a7ea4" />
+                <Text className="text-[11.5px] font-semibold text-primary-700 dark:text-primary-200">
+                  {payLabel}
+                </Text>
+              </View>
+              {hasDebt && <Badge variant="destructive">Долг {fmt(sale.debt)}</Badge>}
+              {sale.type === "service" && <Badge variant="secondary">Услуга</Badge>}
+              {sale.is_fully_returned && <Badge variant="secondary">Возвращено</Badge>}
+              {!sale.is_fully_returned && hasReturn && (
+                <Badge variant="secondary">Возврат {fmt(returnedTotal)}</Badge>
+              )}
             </View>
           </CardContent>
         </Card>
 
-        <View className="flex-row gap-3 mt-4">
-          {can(user?.role, "sales:return") && (
+        {/* ── Items ── */}
+        <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+          Позиции ({sale.items.length})
+        </Text>
+        <Card className="p-0 overflow-hidden mb-3.5">
+          {sale.items.map((it, idx) => (
+            <SaleItemRow key={it.id ?? idx} item={it} last={idx === sale.items.length - 1} />
+          ))}
+        </Card>
+
+        {/* ── Totals ── */}
+        <Card className="mb-3.5">
+          <CardContent className="py-3.5">
+            <TotalRow label="Подытог" value={`${fmt(subtotal)} ${DEFAULT_CURRENCY}`} />
+            {hasDiscount && (
+              <TotalRow
+                label="Скидка"
+                value={`− ${fmt(sale.discount)} ${DEFAULT_CURRENCY}`}
+                tone="destructive"
+              />
+            )}
+            {hasReturn && (
+              <TotalRow
+                label={sale.is_fully_returned ? "Возвращено полностью" : "Возвращено"}
+                value={`− ${fmt(returnedTotal)} ${DEFAULT_CURRENCY}`}
+                tone="warning"
+              />
+            )}
+            {/* Dashed divider, then Итого */}
+            <View
+              className="my-2 border-t border-dashed border-slate-200 dark:border-zinc-700"
+              style={{ borderStyle: "dashed" }}
+            />
+            <TotalRow label="Итого" value={`${fmt(sale.total)} ${DEFAULT_CURRENCY}`} bold />
+            <TotalRow
+              label={hasReturn ? "Оплачено (сейчас)" : "Оплачено"}
+              value={`${fmt(sale.paid)} ${DEFAULT_CURRENCY}`}
+              tone="success"
+            />
+            {hasDebt && (
+              <TotalRow
+                label="Остаток долга"
+                value={`${fmt(sale.debt)} ${DEFAULT_CURRENCY}`}
+                tone="destructive"
+              />
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ── Details ── */}
+        <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+          Детали
+        </Text>
+        <Card className="p-0 overflow-hidden mb-3">
+          <MetaRow label="Покупатель" value={customer} />
+          <MetaRow label="Способ оплаты" value={payLabel} />
+          {sale.seller_name ? (
+            <MetaRow label="Продавец" value={sale.seller_name} last={!sale.notes} />
+          ) : null}
+          {!!sale.notes && <MetaRow label="Заметки" value={sale.notes} last />}
+        </Card>
+
+        {/* ── Actions ── */}
+        <View className="flex-row gap-2 mt-2">
+          {can(user?.role, "sales:edit") && (
             <Button
               className="flex-1"
-              variant="destructive"
-              onPress={handleReturn}
+              variant="outline"
+              onPress={() => setEditModalVisible(true)}
             >
-              Возврат
+              <View className="flex-row items-center gap-1.5">
+                <MaterialIcons name="edit" size={16} color="#475569" />
+                <Text className="text-[14px] font-semibold text-slate-700 dark:text-zinc-200">
+                  Изменить
+                </Text>
+              </View>
             </Button>
           )}
-          <Button className="flex-1" variant="outline" onPress={handlePrintReceipt}>
-            Печать
-          </Button>
-          <Button className="flex-1" onPress={handleShareReceipt}>
-            Поделиться
-          </Button>
+          {can(user?.role, "sales:return") && (
+            <Button className="flex-1" variant="outline" onPress={handleReturn}>
+              <View className="flex-row items-center gap-1.5">
+                <MaterialIcons name="north-east" size={16} color="#475569" />
+                <Text className="text-[14px] font-semibold text-slate-700 dark:text-zinc-200">
+                  Возврат
+                </Text>
+              </View>
+            </Button>
+          )}
         </View>
+        <TouchableOpacity
+          onPress={handleShareReceipt}
+          className="mt-2 py-3 flex-row items-center justify-center gap-2 active:opacity-60"
+        >
+          <MaterialIcons name="picture-as-pdf" size={18} color="#0a7ea4" />
+          <Text className="text-[14px] font-semibold text-primary-500">
+            Чек PDF · Поделиться
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={handlePrintReceipt}
+          className="py-2 flex-row items-center justify-center gap-2 active:opacity-60"
+        >
+          <MaterialIcons name="print" size={16} color="#94a3b8" />
+          <Text className="text-[13px] text-slate-500 dark:text-zinc-400">Печать</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {sale && (
@@ -461,10 +554,6 @@ export default function SaleDetailScreen() {
           onClose={() => setReturnModalVisible(false)}
           onSuccess={() => {
             setReturnModalVisible(false);
-            // Refresh the local cache so the list shows the new
-            // returned_total / is_fully_returned and the product stock bump.
-            // Don't await — back-navigation should feel instant; the sync
-            // completes in the background.
             triggerSync().catch(() => {});
             router.back();
           }}

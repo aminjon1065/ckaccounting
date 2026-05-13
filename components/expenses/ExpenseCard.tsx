@@ -1,12 +1,14 @@
 import * as React from "react";
-import { Alert, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+
 import { Text } from "@/components/ui";
 import { type Expense } from "@/lib/api";
 import { fmt } from "@/lib/formatters";
 
-function fmtDate(iso: string) {
+function fmtShortDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("ru-RU", { month: "short", day: "numeric" });
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
 }
 
 interface ExpenseCardProps {
@@ -26,33 +28,36 @@ function ExpenseCardImpl({ item, onEdit, onDelete }: ExpenseCardProps) {
   }, [item, handleEdit, onDelete]);
 
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={handleEdit}
       onLongPress={handleLongPress}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800 active:opacity-80"
     >
-      <View className="flex-row items-start justify-between">
-        <View className="flex-1 mr-3">
-          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
+      <View className="flex-row items-center gap-3">
+        <View className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 items-center justify-center">
+          <MaterialIcons name="account-balance-wallet" size={20} color="#ef4444" />
+        </View>
+        <View className="flex-1 min-w-0">
+          <Text
+            className="text-[15px] font-semibold text-slate-900 dark:text-white"
+            numberOfLines={1}
+          >
             {item.name}
           </Text>
-          <Text variant="small">
-            {item.quantity} × {fmt(item.price)} = {fmt(item.total)}
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5" numberOfLines={1}>
+            {item.note ? `${item.note} · ` : ""}
+            {fmtShortDate(item.created_at)}
+            {item.quantity > 1 ? `  ·  ${item.quantity} × ${fmt(item.price)}` : ""}
           </Text>
-          {item.note ? (
-            <Text variant="small" className="mt-0.5 italic">
-              {item.note}
-            </Text>
-          ) : null}
         </View>
-        <View className="items-end">
-          <Text className="text-base font-bold text-red-500">
-            {fmt(item.total)}
-          </Text>
-          <Text variant="small">{fmtDate(item.created_at)}</Text>
-        </View>
+        <Text
+          className="font-heading text-[16px] tracking-tight text-red-500"
+          style={{ fontVariantLigatures: "none" }}
+        >
+          − {fmt(item.total)}
+        </Text>
       </View>
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 

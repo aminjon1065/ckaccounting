@@ -10,7 +10,7 @@ import {
 import * as SecureStore from "expo-secure-store";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Alert, Avatar, Select, Text } from "@/components/ui";
+import { Alert, Avatar, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
 import { useCacheMethods } from "@/lib/cache/CacheProvider";
 
@@ -24,6 +24,7 @@ import { StockInfoCard } from "@/components/dashboard/StockInfoCard";
 import { ZakatCard } from "@/components/dashboard/ZakatCard";
 import { DebtsCard } from "@/components/dashboard/DebtsCard";
 import { QuickActions } from "@/components/dashboard/QuickActions";
+import { ShopPicker } from "@/components/dashboard/ShopPicker";
 import { CreateSaleModal } from "@/components/sales/CreateSaleModal";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { ExpenseFormModal } from "@/components/expenses/ExpenseFormModal";
@@ -135,41 +136,38 @@ export default function DashboardScreen() {
         }
       >
         {/* ── Header ── */}
-        <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
-          <View>
-            <Text variant="h4">{getGreeting(user?.name)}</Text>
-            <Text variant="muted" className="mt-0.5">{formatDate()}</Text>
+        <View className="flex-row items-center gap-3 px-5 pt-4 pb-3">
+          <View className="flex-1 min-w-0">
+            <Text className="font-heading text-[22px] leading-7 tracking-tight text-slate-900 dark:text-white" numberOfLines={1}>
+              {getGreeting(user?.name)}
+            </Text>
+            <Text className="text-[12.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              {formatDate()}
+            </Text>
           </View>
-          <View className="flex-row items-center gap-3">
-            <TouchableOpacity onPress={toggleDataHidden} className="w-10 h-10 items-center justify-center rounded-full bg-slate-100 dark:bg-zinc-800">
-              <MaterialIcons name={isDataHidden ? "visibility-off" : "visibility"} size={22} color="#64748b" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => router.push("/(tabs)/settings")}
-              className="active:opacity-70"
-            >
-              <Avatar name={user?.name ?? "?"} size="default" />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={toggleDataHidden}
+            className="w-[38px] h-[38px] items-center justify-center rounded-full bg-slate-100 dark:bg-zinc-800 active:opacity-70"
+          >
+            <MaterialIcons name={isDataHidden ? "visibility-off" : "visibility"} size={20} color="#64748b" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => router.push("/(tabs)/settings")}
+            className="active:opacity-70"
+          >
+            <Avatar name={user?.name ?? "?"} size="default" />
+          </TouchableOpacity>
         </View>
 
-        {/* ── Shop name chip / picker ──
-            super_admin and multi-shop owners get a picker (default = "Все
-            магазины", which the backend interprets as the actor's full
-            accessible set). Sellers and single-shop owners see a static
-            chip — their scope is fixed server-side. */}
+        {/* ── Shop chip / picker ──
+            super_admin and multi-shop owners get a bottom-sheet picker.
+            Sellers and single-shop owners see a tiny static chip below. */}
         {showShopPicker ? (
-          <View className="px-5 pb-2 pt-1">
-            <Select
-              value={activeShopId ? String(activeShopId) : ""}
-              onValueChange={(v) => setActiveShopId(v ? Number(v) : null)}
-              options={[
-                { label: "Все магазины", value: "" },
-                ...shops.map(s => ({ label: s.name, value: String(s.id) }))
-              ]}
-              placeholder="Все магазины"
-            />
-          </View>
+          <ShopPicker
+            shops={shops}
+            activeShopId={activeShopId}
+            onChange={setActiveShopId}
+          />
         ) : user?.shop_name ? (
           <View className="flex-row items-center gap-1.5 px-5 pb-1">
             <MaterialIcons name="store" size={14} color="#94a3b8" />

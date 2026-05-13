@@ -48,19 +48,31 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
   // ── 1. Capability probe ──────────────────────────────────────────────────
   useEffect(() => {
     if (!isEnabled) {
+      // "unlocked" while `!isEnabled` means "no lock applies because nobody
+      // is logged in". It's NOT a positive unlock signal — callers should
+      // gate on `isEnabled` themselves.
       setStatus("unlocked");
       return;
     }
 
+    // Auth just turned on (cold-launch with saved token, or fresh sign-in).
+    // Force status back to "checking" so downstream consumers don't see the
+    // leftover "unlocked" from the previous !isEnabled phase and mistake it
+    // for a passed-lock signal before the probe has even run.
+    setStatus("checking");
+
     let cancelled = false;
 
     (async () => {
+      const t0 = __DEV__ ? Date.now() : 0;
       try {
+        if (__DEV__) console.log("[useBiometricAuth] probing capabilities…");
         const [hasHardware, isEnrolled, supportedTypes] = await Promise.all([
           LocalAuthentication.hasHardwareAsync(),
           LocalAuthentication.isEnrolledAsync(),
           LocalAuthentication.supportedAuthenticationTypesAsync(),
         ]);
+        if (__DEV__) console.log(`[useBiometricAuth] probe done in ${Date.now() - t0}ms hw=${hasHardware} enrolled=${isEnrolled} suppressed=${isBiometricRelockSuppressed()}`);
 
         if (cancelled) return;
 
@@ -74,7 +86,8 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
         } else {
           setStatus("unavailable");
         }
-      } catch {
+      } catch (e) {
+        if (__DEV__) console.log(`[useBiometricAuth] probe failed in ${Date.now() - t0}ms: ${(e as Error)?.message}`);
         if (!cancelled) setStatus("unavailable");
       }
     })();
@@ -98,6 +111,7 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
     const caps = capabilitiesRef.current;
     if (!caps?.hasHardware || !caps?.isEnrolled) return;
 
+    if (__DEV__) console.log("[useBiometricAuth] authenticate() called — opening system prompt");
     setStatus("authenticating");
     setErrorMessage(null);
 

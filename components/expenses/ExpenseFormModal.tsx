@@ -175,14 +175,22 @@ export function ExpenseFormModal({
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
         {/* Header */}
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">
-            {editing ? "Изменить расход" : "Добавить расход"}
-          </Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              {editing ? "Изменить расход" : "Новый расход"}
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              {editing ? "Сохраните изменения" : "Сумма, категория и заметка"}
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView

@@ -6,6 +6,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  Pressable,
   ScrollView,
   TouchableOpacity,
   View,
@@ -64,58 +65,59 @@ const UserCard = React.memo(function UserCard({
 
   const hasMenuActions = (canEdit || canDelete || (canResetPin && !!onResetPin));
 
+  const roleBadgeVariant = item.role === "owner" ? "default" : "secondary";
+
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={canEdit && !isSelf ? onEdit : undefined}
       onLongPress={hasMenuActions && !isSelf ? handleLongPress : undefined}
-      activeOpacity={canEdit && !isSelf ? 0.7 : 1}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800"
+      disabled={!canEdit || isSelf}
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-center gap-3">
         <Avatar name={item.name} size="default" />
-        <View className="flex-1">
-          <View className="flex-row items-center gap-2 flex-wrap">
-            <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
+        <View className="flex-1 min-w-0">
+          <View className="flex-row items-center gap-1.5 flex-wrap">
+            <Text
+              className="text-[15px] font-semibold text-slate-900 dark:text-white flex-shrink"
+              numberOfLines={1}
+            >
               {item.name}
             </Text>
+            <Badge variant={roleBadgeVariant}>{ROLE_LABELS[item.role]}</Badge>
             {isSelf && <Badge variant="secondary">Вы</Badge>}
           </View>
-          <Text variant="muted">{item.email}</Text>
-          <View className="flex-row items-center gap-1.5 mt-0.5">
-            <MaterialIcons
-              name={item.role === "seller" ? "person" : "admin-panel-settings"}
-              size={13}
-              color="#0a7ea4"
-            />
-            <Text className="text-xs font-medium text-primary-500">
-              {ROLE_LABELS[item.role]}
-            </Text>
-          </View>
+          <Text
+            className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5"
+            numberOfLines={1}
+          >
+            {item.email}
+          </Text>
         </View>
         {!isSelf && (canEdit || canDelete) && (
-          <View className="flex-row items-center gap-1">
+          <View className="flex-row items-center gap-1.5">
             {canEdit && (
-              <TouchableOpacity
+              <Pressable
                 onPress={onEdit}
                 hitSlop={8}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
               >
                 <MaterialIcons name="edit" size={16} color="#0a7ea4" />
-              </TouchableOpacity>
+              </Pressable>
             )}
             {canDelete && (
-              <TouchableOpacity
+              <Pressable
                 onPress={onDelete}
                 hitSlop={8}
-                className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center"
+                className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center active:opacity-70"
               >
                 <MaterialIcons name="delete-outline" size={16} color="#ef4444" />
-              </TouchableOpacity>
+              </Pressable>
             )}
           </View>
         )}
       </View>
-    </TouchableOpacity>
+    </Pressable>
   );
 });
 
@@ -242,12 +244,22 @@ function CreateUserModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Новый сотрудник</Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              Новый сотрудник
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Имя, email и роль
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -447,12 +459,22 @@ function EditUserModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Редактировать сотрудника</Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              {editingUser?.name ?? "Сотрудник"}
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Доступы и роль
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -626,21 +648,29 @@ export default function UsersScreen() {
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3">
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
         <View className="flex-1">
-          <Text variant="h4">Сотрудники</Text>
-          <Text variant="muted" className="mt-0.5">Управление командой</Text>
+          <Text className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white">
+            Сотрудники
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            Доступы и роли
+          </Text>
         </View>
       </View>
 
       {loading ? (
-        <View className="flex-1 px-4 pt-4">
+        <View className="flex-1 px-4 pt-2">
           {[1, 2, 3].map((i) => (
-            <View key={i} className="mb-3">
-              <Skeleton className="h-20 rounded-2xl" />
+            <View key={i} className="mb-2.5">
+              <Skeleton className="h-[72px] rounded-2xl" />
             </View>
           ))}
         </View>

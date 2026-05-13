@@ -20,7 +20,7 @@ export function StockInfoCard({
   isDataHidden,
   onPress,
 }: StockInfoCardProps) {
-  const hiddenText = "***";
+  const hiddenText = "∗∗∗∗";
 
   return (
     <Card className="flex-1">

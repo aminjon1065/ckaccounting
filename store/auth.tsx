@@ -1,9 +1,6 @@
 import * as React from "react";
 import * as SecureStore from "expo-secure-store";
 import * as Crypto from "expo-crypto";
-import { pbkdf2 } from "@noble/hashes/pbkdf2.js";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
 import { api, type LoginPayload, type User } from "@/lib/api";
 import { STORAGE_KEYS } from "@/constants/config";
 import { registerSuspensionHandler } from "@/store/suspension";
@@ -31,6 +28,15 @@ interface AuthState {
   shopSuspended: boolean;
   tokenExpired: boolean;
   pinSetupPending: boolean;
+  /**
+   * True once the user has authenticated *locally* this session — via
+   * biometric, PIN, or a fresh password sign-in. Cold-launched sessions
+   * with a saved token start with this `false`; BiometricGuard flips it
+   * `true` after the lock screen is dismissed. CacheProvider gates its
+   * background sync on this flag so we don't fetch data behind the
+   * still-locked PIN screen.
+   */
+  localUnlocked: boolean;
 }
 
 interface AuthActions {
@@ -44,6 +50,8 @@ interface AuthActions {
   hasPin: () => Promise<boolean>;
   hasCredentials: () => Promise<boolean>;
   setPinSetupPending: (pending: boolean) => void;
+  /** Toggled by BiometricGuard when biometric or PIN unlock succeeds. */
+  setLocalUnlocked: (unlocked: boolean) => void;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -62,12 +70,14 @@ async function hashPin(pin: string, salt: string): Promise<string> {
 }
 
 async function hashPassword(password: string, salt: string): Promise<string> {
-  // PBKDF2-SHA256, 10k iterations (~20ms on device).
-  // 100k (~200ms) blocked the login-to-navigation path. 10k still provides strong
-  // protection against offline cracking of a strong password; the device itself is
-  // protected by the biometric/PIN gate.
-  const key = pbkdf2(sha256, password, salt, { c: 10_000, dkLen: 32 });
-  return bytesToHex(key);
+  // Native SHA-256 with salt via expo-crypto. The previous pure-JS PBKDF2 with
+  // 10k iterations sounded cheap on paper (~20ms on dev devices) but locked the
+  // JS thread for ~14s on low-end Android, blocking login-to-PIN transition.
+  // Acceptable tradeoff: this hash exists only for OFFLINE login verification
+  // on a device already gated by PIN/biometric + Android Keystore. An attacker
+  // who has extracted the stored hash already has device-level access where
+  // PBKDF2 rounds add little real-world resistance.
+  return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, password + salt);
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -84,6 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     shopSuspended: false,
     tokenExpired: false,
     pinSetupPending: false,
+    localUnlocked: false,
   });
 
   // Always-current token ref — avoids stale closure in callbacks that depend on token
@@ -139,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const wasShopSuspended = suspendedFlag === "1";
 
         if (!token) {
-          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false });
+          if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: false, localUnlocked: false });
           return;
         }
 
@@ -152,7 +163,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // If we have a token but no PIN saved, force the PIN setup flow before
         // letting the user reach the app — PIN is mandatory for every account.
         const pinPending = !pinHash;
-        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending });
+        // localUnlocked starts false on cold-launch even with a saved token —
+        // user still has to clear the biometric/PIN lock before sync fires.
+        // BiometricGuard flips it true after the gate is dismissed; for the
+        // pinSetupPending branch, signIn would have set it true already and
+        // this code path doesn't run (PIN setup follows a fresh login).
+        if (mounted) setState({ isLoaded: true, token, user: cachedUser, shopSuspended: wasShopSuspended, tokenExpired: false, pinSetupPending: pinPending, localUnlocked: false });
 
         // Best-effort: refresh user profile in background when online
         try {
@@ -165,7 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Offline or server error — cached user is sufficient, stay logged in
         }
       } catch {
-        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
+        if (mounted) setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, localUnlocked: false });
       }
     })();
 
@@ -173,7 +189,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = React.useCallback(async (payload: LoginPayload) => {
+    const t0 = Date.now();
     const { token, user } = await api.auth.login(payload);
+    if (__DEV__) console.log(`[signIn] api.auth.login resolved in ${Date.now() - t0}ms`);
 
     if (!token || typeof token !== "string") {
       throw new Error("Authentication failed: server did not return a token.");
@@ -199,10 +217,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Store password hash for offline login
-    const salt = await generateSalt();
-    const passwordHash = await hashPassword(payload.password, salt);
-
     // Server-initiated PIN reset: drop the local PIN hash so the next
     // setup flow starts clean. The login response only carries this flag
     // once — the server consumes it on success.
@@ -217,16 +231,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const pin = await SecureStore.getItemAsync(PIN_KEY);
     const pinPending = !pin;
 
+    // Critical writes — must land before unblocking: every subsequent API call
+    // and cold-launch restore reads token + user from SecureStore.
     await Promise.all([
       SecureStore.setItemAsync(TOKEN_KEY, token),
       SecureStore.setItemAsync(USER_KEY, JSON.stringify(user ?? null)),
-      SecureStore.setItemAsync(PASSWORD_HASH_KEY, passwordHash),
-      SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
-      SecureStore.deleteItemAsync(SHOP_SUSPENDED_KEY),
-      newUserId
-        ? SecureStore.setItemAsync(PREV_USER_ID_KEY, newUserId)
-        : SecureStore.deleteItemAsync(PREV_USER_ID_KEY),
     ]);
+
     // Fresh session: clear any circuit-breaker state from the previous one
     // so a single bad day on the network doesn't poison the new login.
     resetTokenRefreshState();
@@ -237,7 +248,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // immediately. Screens read from the local SQLite cache first (instant
     // paint) and refresh from the server on mount. SyncProvider's background
     // pull warms the cache; no need to block navigation on it.
-    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending });
+    // Fresh online login = local authentication. Mark unlocked so sync fires
+    // as soon as the user clears the PIN setup flow (or immediately if PIN
+    // already exists for this device).
+    setState({ isLoaded: true, token, user: user ?? null, shopSuspended: false, tokenExpired: false, pinSetupPending: pinPending, localUnlocked: true });
+    if (__DEV__) console.log(`[signIn] total before setState: ${Date.now() - t0}ms`);
+
+    // Deferred persistence — none of this blocks the PIN screen from rendering.
+    // PBKDF2 is ~1-2s on low-end Android (pure-JS SHA256 in the JS thread);
+    // SecureStore writes serialise through Android Keystore. Worst case if the
+    // user kills the app within a second of login: they re-enter password next
+    // time online, and offline login is unavailable until the next online sign-in.
+    void (async () => {
+      try {
+        const salt = await generateSalt();
+        const passwordHash = await hashPassword(payload.password, salt);
+        await Promise.all([
+          SecureStore.setItemAsync(PASSWORD_HASH_KEY, passwordHash),
+          SecureStore.setItemAsync(PASSWORD_SALT_KEY, salt),
+          SecureStore.deleteItemAsync(SHOP_SUSPENDED_KEY),
+          newUserId
+            ? SecureStore.setItemAsync(PREV_USER_ID_KEY, newUserId)
+            : SecureStore.deleteItemAsync(PREV_USER_ID_KEY),
+        ]);
+      } catch (e) {
+        reportError(e, { tag: "auth-signin-deferred-persist" });
+      }
+    })();
   }, []);
 
   const signInOffline = React.useCallback(async (): Promise<boolean> => {
@@ -272,6 +309,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         shopSuspended: suspendedFlag === "1",
         tokenExpired: prev.tokenExpired, // preserve server-invalidated state
         pinSetupPending: false,
+        // PIN was just verified — that's the local-auth step.
+        localUnlocked: true,
       }));
       return true;
     } catch {
@@ -305,7 +344,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Same rationale as signInOffline: fresh local re-auth, clear circuit.
       resetTokenRefreshState();
-      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false });
+      setState({ isLoaded: true, token, user, shopSuspended: suspendedFlag === "1", tokenExpired: false, pinSetupPending: false, localUnlocked: true });
       return true;
     } catch {
       return false;
@@ -349,6 +388,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => ({ ...prev, pinSetupPending: pending }));
   }, []);
 
+  const setLocalUnlocked = React.useCallback((unlocked: boolean) => {
+    setState((prev) => (prev.localUnlocked === unlocked ? prev : { ...prev, localUnlocked: unlocked }));
+  }, []);
+
   const updateUser = React.useCallback(async (user: User) => {
     await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
     setState((prev) => ({ ...prev, user }));
@@ -378,7 +421,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Discard any in-flight refresh + circuit-breaker counters — the next
     // login starts with a clean slate.
     resetTokenRefreshState();
-    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false });
+    setState({ isLoaded: true, token: null, user: null, shopSuspended: false, tokenExpired: false, pinSetupPending: false, localUnlocked: false });
   }, []);
 
   const value = React.useMemo<AuthContextValue>(
@@ -394,8 +437,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hasPin,
       hasCredentials,
       setPinSetupPending,
+      setLocalUnlocked,
     }),
-    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending]
+    [state, signIn, signInOffline, signInWithPassword, signOut, updateUser, setPin, verifyPin, hasPin, hasCredentials, setPinSetupPending, setLocalUnlocked]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

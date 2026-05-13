@@ -42,14 +42,14 @@ export function DebtsCard({
       <View className="flex-row justify-between mb-2">
         <Text variant="small" className="text-slate-500 dark:text-slate-400">Нам должны:</Text>
         <Text className="font-medium text-green-600">
-          {isDataHidden ? "***" : `${fmt(receivables, false)} ${DEFAULT_CURRENCY}`}
+          {isDataHidden ? "∗∗∗∗" : `${fmt(receivables, false)} ${DEFAULT_CURRENCY}`}
         </Text>
       </View>
 
       <View className="flex-row justify-between">
         <Text variant="small" className="text-slate-500 dark:text-slate-400">Мы должны:</Text>
         <Text className="font-medium text-red-500">
-          {isDataHidden ? "***" : `${fmt(payables, false)} ${DEFAULT_CURRENCY}`}
+          {isDataHidden ? "∗∗∗∗" : `${fmt(payables, false)} ${DEFAULT_CURRENCY}`}
         </Text>
       </View>
     </CardContent>

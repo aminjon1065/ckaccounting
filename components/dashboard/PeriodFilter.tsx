@@ -1,5 +1,5 @@
 import * as React from "react";
-import { TouchableOpacity, View, ScrollView } from "react-native";
+import { Pressable, View, ScrollView } from "react-native";
 import { Text } from "@/components/ui";
 import { type DashboardPeriod } from "@/lib/api";
 
@@ -20,31 +20,31 @@ export function PeriodFilter({
 }) {
   return (
     <View>
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false} 
-        contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 12, gap: 8 }}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 6 }}
       >
         {PERIODS.map((p) => {
           const active = value === p.key;
           return (
-            <TouchableOpacity
+            <Pressable
               key={p.key}
               onPress={() => onChange(p.key)}
-              className={`px-4 py-1.5 rounded-full border ${
+              className={`px-3.5 py-1.5 rounded-full border active:opacity-80 ${
                 active
                   ? "bg-primary-500 border-primary-500"
-                  : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
+                  : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800"
               }`}
             >
               <Text
-                className={`text-sm font-medium ${
-                  active ? "text-white" : "text-slate-600 dark:text-slate-400"
+                className={`text-[13px] font-semibold ${
+                  active ? "text-white" : "text-slate-700 dark:text-zinc-300"
                 }`}
               >
                 {p.label}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           );
         })}
       </ScrollView>

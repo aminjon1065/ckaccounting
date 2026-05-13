@@ -12,14 +12,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Image } from "expo-image";
-
-const LOGO_SOURCE = require("@/assets/images/main-icon.png");
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useCacheMethods } from "@/lib/cache/CacheProvider";
 import { reportError } from "@/lib/observability/reporter";
+import { PinKeypad } from "@/components/auth/PinKeypad";
 
 export default function LoginScreen() {
   const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, token } = useAuth();
@@ -49,11 +47,17 @@ export default function LoginScreen() {
     refreshStartedRef.current = true;
     triggerSync().catch((e) => reportError(e, { tag: "login-cache-refresh" }));
   }, [token, pinSetupPending, triggerSync]);
+  // Two-stage PIN setup: user enters a PIN, then confirms it. We don't show
+  // both fields at once — typing into one numeric pad is faster, and the
+  // confirm stage is the natural place to surface a "mismatch" error.
   const [pinValue, setPinValue] = React.useState("");
-  const [pinConfirm, setPinConfirm] = React.useState("");
+  const [pinStage, setPinStage] = React.useState<"enter" | "confirm">("enter");
+  const [firstPin, setFirstPin] = React.useState("");
   const [pinError, setPinError] = React.useState("");
+  const [pinSaving, setPinSaving] = React.useState(false);
   const [showPinVerify, setShowPinVerify] = React.useState(false);
   const [pinVerifyValue, setPinVerifyValue] = React.useState("");
+  const [pinVerifying, setPinVerifying] = React.useState(false);
   const [pendingCredentials, setPendingCredentials] = React.useState<{
     email: string;
     password: string;
@@ -89,16 +93,20 @@ export default function LoginScreen() {
     setError("");
     setLoading(true);
 
+    const tHandle = __DEV__ ? Date.now() : 0;
     try {
       await signIn({ email: trimmedEmail, password, device_name: Platform.OS });
+      if (__DEV__) console.log(`[handleLogin] signIn done @${Date.now() - tHandle}ms`);
       // After successful login, check if PIN is set — if not, prompt setup
       const pinSet = await hasPin();
+      if (__DEV__) console.log(`[handleLogin] hasPin done @${Date.now() - tHandle}ms (pinSet=${pinSet})`);
       if (!pinSet) {
         setPinSetupPending(true);
         setShowPinSetup(true);
       } else {
         setPinSetupPending(false);
       }
+      if (__DEV__) console.log(`[handleLogin] setShowPinSetup done @${Date.now() - tHandle}ms`);
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         setError("Слишком много попыток входа. Повторите через несколько минут.");
@@ -129,12 +137,14 @@ export default function LoginScreen() {
     setLoading(false);
   }
 
-  async function handlePinVerifySubmit() {
-    if (!pinVerifyValue) return;
-    const valid = await verifyPin(pinVerifyValue);
+  async function handlePinVerifySubmit(pin: string) {
+    if (pin.length !== 4 || pinVerifying) return;
+    setPinVerifying(true);
+    const valid = await verifyPin(pin);
     if (!valid) {
       setError("Неверный PIN. Попробуйте снова.");
       setPinVerifyValue("");
+      setPinVerifying(false);
       return;
     }
     setError("");
@@ -152,192 +162,135 @@ export default function LoginScreen() {
     } else {
       setError("Не удалось войти офлайн. Проверьте подключение.");
     }
+    setPinVerifying(false);
   }
 
-  async function handlePinSubmit() {
-    if (pinValue.length !== 4) {
-      setPinError("PIN должен быть из 4 цифр.");
+  async function handlePinSetupComplete(pin: string) {
+    if (pinStage === "enter") {
+      setFirstPin(pin);
+      setPinValue("");
+      setPinError("");
+      setPinStage("confirm");
       return;
     }
-    if (pinValue !== pinConfirm) {
-      setPinError("PIN-коды не совпадают.");
+    // confirm stage
+    if (pin !== firstPin) {
+      setPinError("PIN-коды не совпадают. Попробуйте снова.");
+      setPinValue("");
+      setFirstPin("");
+      setPinStage("enter");
       return;
     }
     setPinError("");
+    setPinSaving(true);
     try {
-      await setPin(pinValue);
+      await setPin(pin);
       setPinSetupPending(false);
-      // Drop the local PIN-setup view so the bootstrap loader (or AuthGuard
-      // routing to tabs) can take over on the next render.
       setShowPinSetup(false);
       setPinValue("");
-      setPinConfirm("");
+      setFirstPin("");
+      setPinStage("enter");
     } catch {
       setPinError("Не удалось сохранить PIN. Попробуйте снова.");
+      setPinValue("");
+      setFirstPin("");
+      setPinStage("enter");
+    } finally {
+      setPinSaving(false);
     }
   }
 
   // ── PIN Verify Screen (before offline login) ─────────────────────────────────
   if (showPinVerify) {
     return (
-      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <KeyboardAvoidingView
-          // "padding" on both platforms — Android `adjustResize` already
-          // shrinks the window, and pairing with "height" double-shrunk the
-          // KAV so the focused input slid under the keyboard.
-          behavior="padding"
-          className="flex-1"
-        >
-          <ScrollView
-            className="flex-1"
-            contentContainerStyle={{
-              flexGrow: 1,
-              justifyContent: "center",
-              paddingHorizontal: 24,
-              paddingVertical: 48,
-            }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
+        <View className="flex-1 px-6 pt-6 pb-6">
+          {/* Back link */}
+          <Pressable
+            onPress={() => { setShowPinVerify(false); setPinVerifyValue(""); setError(""); }}
+            hitSlop={12}
+            className="flex-row items-center -ml-1.5 mb-4 self-start active:opacity-60"
           >
-            <View className="items-center mb-8">
-              <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-4">
-                <MaterialIcons name="lock-outline" size={28} color="#fff" />
-              </View>
-              <Text variant="h2" className="text-center">
-                Введите PIN
-              </Text>
-              <Text variant="muted" className="text-center mt-2 text-center">
-                Для входа офлайн введите PIN-код.
-              </Text>
-            </View>
+            <MaterialIcons name="chevron-left" size={22} color="#64748b" />
+            <Text className="text-slate-500 dark:text-zinc-400 text-[14px]">Назад</Text>
+          </Pressable>
 
-            {!!error && (
-              <Alert
-                variant="destructive"
-                title="Ошибка"
-                description={error}
-                className="mb-4"
-              />
-            )}
+          {/* Heading */}
+          <Text className="text-slate-500 dark:text-zinc-400 text-[12px] font-semibold uppercase tracking-[0.8px] mt-3">
+            Офлайн-вход
+          </Text>
+          <Text className="font-heading text-[26px] leading-[32px] text-slate-900 dark:text-white mt-1.5 tracking-tight">
+            Введите PIN-код
+          </Text>
+          <Text className="text-slate-500 dark:text-zinc-400 text-[13.5px] leading-[20px] mt-1.5">
+            Без интернета вход возможен только по PIN-коду. Биометрия отключена в этом сеансе.
+          </Text>
 
-            <View className="gap-4">
-              <TextInput
-                className="border border-gray-300 dark:border-zinc-700 rounded-xl px-4 py-3 text-base bg-white dark:bg-zinc-900 text-gray-900 dark:text-white text-center tracking-widest"
-                placeholder="****"
-                placeholderTextColor="gray"
-                keyboardType="number-pad"
-                maxLength={4}
-                secureTextEntry
-                value={pinVerifyValue}
-                onChangeText={(t) => setPinVerifyValue(t.replace(/\D/g, "").slice(0, 4))}
-              />
-              <Button onPress={handlePinVerifySubmit}>
-                Войти
-              </Button>
-              <Button
-                variant="ghost"
-                onPress={() => { setShowPinVerify(false); setPinVerifyValue(""); setError(""); }}
-              >
-                Назад
-              </Button>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+          {/* Dots + keypad */}
+          <View className="flex-1 justify-end">
+            <PinKeypad
+              value={pinVerifyValue}
+              onChange={(v) => { setPinVerifyValue(v); if (error) setError(""); }}
+              onComplete={handlePinVerifySubmit}
+              error={error || null}
+              disabled={pinVerifying}
+            />
+          </View>
+        </View>
       </SafeAreaView>
     );
   }
 
   // ── PIN Setup Screen ─────────────────────────────────────────────────────────
   if (showPinSetup) {
+    const isConfirm = pinStage === "confirm";
     return (
-      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <KeyboardAvoidingView
-          // See note on the password/email screen below — same rationale.
-          behavior="padding"
-          className="flex-1"
-        >
-          <ScrollView
-            className="flex-1"
-            contentContainerStyle={{
-              flexGrow: 1,
-              justifyContent: "center",
-              paddingHorizontal: 24,
-              paddingVertical: 48,
-            }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <View className="items-center mb-8">
-              <View className="w-16 h-16 rounded-2xl bg-primary-500 items-center justify-center mb-4">
-                <MaterialIcons name="lock" size={28} color="#fff" />
-              </View>
-              <Text variant="h2" className="text-center">
-                Создайте PIN-код
-              </Text>
-              <Text variant="muted" className="text-center mt-2 text-center">
-                4-значный PIN обязателен для входа в приложение. Он используется при каждом запуске и в офлайн-режиме.
-              </Text>
-            </View>
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
+        <View className="flex-1 px-6 pt-6 pb-6">
+          {/* Back link (only visible on confirm stage — allows redo) */}
+          {isConfirm ? (
+            <Pressable
+              onPress={() => { setPinValue(""); setFirstPin(""); setPinStage("enter"); setPinError(""); }}
+              hitSlop={12}
+              className="flex-row items-center -ml-1.5 mb-4 self-start active:opacity-60"
+            >
+              <MaterialIcons name="chevron-left" size={22} color="#64748b" />
+              <Text className="text-slate-500 dark:text-zinc-400 text-[14px]">Назад</Text>
+            </Pressable>
+          ) : (
+            <View className="h-[26px] mb-4" />
+          )}
 
-            {!!pinError && (
-              <Alert
-                variant="destructive"
-                title="Ошибка"
-                description={pinError}
-                className="mb-4"
-              />
-            )}
+          {/* Step counter */}
+          <Text className="text-slate-500 dark:text-zinc-400 text-[12px] font-semibold uppercase tracking-[0.8px] mt-3">
+            Шаг {isConfirm ? "2" : "1"} из 2
+          </Text>
+          <Text className="font-heading text-[26px] leading-[32px] text-slate-900 dark:text-white mt-1.5 tracking-tight">
+            {isConfirm ? "Повторите PIN-код" : "Придумайте PIN-код"}
+          </Text>
+          <Text className="text-slate-500 dark:text-zinc-400 text-[13.5px] leading-[20px] mt-1.5">
+            {isConfirm
+              ? "Введите тот же PIN ещё раз, чтобы подтвердить."
+              : "4 цифры. Используется, если Face ID или отпечаток недоступны."}
+          </Text>
 
-            <View className="gap-4">
-              <Input
-                label="PIN-код"
-                placeholder="4 цифры"
-                value={pinValue}
-                onChangeText={(t) => {
-                  setPinValue(t.replace(/\D/g, "").slice(0, 4));
-                  if (pinError) setPinError("");
-                }}
-                keyboardType="number-pad"
-                secureTextEntry
-                maxLength={4}
-                leftIcon={
-                  <MaterialIcons name="pin" size={18} color="#94a3b8" />
-                }
-              />
-
-              <Input
-                label="Подтвердите PIN"
-                placeholder="Повторите PIN"
-                value={pinConfirm}
-                onChangeText={(t) => {
-                  setPinConfirm(t.replace(/\D/g, "").slice(0, 4));
-                  if (pinError) setPinError("");
-                }}
-                keyboardType="number-pad"
-                secureTextEntry
-                maxLength={4}
-                leftIcon={
-                  <MaterialIcons name="pin" size={18} color="#94a3b8" />
-                }
-              />
-
-              <Button
-                className="mt-2"
-                size="lg"
-                onPress={handlePinSubmit}
-                disabled={pinValue.length !== 4 || pinConfirm.length !== 4}
-              >
-                Сохранить PIN
-              </Button>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+          {/* Dots + keypad */}
+          <View className="flex-1 justify-end">
+            <PinKeypad
+              value={pinValue}
+              onChange={(v) => { setPinValue(v); if (pinError) setPinError(""); }}
+              onComplete={handlePinSetupComplete}
+              error={pinError || null}
+              disabled={pinSaving}
+            />
+          </View>
+        </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
+    <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       <KeyboardAvoidingView
         // "padding" on both platforms — Android `adjustResize` already
         // shrinks the window, and pairing with "height" double-shrunk the
@@ -349,27 +302,35 @@ export default function LoginScreen() {
           className="flex-1"
           contentContainerStyle={{
             flexGrow: 1,
-            justifyContent: "center",
             paddingHorizontal: 24,
-            paddingVertical: 48,
+            paddingTop: 32,
+            paddingBottom: 24,
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* ── Logo ── */}
-          <View className="items-center mb-10">
-            <Image
-              source={LOGO_SOURCE}
-              style={{ width: 96, height: 96, marginBottom: 16 }}
-              contentFit="contain"
-            />
-            <Text variant="h2" className="text-center tracking-tight">
-              CK Accounting
-            </Text>
-            <Text variant="muted" className="text-center mt-1.5">
-              Войдите для управления бизнесом
-            </Text>
+          {/* ── Brand row ── */}
+          <View className="flex-row items-center gap-2.5 mb-10">
+            <View className="w-11 h-11 rounded-xl bg-primary-500 items-center justify-center">
+              <Text className="font-heading text-white text-[20px] tracking-tighter">ck</Text>
+            </View>
+            <View>
+              <Text className="font-heading text-[17px] text-slate-900 dark:text-white tracking-tight">
+                CK Accounting
+              </Text>
+              <Text className="text-slate-500 dark:text-zinc-400 text-[12px] mt-px">
+                Магазин и финансы
+              </Text>
+            </View>
           </View>
+
+          {/* ── Heading ── */}
+          <Text className="font-heading text-[28px] leading-[34px] text-slate-900 dark:text-white tracking-tight">
+            Войти в аккаунт
+          </Text>
+          <Text className="text-slate-500 dark:text-zinc-400 text-[14px] leading-[20px] mt-1.5 mb-7">
+            Введите данные сотрудника. Первый вход требует интернет — дальше можно работать офлайн.
+          </Text>
 
           {/* ── Error banner ── */}
           {!!error && (
@@ -377,9 +338,6 @@ export default function LoginScreen() {
               variant="destructive"
               title="Ошибка входа"
               description={error}
-              icon={
-                <MaterialIcons name="error-outline" size={16} color="#b91c1c" />
-              }
               className="mb-5"
             />
           )}
@@ -464,10 +422,10 @@ export default function LoginScreen() {
           </View>
 
           {/* ── Footer ── */}
-          <View className="flex-row items-center justify-center gap-1.5 mt-10">
-            <MaterialIcons name="lock-outline" size={13} color="#94a3b8" />
-            <Text variant="small" className="text-slate-400">
-              Защищено сквозным шифрованием
+          <View className="flex-row items-center justify-center gap-1.5 mt-auto pt-10">
+            <MaterialIcons name="lock" size={13} color="#94a3b8" />
+            <Text className="text-slate-400 dark:text-zinc-500 text-[12px]">
+              Данные защищены SecureStore
             </Text>
           </View>
         </ScrollView>

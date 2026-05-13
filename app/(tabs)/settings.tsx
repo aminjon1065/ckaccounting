@@ -4,13 +4,13 @@ import * as React from "react";
 import {
   ActivityIndicator,
   Alert,
+  Pressable,
   ScrollView,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Avatar, Card, CardContent, Separator, Text } from "@/components/ui";
+import { Avatar, Text } from "@/components/ui";
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { getEntityRowCounts } from "@/lib/db";
 import { useAuth } from "@/store/auth";
@@ -23,7 +23,27 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useCacheMethods } from "@/lib/cache/CacheProvider";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
+// ─── Section label ───────────────────────────────────────────────────────────
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mt-4 mb-2">
+      {children}
+    </Text>
+  );
+}
+
+// ─── Card wrapper for grouped rows ───────────────────────────────────────────
+
+function GroupCard({ children }: { children: React.ReactNode }) {
+  return (
+    <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden">
+      {children}
+    </View>
+  );
+}
+
+// ─── Main screen ─────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
   const { user, signOut, token } = useAuth();
@@ -73,10 +93,6 @@ export default function SettingsScreen() {
               await fetchAllHistory(({ entity, pagesPulled }) => {
                 setHistoryProgress((prev) => ({ ...prev, [entity]: pagesPulled }));
               });
-              // Show actual row counts so the user can verify data landed.
-              // Without this, a fetcher that silently early-exits leaves the
-              // user with a "loaded" toast and an empty list, with nothing
-              // explaining why.
               const counts = await getEntityRowCounts();
               const summary = [
                 `Товары: ${counts.products}`,
@@ -86,8 +102,8 @@ export default function SettingsScreen() {
                 `Расходы: ${counts.expenses}`,
                 `Закупки: ${counts.purchases}`,
               ].join("\n");
-              const total = counts.products + counts.shops + counts.debts +
-                counts.sales + counts.expenses + counts.purchases;
+              const total =
+                counts.products + counts.shops + counts.debts + counts.sales + counts.expenses + counts.purchases;
               Alert.alert(
                 total > 0 ? "История загружена" : "Загрузка завершена, но данных нет",
                 summary,
@@ -100,202 +116,255 @@ export default function SettingsScreen() {
             }
           },
         },
-      ]
+      ],
     );
   }, [historyLoading, isOnline, fetchAllHistory, showToast]);
+
+  const themeLabel =
+    colorScheme === "dark" ? "Тёмная" : colorScheme === "system" ? "Системная" : "Светлая";
+
+  const showBusinessGroup =
+    can(user?.role, "settings:viewShop") || can(user?.role, "expenses:view");
+  const showRecordsGroup =
+    can(user?.role, "debts:view") || can(user?.role, "purchases:view");
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <Text variant="h4">Настройки</Text>
-        <Text variant="muted" className="mt-0.5">Аккаунт и настройки</Text>
+      <View className="px-5 pt-4 pb-3 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
+        <Text className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white">
+          Настройки
+        </Text>
+        <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+          Аккаунт и приложение
+        </Text>
       </View>
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
       >
         {/* Profile card */}
-        <Card>
-          <CardContent className="flex-row items-center gap-4 pt-4">
-            <Avatar name={user?.name ?? "?"} size="lg" />
-
-            <View className="flex-1">
-              <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
-                {user?.name ?? "—"}
-              </Text>
-              <Text variant="muted">{user?.email ?? "—"}</Text>
-              <View className="flex-row items-center gap-1.5 mt-1">
-                <MaterialIcons
-                  name={user?.role === "seller" ? "person" : "admin-panel-settings"}
-                  size={13}
-                  color="#0a7ea4"
-                />
-                <Text className="text-xs font-medium text-primary-500">
-                  {user?.role ? ROLE_LABELS[user.role] : "—"}
-                </Text>
-                {user?.shop_name && (
-                  <Text variant="small"> · {user.shop_name}</Text>
-                )}
-              </View>
-            </View>
-            <TouchableOpacity
-              onPress={() => setEditProfileVisible(true)}
-              className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
-              hitSlop={8}
+        <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3.5 flex-row items-center gap-3.5">
+          <Avatar name={user?.name ?? "?"} size="lg" />
+          <View className="flex-1 min-w-0">
+            <Text
+              className="text-[15px] font-semibold text-slate-900 dark:text-white"
+              numberOfLines={1}
             >
-              <MaterialIcons name="edit" size={17} color="#0a7ea4" />
-            </TouchableOpacity>
-          </CardContent>
-        </Card>
+              {user?.name ?? "—"}
+            </Text>
+            <Text
+              className="text-[12.5px] text-slate-500 dark:text-zinc-400 mt-0.5"
+              numberOfLines={1}
+            >
+              {user?.email ?? "—"}
+            </Text>
+            <View className="flex-row items-center gap-1.5 mt-1">
+              <MaterialIcons
+                name={user?.role === "seller" ? "person" : "admin-panel-settings"}
+                size={11}
+                color="#0a7ea4"
+              />
+              <Text className="text-[11px] font-semibold text-primary-500">
+                {user?.role ? ROLE_LABELS[user.role] : "—"}
+              </Text>
+              {user?.shop_name && (
+                <Text className="text-[11px] text-slate-500 dark:text-zinc-400" numberOfLines={1}>
+                  · {user.shop_name}
+                </Text>
+              )}
+            </View>
+          </View>
+          <Pressable
+            onPress={() => setEditProfileVisible(true)}
+            hitSlop={8}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="edit" size={16} color="#0a7ea4" />
+          </Pressable>
+        </View>
 
         {/* Business */}
-        {(can(user?.role, "settings:viewShop") || can(user?.role, "reports:view")) && (
-          <Card>
-            <CardContent className="p-0 pt-0 pb-0">
+        {showBusinessGroup && (
+          <>
+            <SectionLabel>Бизнес</SectionLabel>
+            <GroupCard>
               {can(user?.role, "settings:viewShop") && (
-                <>
-                  <SettingsRow
-                    icon="storefront"
-                    label="Настройки магазина"
-                    description="Валюта, налог"
-                    onPress={() => setShopSettingsVisible(true)}
-                  />
-                  {can(user?.role, "expenses:view") && <Separator className="ml-16" />}
-                </>
+                <SettingsRow
+                  icon="storefront"
+                  label="Настройки магазина"
+                  description="Валюта, налог, реквизиты"
+                  iconTone="primary"
+                  onPress={() => setShopSettingsVisible(true)}
+                  last={!can(user?.role, "expenses:view")}
+                />
               )}
               {can(user?.role, "expenses:view") && (
                 <SettingsRow
                   icon="account-balance-wallet"
                   label="Расходы"
                   description="Учёт расходов"
+                  iconTone="destructive"
                   onPress={() => router.push("/expenses")}
+                  last={!can(user?.role, "purchases:view")}
                 />
               )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Records */}
-        <Card>
-          <CardContent className="p-0 pt-0 pb-0">
-            {can(user?.role, "debts:view") && (
-              <>
-                <SettingsRow
-                  icon="people"
-                  label="Долги"
-                  description="Учёт долгов"
-                  onPress={() => router.push("/debts")}
-                />
-                <Separator className="ml-16" />
-              </>
-            )}
-            {can(user?.role, "purchases:view") && (
-              <>
-                <Separator className="ml-16" />
+              {can(user?.role, "purchases:view") && (
                 <SettingsRow
                   icon="shopping-bag"
                   label="Закупки"
-                  description="История закупок"
+                  description="История прихода товара"
+                  iconTone="success"
                   onPress={() => router.push("/purchases")}
+                  last
                 />
-              </>
-            )}
-            <Separator className="ml-16" />
-            <SettingsRow
-              icon="notifications"
-              label="Уведомления"
-              description="Мало товара и другое"
-              onPress={() => router.push("/notifications")}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Owner-only */}
-        {can(user?.role, "users:view") && (
-          <Card>
-            <CardContent className="p-0 pt-0 pb-0">
-              <SettingsRow
-                icon="manage-accounts"
-                label="Пользователи"
-                description="Управление сотрудниками"
-                onPress={() => router.push("/users")}
-              />
-            </CardContent>
-          </Card>
+              )}
+            </GroupCard>
+          </>
         )}
 
-        {/* SuperAdmin-only */}
+        {/* Records */}
+        {showRecordsGroup && (
+          <>
+            <SectionLabel>Учёт</SectionLabel>
+            <GroupCard>
+              {can(user?.role, "debts:view") && (
+                <SettingsRow
+                  icon="people"
+                  label="Долги"
+                  description="Дебиторская и кредиторская"
+                  iconTone="primary"
+                  onPress={() => router.push("/debts")}
+                  last={false}
+                />
+              )}
+              <SettingsRow
+                icon="notifications"
+                label="Уведомления"
+                description="Мало товара и долги"
+                iconTone="warning"
+                onPress={() => router.push("/notifications")}
+                last
+              />
+            </GroupCard>
+          </>
+        )}
+
+        {/* Team (owner only) */}
+        {can(user?.role, "users:view") && (
+          <>
+            <SectionLabel>Команда</SectionLabel>
+            <GroupCard>
+              <SettingsRow
+                icon="manage-accounts"
+                label="Сотрудники"
+                description="Управление доступом и ролями"
+                iconTone="primary"
+                onPress={() => router.push("/users")}
+                last
+              />
+            </GroupCard>
+          </>
+        )}
+
+        {/* Administration (super_admin) */}
         {user?.role === "super_admin" && (
-          <Card>
-            <CardContent className="p-0 pt-0 pb-0">
+          <>
+            <SectionLabel>Администрирование</SectionLabel>
+            <GroupCard>
               <SettingsRow
                 icon="store"
                 label="Магазины"
-                description="Управление всеми магазинами"
+                description="Все магазины сети"
+                iconTone="primary"
                 onPress={() => router.push("/shops")}
               />
-            </CardContent>
-          </Card>
+              <SettingsRow
+                icon="manage-accounts"
+                label="Все пользователи"
+                description="Сотрудники во всех магазинах"
+                iconTone="primary"
+                onPress={() => router.push("/users")}
+                last
+              />
+            </GroupCard>
+          </>
         )}
 
         {/* Appearance */}
-        <Text variant="small" className="ml-2 uppercase tracking-wide text-slate-500 font-semibold mb-[-8px]">
-          Внешний вид
-        </Text>
-        <Card>
-          <CardContent className="p-0 pt-0 pb-0">
-            <SettingsRow
-              icon={colorScheme === "dark" ? "dark-mode" : "light-mode"}
-              label="Тема оформления"
-              description={`Текущая: ${colorScheme === "dark" ? "Тёмная" : colorScheme === "system" ? "Системная" : "Светлая"}`}
-              onPress={toggleColorScheme}
-              rightText="Изменить"
-            />
-          </CardContent>
-        </Card>
+        <SectionLabel>Внешний вид</SectionLabel>
+        <GroupCard>
+          <SettingsRow
+            icon={colorScheme === "dark" ? "dark-mode" : "light-mode"}
+            label="Тема оформления"
+            iconTone="neutral"
+            onPress={toggleColorScheme}
+            rightText={themeLabel}
+            last
+          />
+        </GroupCard>
+
+        {/* Security */}
+        <SectionLabel>Безопасность</SectionLabel>
+        <GroupCard>
+          <SettingsRow
+            icon="fingerprint"
+            label="Биометрия"
+            description="Face ID / отпечаток"
+            iconTone="primary"
+          />
+          <SettingsRow
+            icon="lock"
+            label="PIN-код"
+            description="4-значный код"
+            iconTone="primary"
+            rightText="Изменить"
+            last
+          />
+        </GroupCard>
 
         {/* Data */}
-        <Text variant="small" className="ml-2 uppercase tracking-wide text-slate-500 font-semibold mb-[-8px]">
-          Данные
-        </Text>
-        <Card>
-          <CardContent className="p-0 pt-0 pb-0">
-            <SettingsRow
-              icon="cloud-download"
-              label="Загрузить всю историю"
-              description="Скачать все товары, продажи, расходы и закупки локально"
-              onPress={handleLoadAllHistory}
-              rightText={historyLoading ? undefined : "Запустить"}
-            />
-            {historyLoading && (
-              <View className="px-5 pb-4">
-                <View className="flex-row items-center gap-2 mb-2">
-                  <ActivityIndicator size="small" color="#0a7ea4" />
-                  <Text variant="muted">Идёт загрузка истории…</Text>
-                </View>
-                <Text variant="small" className="text-slate-500">
-                  Товары: {historyProgress.products > 0 ? "✓" : "…"}{"  ·  "}
-                  Магазины: {historyProgress.shops > 0 ? "✓" : "…"}{"  ·  "}
-                  Долги: {historyProgress.debts > 0 ? "✓" : "…"}{"  ·  "}
-                  Продажи: {historyProgress.sales} стр.{"  ·  "}
-                  Расходы: {historyProgress.expenses} стр.{"  ·  "}
-                  Закупки: {historyProgress.purchases} стр.
+        <SectionLabel>Данные</SectionLabel>
+        <GroupCard>
+          <SettingsRow
+            icon="cloud-download"
+            label="Загрузить всю историю"
+            description="На устройство для офлайн-работы"
+            iconTone="primary"
+            onPress={handleLoadAllHistory}
+            rightText={historyLoading ? undefined : "Запустить"}
+            last={!historyLoading}
+          />
+          {historyLoading && (
+            <View className="px-3.5 pb-3.5 pt-2 border-t border-slate-100 dark:border-zinc-800">
+              <View className="flex-row items-center gap-2 mb-2">
+                <ActivityIndicator size="small" color="#0a7ea4" />
+                <Text className="text-[12.5px] text-slate-500 dark:text-zinc-400">
+                  Идёт загрузка истории…
                 </Text>
               </View>
-            )}
-          </CardContent>
-        </Card>
+              <Text className="text-[11px] text-slate-500 dark:text-zinc-400 leading-[16px]">
+                Товары {historyProgress.products > 0 ? "✓" : "…"} ·
+                {" "}Магазины {historyProgress.shops > 0 ? "✓" : "…"} ·
+                {" "}Долги {historyProgress.debts > 0 ? "✓" : "…"} ·
+                {" "}Продажи {historyProgress.sales} стр. ·
+                {" "}Расходы {historyProgress.expenses} стр. ·
+                {" "}Закупки {historyProgress.purchases} стр.
+              </Text>
+            </View>
+          )}
+        </GroupCard>
 
         {/* Sign out */}
-        <Card>
-          <CardContent className="p-0 pt-0 pb-0">
+        <View className="mt-4">
+          <GroupCard>
             <SettingsRow
               icon="logout"
               label="Выйти"
               destructive
+              last
               onPress={() =>
                 Alert.alert("Выход", "Вы уверены, что хотите выйти?", [
                   { text: "Отмена", style: "cancel" },
@@ -303,15 +372,14 @@ export default function SettingsScreen() {
                 ])
               }
             />
-          </CardContent>
-        </Card>
+          </GroupCard>
+        </View>
 
-        <Text variant="small" className="text-center text-slate-400 pb-2 mt-4">
-          CK Accounting · v1.0.0
+        <Text className="text-[11px] text-slate-400 dark:text-zinc-600 text-center pb-2 mt-6">
+          CK Accounting · v1.0.0 · {themeLabel.toLowerCase()}
         </Text>
       </ScrollView>
 
-      {/* Shop settings modal */}
       <ShopSettingsModal
         visible={shopSettingsVisible}
         onClose={() => setShopSettingsVisible(false)}
@@ -320,7 +388,6 @@ export default function SettingsScreen() {
         currentShopId={user?.shop_id}
       />
 
-      {/* Edit profile modal */}
       <EditProfileModal
         visible={editProfileVisible}
         onClose={() => setEditProfileVisible(false)}

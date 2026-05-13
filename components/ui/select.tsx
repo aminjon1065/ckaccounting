@@ -7,6 +7,7 @@ import {
   View,
   type ViewProps,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "@/lib/utils";
 import { Label } from "./label";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
@@ -42,6 +43,7 @@ function Select<T extends string = string>({
 }: SelectProps<T>) {
   const [open, setOpen] = React.useState(false);
   const selected = options.find((o) => o.value === value);
+  const insets = useSafeAreaInsets();
 
   return (
     <View className={cn("gap-1.5", className)} {...props}>
@@ -84,11 +86,24 @@ function Select<T extends string = string>({
           className="flex-1 bg-black/50 justify-end"
           onPress={() => setOpen(false)}
         >
+          {/*
+            Sheet height is capped at 85% of the screen so a long option list
+            becomes scrollable instead of running off the top edge.
+            Bottom padding follows the device's bottom safe-area inset so the
+            last row clears whatever sits there — Android nav bar (3-button
+            or gesture), iPhone home indicator, tablet edge insets, etc.
+            Without this the bottom items fell under the system bar and were
+            unreachable.
+          */}
           <Pressable
-            className="bg-white dark:bg-zinc-900 rounded-t-3xl pb-8"
+            className="bg-white dark:bg-zinc-900 rounded-t-3xl"
+            style={{
+              maxHeight: "85%",
+              paddingBottom: insets.bottom + 12,
+            }}
             onPress={(e) => e.stopPropagation()}
           >
-            {/* Handle bar */}
+            {/* Handle bar (sticky top) */}
             <View className="items-center pt-3 pb-2">
               <View className="w-10 h-1 rounded-full bg-slate-300 dark:bg-zinc-600" />
             </View>
@@ -99,9 +114,16 @@ function Select<T extends string = string>({
               </Text>
             )}
 
+            {/* The list itself takes whatever height remains inside the capped
+                sheet, so it scrolls past the bottom edge while the handle +
+                label stay pinned. `flexShrink: 1` lets the list yield to the
+                parent's maxHeight instead of expanding past it. */}
             <FlatList
               data={options}
               keyExtractor={(item) => item.value}
+              style={{ flexShrink: 1 }}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => {
                 const isSelected = item.value === value;
                 return (

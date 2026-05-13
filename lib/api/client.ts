@@ -106,6 +106,7 @@ async function withRetry<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
+      if (attempt > 0 && __DEV__) console.log(`[api] retry attempt #${attempt}`);
       return await fn();
     } catch (err) {
       if (err instanceof ApiError && attempt < retries) {
@@ -194,13 +195,16 @@ export async function request<T>(
     const timer = setTimeout(() => controller.abort(), timeout);
 
     let res: Response;
+    const t0 = __DEV__ ? Date.now() : 0;
     try {
       res = await fetch(`${BASE_URL}${path}`, {
         ...rest,
         headers,
         signal: controller.signal,
       });
+      if (__DEV__) console.log(`[api] ${rest.method ?? "GET"} ${path} → ${res.status} in ${Date.now() - t0}ms`);
     } catch (err) {
+      if (__DEV__) console.log(`[api] ${rest.method ?? "GET"} ${path} FAILED in ${Date.now() - t0}ms: ${(err as Error)?.name}/${(err as Error)?.message}`);
       if (err instanceof Error && err.name === "AbortError") {
         throw new ApiError("Превышено время ожидания. Проверьте соединение.", 0);
       }

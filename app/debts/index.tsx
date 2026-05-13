@@ -6,13 +6,15 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  Pressable,
   ScrollView,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, EmptyState, FAB, Input, Select, Skeleton, Text } from "@/components/ui";
+import { Avatar, Button, EmptyState, FAB, Input, Select, Skeleton, Text } from "@/components/ui";
+import { DEFAULT_CURRENCY } from "@/constants/config";
 import * as Crypto from "expo-crypto";
 import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
@@ -29,93 +31,133 @@ function fmt(n: number) {
   return fmtNumber(Math.abs(n));
 }
 
+function fmtSince(iso: string): string {
+  const d = new Date(iso);
+  return `с ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`;
+}
+
 const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
   const isPositive = item.balance >= 0;
-  const accentColor = isPositive ? "#16a34a" : "#ef4444";
-  const statusLabel = isPositive ? "Нам должны" : "Мы должны";
+  const amountClass = isPositive
+    ? "text-emerald-600 dark:text-emerald-400"
+    : "text-red-500";
 
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={onPress}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800 active:opacity-80"
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800 active:opacity-80"
     >
-      <View className="flex-row items-start">
-        <View
-          className="w-11 h-11 rounded-full items-center justify-center mr-3"
-          style={{ backgroundColor: `${accentColor}18` }}
-        >
-          <MaterialIcons name={isPositive ? "call-made" : "call-received"} size={20} color={accentColor} />
-        </View>
+      <View className="flex-row items-center gap-3">
+        <Avatar name={item.person_name} size="default" />
         <View className="flex-1 min-w-0">
-          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50" numberOfLines={1}>
+          <Text
+            className="text-[15px] font-semibold text-slate-900 dark:text-white"
+            numberOfLines={1}
+          >
             {item.person_name}
           </Text>
-          <View className="flex-row items-center mt-1">
-            <View
-              className="px-2 py-1 rounded-full"
-              style={{ backgroundColor: `${accentColor}14` }}
-            >
-              <Text className="text-xs font-semibold" style={{ color: accentColor }}>
-                {statusLabel}
-              </Text>
-            </View>
-            <Text variant="small" className="ml-2">
-              старт {fmt(item.opening_balance)}
-            </Text>
-          </View>
-          {item.created_by_name ? (
-            <View className="flex-row items-center gap-1 mt-1">
-              <MaterialIcons name="person" size={12} color="#94a3b8" />
-              <Text variant="small" numberOfLines={1}>
-                Дал в долг: {item.created_by_name}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-        <View className="items-end ml-3">
-          <Text className="text-lg font-bold" style={{ color: accentColor }}>
-            {isPositive ? "+" : "-"}{fmt(item.balance)}
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5" numberOfLines={1}>
+            {item.created_by_name ? `${item.created_by_name} · ` : ""}
+            {fmtSince(item.created_at)}
           </Text>
-          <MaterialIcons name="chevron-right" size={20} color="#94a3b8" />
+        </View>
+        <View className="items-end">
+          <Text
+            className={`font-heading text-[16px] tracking-tight ${amountClass}`}
+            style={{ fontVariantLigatures: "none" }}
+          >
+            {isPositive ? "+" : "−"}{fmt(item.balance)}
+          </Text>
+          <Text className="text-[10.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {DEFAULT_CURRENCY}
+          </Text>
         </View>
       </View>
-    </TouchableOpacity>
+    </Pressable>
   );
 });
 
-function DebtSummary({ debts }: { debts: Debt[] }) {
-  const receivable = debts.reduce((sum, d) => sum + Math.max(0, d.balance), 0);
-  const payable = debts.reduce((sum, d) => sum + Math.abs(Math.min(0, d.balance)), 0);
-  const net = receivable - payable;
+type DebtTab = "receivable" | "payable";
 
+function DebtTabs({
+  active,
+  onChange,
+  receivableTotal,
+  payableTotal,
+}: {
+  active: DebtTab;
+  onChange: (t: DebtTab) => void;
+  receivableTotal: number;
+  payableTotal: number;
+}) {
   return (
-    <View className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-4 border border-slate-100 dark:border-zinc-800">
-      <View className="flex-row items-center justify-between mb-3">
-        <View>
-          <Text variant="small">Итоговый баланс</Text>
-          <Text
-            className={`text-2xl font-bold ${
-              net >= 0 ? "text-green-600" : "text-red-500"
-            }`}
+    <View className="flex-row gap-6 px-5 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
+      {(
+        [
+          { k: "receivable", l: "Нам должны", amt: receivableTotal, color: "text-emerald-600 dark:text-emerald-400" },
+          { k: "payable", l: "Мы должны", amt: payableTotal, color: "text-red-500" },
+        ] as { k: DebtTab; l: string; amt: number; color: string }[]
+      ).map((t) => {
+        const isActive = t.k === active;
+        return (
+          <Pressable
+            key={t.k}
+            onPress={() => onChange(t.k)}
+            className="py-3 flex-col items-start"
+            style={{
+              borderBottomWidth: 2,
+              borderBottomColor: isActive ? "#0a7ea4" : "transparent",
+            }}
           >
-            {net >= 0 ? "+" : "-"}{fmt(net)}
-          </Text>
-        </View>
-        <View className="w-11 h-11 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
-          <MaterialIcons name="account-balance-wallet" size={22} color="#0a7ea4" />
-        </View>
-      </View>
+            <Text
+              className={`text-[13.5px] font-semibold ${
+                isActive ? "text-slate-900 dark:text-white" : "text-slate-500 dark:text-zinc-400"
+              }`}
+            >
+              {t.l}
+            </Text>
+            <Text
+              className={`font-heading text-[12px] tracking-tight mt-0.5 ${t.color}`}
+              style={{ fontVariantLigatures: "none" }}
+            >
+              {fmt(t.amt)} {DEFAULT_CURRENCY}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
-      <View className="flex-row gap-3">
-        <View className="flex-1 rounded-xl bg-green-50 dark:bg-green-900/20 p-3">
-          <Text variant="small">Нам должны</Text>
-          <Text className="text-base font-semibold text-green-600">{fmt(receivable)}</Text>
-        </View>
-        <View className="flex-1 rounded-xl bg-red-50 dark:bg-red-900/20 p-3">
-          <Text variant="small">Мы должны</Text>
-          <Text className="text-base font-semibold text-red-500">{fmt(payable)}</Text>
-        </View>
-      </View>
+function DebtTabSummary({
+  tab,
+  total,
+  count,
+}: {
+  tab: DebtTab;
+  total: number;
+  count: number;
+}) {
+  const isReceivable = tab === "receivable";
+  return (
+    <View className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-200 dark:border-zinc-800">
+      <Text className="text-[12px] text-slate-500 dark:text-zinc-400 font-medium">
+        Всего {isReceivable ? "нам должны" : "мы должны"}
+      </Text>
+      <Text
+        className={`font-heading text-[26px] leading-[30px] tracking-tight mt-1 ${
+          isReceivable ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"
+        }`}
+        style={{ fontVariantLigatures: "none" }}
+      >
+        {fmt(total)}{" "}
+        <Text className="text-[14px] font-medium text-slate-500 dark:text-zinc-400">
+          {DEFAULT_CURRENCY}
+        </Text>
+      </Text>
+      <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1">
+        {count} {isReceivable ? "клиентов" : "позиций"}
+      </Text>
     </View>
   );
 }
@@ -227,14 +269,22 @@ function CreateDebtModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">
-            Новый долг
-          </Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              Новый долг
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Контрагент и стартовый баланс
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -341,7 +391,27 @@ export default function DebtsScreen() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [activeTab, setActiveTab] = React.useState<DebtTab>("receivable");
   const canCreateDebt = can(user?.role, "debts:create");
+
+  // Per-tab totals + filtered list. `balance >= 0` means they owe us
+  // (receivable), `< 0` means we owe them (payable). The card always shows
+  // the absolute value; the sign drives colour + tab placement.
+  const { receivableTotal, payableTotal, filtered } = React.useMemo(() => {
+    let receivable = 0;
+    let payable = 0;
+    const inTab: Debt[] = [];
+    for (const d of debts) {
+      if (d.balance >= 0) {
+        receivable += d.balance;
+        if (activeTab === "receivable") inTab.push(d);
+      } else {
+        payable += Math.abs(d.balance);
+        if (activeTab === "payable") inTab.push(d);
+      }
+    }
+    return { receivableTotal: receivable, payableTotal: payable, filtered: inTab };
+  }, [debts, activeTab]);
 
   const renderDebt = React.useCallback(
     ({ item }: { item: Debt }) => (
@@ -378,25 +448,40 @@ export default function DebtsScreen() {
     }
   }, [fetchDebts, lastSyncedAt]);
 
+  const isReceivable = activeTab === "receivable";
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3 bg-white dark:bg-zinc-900">
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
         <View className="flex-1">
-          <Text variant="h4">Взаиморасчеты</Text>
-          <Text variant="muted" className="mt-0.5">
-            Кто кому должен
+          <Text className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white">
+            Долги
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            Дебиторская и кредиторская
           </Text>
         </View>
       </View>
 
+      <DebtTabs
+        active={activeTab}
+        onChange={setActiveTab}
+        receivableTotal={receivableTotal}
+        payableTotal={payableTotal}
+      />
+
       {loading ? (
         <View className="flex-1 px-4 pt-4">
           {[1, 2, 3].map((i) => (
-            <View key={i} className="mb-3">
-              <Skeleton className="h-16 rounded-2xl" />
+            <View key={i} className="mb-2.5">
+              <Skeleton className="h-[72px] rounded-2xl" />
             </View>
           ))}
         </View>
@@ -422,9 +507,17 @@ export default function DebtsScreen() {
         </View>
       ) : (
         <FlatList
-          data={debts}
+          data={filtered}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-          ListHeaderComponent={debts.length ? <DebtSummary debts={debts} /> : null}
+          ListHeaderComponent={
+            debts.length ? (
+              <DebtTabSummary
+                tab={activeTab}
+                total={isReceivable ? receivableTotal : payableTotal}
+                count={filtered.length}
+              />
+            ) : null
+          }
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true);
@@ -439,8 +532,12 @@ export default function DebtsScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="people"
-              title="Пока нет записей"
-              description="Добавьте человека или поставщика, чтобы видеть баланс и историю операций."
+              title={isReceivable ? "Нам никто не должен" : "Мы никому не должны"}
+              description={
+                debts.length === 0
+                  ? "Добавьте человека или поставщика, чтобы видеть баланс и историю операций."
+                  : "В этой вкладке пусто. Переключитесь на другую."
+              }
             />
           }
           ListFooterComponent={

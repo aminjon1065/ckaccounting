@@ -6,6 +6,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  Pressable,
   ScrollView,
   TouchableOpacity,
   View,
@@ -43,12 +44,12 @@ const ShopCard = React.memo(function ShopCard({
   function handleLongPress() {
     const actions: { text: string; style?: "destructive" | "cancel" | "default"; onPress?: () => void }[] = [
       { text: "Изменить", onPress: onEdit },
-      { 
-        text: isActive ? "Приостановить" : "Активировать", 
-        style: isActive ? "destructive" : "default", 
-        onPress: onToggleStatus 
+      {
+        text: isActive ? "Приостановить" : "Активировать",
+        style: isActive ? "destructive" : "default",
+        onPress: onToggleStatus,
       },
-      { text: "Отмена", style: "cancel" }
+      { text: "Отмена", style: "cancel" },
     ];
     Alert.alert(item.name, "Выберите действие", actions);
   }
@@ -57,38 +58,53 @@ const ShopCard = React.memo(function ShopCard({
     <TouchableOpacity
       onPress={onEdit}
       onLongPress={handleLongPress}
-      activeOpacity={0.7}
-      className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-100 dark:border-zinc-800"
+      activeOpacity={0.8}
+      className="bg-white dark:bg-zinc-900 rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800"
     >
       <View className="flex-row items-center gap-3">
-        <View className="w-12 h-12 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center">
-          <MaterialIcons name="storefront" size={24} color="#0a7ea4" />
+        <View className="w-[42px] h-[42px] rounded-xl bg-primary-100 dark:bg-primary-900/40 items-center justify-center">
+          <MaterialIcons name="storefront" size={20} color="#0a7ea4" />
         </View>
-        <View className="flex-1">
-          <Text className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {item.name}
-          </Text>
-          <View className="flex-row items-center gap-2 mt-1">
+        <View className="flex-1 min-w-0">
+          <View className="flex-row items-center gap-1.5">
+            <Text
+              className="text-[15px] font-semibold text-slate-900 dark:text-white flex-shrink"
+              numberOfLines={1}
+            >
+              {item.name}
+            </Text>
             <Badge variant={isActive ? "success" : "destructive"}>
-              {isActive ? "Активен" : "Приостановлен"}
+              {isActive ? "Активен" : "Пауза"}
             </Badge>
           </View>
+          <Text
+            className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5"
+            numberOfLines={1}
+          >
+            {item.owner_name ? `Владелец: ${item.owner_name}` : "Без владельца"}
+          </Text>
         </View>
-        <View className="flex-row items-center gap-1">
-          <TouchableOpacity
+        <View className="flex-row items-center gap-1.5">
+          <Pressable
             onPress={onEdit}
             hitSlop={8}
-            className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center"
+            className="w-8 h-8 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
           >
             <MaterialIcons name="edit" size={16} color="#0a7ea4" />
-          </TouchableOpacity>
-          <TouchableOpacity
+          </Pressable>
+          <Pressable
             onPress={onToggleStatus}
             hitSlop={8}
-            className={`w-8 h-8 rounded-full items-center justify-center ${isActive ? 'bg-red-50 dark:bg-red-900/20' : 'bg-green-50 dark:bg-green-900/20'}`}
+            className={`w-8 h-8 rounded-full items-center justify-center active:opacity-70 ${
+              isActive ? "bg-red-50 dark:bg-red-900/20" : "bg-emerald-50 dark:bg-emerald-900/20"
+            }`}
           >
-            <MaterialIcons name={isActive ? "block" : "check-circle-outline"} size={16} color={isActive ? "#ef4444" : "#10b981"} />
-          </TouchableOpacity>
+            <MaterialIcons
+              name={isActive ? "block" : "check-circle-outline"}
+              size={16}
+              color={isActive ? "#ef4444" : "#10b981"}
+            />
+          </Pressable>
         </View>
       </View>
     </TouchableOpacity>
@@ -165,12 +181,22 @@ function CreateShopModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Новый магазин</Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              Новый магазин
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Название и владелец
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -314,12 +340,22 @@ function EditShopModal({
       onRequestClose={onClose}
     >
       <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-200 dark:border-zinc-800">
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <MaterialIcons name="close" size={22} color="#94a3b8" />
+        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={10}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="close" size={20} color="#475569" />
           </TouchableOpacity>
-          <Text variant="h5" className="flex-1 text-center">Редактировать магазин</Text>
-          <View style={{ width: 22 }} />
+          <View className="flex-1">
+            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+              {editingShop?.name ?? "Магазин"}
+            </Text>
+            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              Статус и владелец
+            </Text>
+          </View>
         </View>
 
         <KeyboardAvoidingView
@@ -483,70 +519,168 @@ export default function ShopsScreen() {
     );
   }
 
+  // Summary counts (server-truth — these are the deduped list).
+  const allShops = React.useMemo(() => {
+    const seen = new Set<number>();
+    const unique: Shop[] = [];
+    for (const s of shops) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      unique.push(s);
+    }
+    return unique;
+  }, [shops]);
+  const counts = React.useMemo(() => {
+    let active = 0;
+    for (const s of allShops) if (s.is_active) active += 1;
+    return { total: allShops.length, active, suspended: allShops.length - active };
+  }, [allShops]);
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
-      <View className="flex-row items-center px-5 pt-4 pb-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} className="mr-3">
-          <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
-        </TouchableOpacity>
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3">
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+        >
+          <MaterialIcons name="arrow-back" size={20} color="#475569" />
+        </Pressable>
         <View className="flex-1">
-          <Text variant="h4">Магазины</Text>
-          <Text variant="muted" className="mt-0.5">Центр управления филиалами</Text>
+          <Text className="font-heading text-[20px] tracking-tight text-slate-900 dark:text-white">
+            Магазины
+          </Text>
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            Управление сетью
+          </Text>
         </View>
       </View>
 
       {loading ? (
-        <View className="flex-1 px-4 pt-4">
+        <View className="flex-1 px-4 pt-2">
+          <Skeleton className="h-[64px] rounded-2xl mb-2.5" />
           {[1, 2, 3].map((i) => (
-            <View key={i} className="mb-3">
-              <Skeleton className="h-20 rounded-2xl" />
+            <View key={i} className="mb-2.5">
+              <Skeleton className="h-[72px] rounded-2xl" />
             </View>
           ))}
         </View>
       ) : (
         <>
           {/* Tabs */}
-          <View className="flex-row px-5 py-2 gap-2">
-            {(["active", "suspended", "all"] as const).map(t => {
-              const labels = { active: "Активные", suspended: "Приостановленные", all: "Все" };
-              const isTabActive = activeTab === t;
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 6, gap: 6 }}
+          >
+            {([
+              { key: "active", label: "Активные", count: counts.active },
+              { key: "suspended", label: "Пауза", count: counts.suspended },
+              { key: "all", label: "Все", count: counts.total },
+            ] as const).map((t) => {
+              const isTabActive = activeTab === t.key;
               return (
-                <TouchableOpacity
-                  key={t}
-                  onPress={() => setActiveTab(t)}
-                  className={`px-4 py-1.5 rounded-full border ${isTabActive ? 'bg-primary-500 border-primary-500' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700'}`}
+                <Pressable
+                  key={t.key}
+                  onPress={() => setActiveTab(t.key)}
+                  className={`px-3.5 py-1.5 rounded-full border flex-row items-center gap-1.5 active:opacity-80 ${
+                    isTabActive
+                      ? "bg-primary-500 border-primary-500"
+                      : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
+                  }`}
                 >
-                  <Text className={`text-sm font-medium ${isTabActive ? 'text-white' : 'text-slate-600 dark:text-slate-400'}`}>
-                    {labels[t]}
+                  <Text
+                    className={`text-[13px] font-semibold ${
+                      isTabActive ? "text-white" : "text-slate-700 dark:text-zinc-300"
+                    }`}
+                  >
+                    {t.label}
                   </Text>
-                </TouchableOpacity>
+                  {t.count > 0 && (
+                    <View
+                      className={`px-1.5 py-px rounded-full min-w-[18px] items-center ${
+                        isTabActive ? "bg-white/25" : "bg-slate-200 dark:bg-zinc-800"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10.5px] font-bold ${
+                          isTabActive ? "text-white" : "text-slate-600 dark:text-zinc-300"
+                        }`}
+                      >
+                        {t.count}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
               );
             })}
-          </View>
-          
+          </ScrollView>
+
           <FlatList
             data={displayedShops}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          ListEmptyComponent={
-            <View className="items-center justify-center py-20">
-              <MaterialIcons name="storefront" size={48} color="#94a3b8" />
-              <Text variant="muted" className="mt-3 text-center">
-                {"Нет магазинов.\nНажмите + для добавления."}
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <ShopCard
-              item={item}
-              onEdit={() => { setEditingShop(item); setEditVisible(true); }}
-              onToggleStatus={() => handleToggleStatus(item)}
-            />
-          )}
-        />
+            keyExtractor={(item) => String(item.id)}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 }}
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            ListHeaderComponent={
+              counts.total > 0 ? (
+                <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3.5 mb-3 flex-row">
+                  <View className="flex-1">
+                    <Text className="text-[10.5px] font-semibold uppercase tracking-[0.5px] text-slate-500 dark:text-zinc-400">
+                      Всего
+                    </Text>
+                    <Text
+                      className="font-heading text-[22px] tracking-tight text-slate-900 dark:text-white mt-0.5"
+                      style={{ fontVariantLigatures: "none" }}
+                    >
+                      {counts.total}
+                    </Text>
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-[10.5px] font-semibold uppercase tracking-[0.5px] text-slate-500 dark:text-zinc-400">
+                      Активных
+                    </Text>
+                    <Text
+                      className="font-heading text-[22px] tracking-tight text-emerald-600 dark:text-emerald-400 mt-0.5"
+                      style={{ fontVariantLigatures: "none" }}
+                    >
+                      {counts.active}
+                    </Text>
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-[10.5px] font-semibold uppercase tracking-[0.5px] text-slate-500 dark:text-zinc-400">
+                      Пауза
+                    </Text>
+                    <Text
+                      className="font-heading text-[22px] tracking-tight text-red-500 mt-0.5"
+                      style={{ fontVariantLigatures: "none" }}
+                    >
+                      {counts.suspended}
+                    </Text>
+                  </View>
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              <View className="items-center justify-center py-20">
+                <MaterialIcons name="storefront" size={48} color="#94a3b8" />
+                <Text variant="muted" className="mt-3 text-center">
+                  {"Нет магазинов.\nНажмите + для добавления."}
+                </Text>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <ShopCard
+                item={item}
+                onEdit={() => {
+                  setEditingShop(item);
+                  setEditVisible(true);
+                }}
+                onToggleStatus={() => handleToggleStatus(item)}
+              />
+            )}
+          />
         </>
       )}
 
