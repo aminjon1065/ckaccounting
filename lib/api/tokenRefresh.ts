@@ -108,6 +108,20 @@ export async function attemptTokenRefresh(currentToken: string): Promise<string 
       recordFailure();
       return null;
     } catch (e) {
+      // 401 from the refresh endpoint is authoritative: the server has
+      // explicitly rejected this token. Don't wait for the failure-window
+      // counter — trip the circuit immediately and force re-login.
+      // Duck-type on `status` to avoid a circular import on ApiError.
+      if (typeof (e as { status?: unknown })?.status === "number" && (e as { status: number }).status === 401) {
+        reportMessage(
+          "Token refresh returned 401 — token is dead, forcing re-login",
+          "warning",
+          { tag: "token-refresh-unauthorized" }
+        );
+        _circuitTripped = true;
+        fireExpiryOnce();
+        return null;
+      }
       reportError(e, { tag: "token-refresh", failureCount: _failureCount + 1 });
       recordFailure();
       return null;

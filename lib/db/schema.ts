@@ -204,6 +204,8 @@ async function performInitDb() {
       local_id TEXT UNIQUE,
       name TEXT,
       is_active INTEGER DEFAULT 1,
+      owner_id INTEGER,
+      owner_name TEXT,
       sync_action TEXT DEFAULT 'none',
       status TEXT DEFAULT 'pending',
       created_at TEXT,
@@ -502,6 +504,8 @@ async function performInitDb() {
             local_id TEXT,
             name TEXT,
             is_active INTEGER DEFAULT 1,
+            owner_id INTEGER,
+            owner_name TEXT,
             sync_action TEXT DEFAULT 'none',
             status TEXT DEFAULT 'pending',
             created_at TEXT,
@@ -679,6 +683,9 @@ async function performInitDb() {
             last_synced_at TEXT
           );
 
+          -- Note: owner_id / owner_name were added later in migration v34.
+          -- Devices that ran this migration before v34 existed keep the same
+          -- column set; v34 ALTERs both columns in afterwards.
           INSERT INTO shops_new
           SELECT id, local_id, name, is_active, sync_action, status,
                  created_at, updated_at, last_synced_at
@@ -758,6 +765,26 @@ async function performInitDb() {
       check: (db) =>
         !columnExists(db, "debts", "created_by_name") ||
         !columnExists(db, "debt_transactions", "created_by_name"),
+    },
+    // Migration v34: persist the shop's owner FK and resolved owner display
+    // name. The edit screen's owner dropdown sets `owner_id`; the card UI
+    // reads `owner_name`. Pre-v34 the SQLite shops table held neither, so
+    // after every refresh the local cache dropped the assignment — the UI
+    // showed "Без владельца" even when the server had the owner set.
+    // Backfilled lazily on the next remote pull (ShopFetcher writes both).
+    {
+      version: 34,
+      migrate: (db) => {
+        if (!columnExists(db, "shops", "owner_id")) {
+          db.execSync("ALTER TABLE shops ADD COLUMN owner_id INTEGER;");
+        }
+        if (!columnExists(db, "shops", "owner_name")) {
+          db.execSync("ALTER TABLE shops ADD COLUMN owner_name TEXT;");
+        }
+      },
+      check: (db) =>
+        !columnExists(db, "shops", "owner_id") ||
+        !columnExists(db, "shops", "owner_name"),
     },
   ];
 

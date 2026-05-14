@@ -17,6 +17,8 @@ interface ShopRow {
   id: number;
   name: string | null;
   is_active: number | null;
+  owner_id: number | null;
+  owner_name: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -34,6 +36,8 @@ function mapRowToLocalShop(r: ShopRow): LocalShop {
     id: r.id,
     name: r.name ?? "",
     is_active: !!r.is_active,
+    owner_id: r.owner_id,
+    owner_name: r.owner_name,
     created_at: r.created_at ?? "",
     status: "synced",
     sync_action: "none",
@@ -51,12 +55,14 @@ export async function insertOrUpdateShops(shops: Array<Shop & { deleted_at?: str
       }
       await db.runAsync(
         `INSERT OR REPLACE INTO shops (
-          id, name, is_active, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?)`,
+          id, name, is_active, owner_id, owner_name, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           shop.id,
           shop.name,
           shop.is_active ? 1 : 0,
+          shop.owner_id ?? null,
+          shop.owner_name ?? null,
           shop.created_at || new Date().toISOString(),
           shop.updated_at || new Date().toISOString(),
         ]

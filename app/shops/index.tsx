@@ -23,6 +23,7 @@ import {
   Text,
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type Shop, type CreateShopPayload } from "@/lib/api";
+import { insertOrUpdateShops } from "@/lib/db";
 import { reportError } from "@/lib/observability/reporter";
 import { useShops } from "@/hooks/useShops";
 import { useAuth } from "@/store/auth";
@@ -491,6 +492,9 @@ export default function ShopsScreen() {
             try {
               const updated = await api.shops.update(shop.id, { is_active: !shop.is_active }, token!);
               setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
+              insertOrUpdateShops([updated]).catch((e) =>
+                reportError(e, { tag: "shops-toggle-persist", id: updated.id })
+              );
               showToast({ message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`, variant: "success" });
             } catch (e) {
               setShops((prev) => prev.map((s) =>
@@ -568,12 +572,8 @@ export default function ShopsScreen() {
         </View>
       ) : (
         <>
-          {/* Tabs */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 6, gap: 6 }}
-          >
+          {/* Tabs — minimal underline style */}
+          <View className="flex-row px-4 border-b border-slate-200 dark:border-zinc-800">
             {([
               { key: "active", label: "Активные", count: counts.active },
               { key: "suspended", label: "Пауза", count: counts.suspended },
@@ -584,38 +584,37 @@ export default function ShopsScreen() {
                 <Pressable
                   key={t.key}
                   onPress={() => setActiveTab(t.key)}
-                  className={`px-3.5 py-1.5 rounded-full border flex-row items-center gap-1.5 active:opacity-80 ${
-                    isTabActive
-                      ? "bg-primary-500 border-primary-500"
-                      : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
-                  }`}
+                  className="mr-6 py-2.5 flex-row items-center gap-1.5 active:opacity-60"
+                  style={{
+                    borderBottomWidth: 2,
+                    borderBottomColor: isTabActive ? "#0a7ea4" : "transparent",
+                    marginBottom: -1,
+                  }}
                 >
                   <Text
-                    className={`text-[13px] font-semibold ${
-                      isTabActive ? "text-white" : "text-slate-700 dark:text-zinc-300"
+                    className={`text-[14px] ${
+                      isTabActive
+                        ? "text-primary-600 dark:text-primary-400 font-semibold"
+                        : "text-slate-500 dark:text-zinc-400 font-medium"
                     }`}
                   >
                     {t.label}
                   </Text>
                   {t.count > 0 && (
-                    <View
-                      className={`px-1.5 py-px rounded-full min-w-[18px] items-center ${
-                        isTabActive ? "bg-white/25" : "bg-slate-200 dark:bg-zinc-800"
+                    <Text
+                      className={`text-[12px] ${
+                        isTabActive
+                          ? "text-primary-600 dark:text-primary-400 font-semibold"
+                          : "text-slate-400 dark:text-zinc-500"
                       }`}
                     >
-                      <Text
-                        className={`text-[10.5px] font-bold ${
-                          isTabActive ? "text-white" : "text-slate-600 dark:text-zinc-300"
-                        }`}
-                      >
-                        {t.count}
-                      </Text>
-                    </View>
+                      {t.count}
+                    </Text>
                   )}
                 </Pressable>
               );
             })}
-          </ScrollView>
+          </View>
 
           <FlatList
             data={displayedShops}
@@ -692,6 +691,11 @@ export default function ShopsScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(s) => {
           setShops((prev) => [s, ...prev]);
+          // Persist immediately so re-entering the screen (which reloads
+          // from SQLite) doesn't drop this row until the next remote pull.
+          insertOrUpdateShops([s]).catch((e) =>
+            reportError(e, { tag: "shops-onCreated-persist", id: s.id })
+          );
         }}
         token={token!}
         showToast={showToast}
@@ -703,6 +707,13 @@ export default function ShopsScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
+          // Mirror the server response into SQLite immediately. Without this
+          // the owner_id / owner_name / is_active edit only lives in React
+          // state until the next reconcileAndLoad — backing out and re-entering
+          // the screen would show stale data.
+          insertOrUpdateShops([updated]).catch((e) =>
+            reportError(e, { tag: "shops-onSaved-persist", id: updated.id })
+          );
         }}
         onMissing={(id) => {
           dropLocal(id).catch(() => {});

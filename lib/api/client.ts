@@ -102,7 +102,8 @@ function isRetryableStatus(status: number): boolean {
 async function withRetry<T>(
   fn: () => Promise<T>,
   retries = MAX_RETRIES,
-  tokenRef?: { current: string | undefined }
+  tokenRef?: { current: string | undefined },
+  skipRefreshOnUnauthorized = false
 ): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -111,7 +112,10 @@ async function withRetry<T>(
     } catch (err) {
       if (err instanceof ApiError && attempt < retries) {
         // On 401: attempt token refresh once, then retry with the new token.
-        if (err.status === 401 && tokenRef?.current && attempt === 0) {
+        // The refresh endpoint itself opts out via skipRefreshOnUnauthorized —
+        // otherwise a 401 from refresh would re-enter attemptTokenRefresh and
+        // await the in-flight refresh promise it was launched from, deadlocking.
+        if (err.status === 401 && tokenRef?.current && attempt === 0 && !skipRefreshOnUnauthorized) {
           const newToken = await attemptTokenRefresh(tokenRef!.current);
           if (newToken) {
             // Update the shared token ref; fn() re-reads options.token each time.
@@ -158,15 +162,16 @@ export function getLastServerTime(): string | null {
 
 export async function request<T>(
   path: string,
-  options: RequestInit & { token?: string } = {}
+  options: RequestInit & { token?: string; skipRefreshOnUnauthorized?: boolean } = {}
 ): Promise<T> {
   // Use a holder object so withRetry can update the token after refresh.
   // The closure (fn) reads options.token each time, which will pick up the
   // updated holder.current after a token refresh.
   const tokenHolder = { current: options.token ?? undefined };
+  const skipRefreshOnUnauthorized = options.skipRefreshOnUnauthorized ?? false;
 
   return withRetry(async () => {
-    const { token: _token, headers: extraHeaders, ...rest } = options;
+    const { token: _token, skipRefreshOnUnauthorized: _skip, headers: extraHeaders, ...rest } = options;
 
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -268,7 +273,7 @@ export async function request<T>(
     }
 
     return json as T;
-  }, MAX_RETRIES, tokenHolder);
+  }, MAX_RETRIES, tokenHolder, skipRefreshOnUnauthorized);
 }
 
 // ─── Query builder ──────────────────────────────────────────────────────────

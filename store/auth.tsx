@@ -302,12 +302,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // counter — the previous session's failures are no longer relevant
       // once the user has re-authenticated locally.
       resetTokenRefreshState();
-      setState(prev => ({
+      setState(() => ({
         isLoaded: true,
         token,
         user,
         shopSuspended: suspendedFlag === "1",
-        tokenExpired: prev.tokenExpired, // preserve server-invalidated state
+        // Fresh local-auth session — clear any prior tokenExpired latch so
+        // the next 401 can re-trigger the redirect. The bridge counters were
+        // reset above; the React-state flag must match.
+        tokenExpired: false,
         pinSetupPending: false,
         // PIN was just verified — that's the local-auth step.
         localUnlocked: true,

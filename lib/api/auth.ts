@@ -54,5 +54,8 @@ export const authApi = {
     request<{ token: string }>(AUTH_ENDPOINTS.refresh, {
       method: "POST",
       token,
+      // Must not re-enter the refresh bridge on its own 401 — that would
+      // await the in-flight refresh promise we were launched from.
+      skipRefreshOnUnauthorized: true,
     }),
 };

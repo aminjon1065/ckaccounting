@@ -18,7 +18,7 @@ import type { Shop } from "@/lib/api";
 import { reportError } from "@/lib/observability/reporter";
 
 export function useShops({ token }: { token: string | null }) {
-  const { reconcileRemoteShops } = useCacheMethods();
+  const { reconcileRemoteShops, fetchRemoteShops } = useCacheMethods();
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -31,8 +31,13 @@ export function useShops({ token }: { token: string | null }) {
 
   const reconcileAndLoad = useCallback(async () => {
     setError("");
+    // Reconcile prunes ghosts (server hard-deletes); fetch pulls fresh row
+    // data via delta sync — including owner_id / owner_name / is_active /
+    // name updates made on this device or another. Without the fetch call,
+    // SQLite would stay frozen on its initial snapshot for everything but
+    // shop existence, and edits made elsewhere would never appear locally.
     try {
-      await reconcileRemoteShops();
+      await Promise.all([reconcileRemoteShops(), fetchRemoteShops()]);
     } catch (e) {
       reportError(e, { tag: "useShops-reconcile" });
     }
@@ -42,7 +47,7 @@ export function useShops({ token }: { token: string | null }) {
       reportError(e, { tag: "useShops-load" });
       setError("Не удалось загрузить магазины.");
     }
-  }, [reconcileRemoteShops, loadFromLocal]);
+  }, [reconcileRemoteShops, fetchRemoteShops, loadFromLocal]);
 
   useEffect(() => {
     if (!token) return;
