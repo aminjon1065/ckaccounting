@@ -66,8 +66,9 @@ export {
   getLocalSales,
   getLocalSaleById,
   deleteLocalSale,
+  getSalesExportRows,
 } from "./sales";
-export type { LocalSale } from "./sales";
+export type { LocalSale, SaleExportRow } from "./sales";
 
 // Expenses repository — see lib/db/expenses.ts
 export {

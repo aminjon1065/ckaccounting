@@ -4,7 +4,7 @@
     "slug": "ckaccounting",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/main-icon.png",
+    "icon": "./assets/images/ckicon.png",
     "scheme": "ckaccounting",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -17,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/main-icon.png",
+        "foregroundImage": "./assets/images/ckicon.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },

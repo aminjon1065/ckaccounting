@@ -28,7 +28,7 @@ import {
   finishSystemUiBiometricSuppression,
   suppressBiometricRelockForSystemUi,
 } from "@/lib/biometricRelock";
-import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { parseDecimal } from "@/lib/formatters";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
@@ -141,6 +141,7 @@ export function ProductFormModal({
   const lockedShopId = initialShopId ?? null;
   const showShopPicker = lockedShopId === null && needsShopPicker(user);
   const implicitShopId = lockedShopId ?? effectiveShopId(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
 
@@ -170,17 +171,22 @@ export function ProductFormModal({
   React.useEffect(() => {
     if (!visible || !showShopPicker) return;
 
+    const filterAllowed = <T extends { id: number }>(list: T[]): T[] =>
+      allowedShopIds == null ? list : list.filter((s) => allowedShopIds.includes(s.id));
+
     // Load local shops immediately so the picker works offline
     getLocalShops().then(local => {
-      if (local.length > 0) setShops(local.map(s => ({ id: s.id, name: s.name } as Shop)));
+      if (local.length > 0) {
+        const mapped = local.map(s => ({ id: s.id, name: s.name } as Shop));
+        setShops(filterAllowed(mapped));
+      }
     }).catch(() => {});
 
     // Refresh from server in background; update if we get a better list.
-    // Server-side scoping in api.shops.list ensures owners get only their owned shops.
     api.shops.list(token).then((res) => {
-      if (res.data && res.data.length > 0) setShops(res.data);
+      if (res.data && res.data.length > 0) setShops(filterAllowed(res.data));
     }).catch(() => {});
-  }, [visible, showShopPicker, token]);
+  }, [visible, showShopPicker, token, allowedShopIds]);
 
   React.useEffect(() => {
     if (visible && editing) {
@@ -383,6 +389,10 @@ export function ProductFormModal({
         : await api.products.create(payload, token, photoUri ?? undefined);
 
       onSaved(saved, !!editing);
+      showToast({
+        message: editing ? "Товар обновлён" : "Товар добавлен",
+        variant: "success",
+      });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {

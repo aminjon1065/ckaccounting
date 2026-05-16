@@ -14,10 +14,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
 import { api, ApiError, type CreateExpensePayload, type Expense, type Shop } from "@/lib/api";
+import { insertOrUpdateExpenses } from "@/lib/db";
 import { fmt, parseDecimal } from "@/lib/formatters";
 import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
-import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
 import { STORAGE_KEYS } from "@/constants/config";
 
@@ -48,6 +49,7 @@ export function ExpenseFormModal({
 
   const showShopPicker = needsShopPicker(user);
   const implicitShopId = effectiveShopId(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
 
@@ -55,7 +57,10 @@ export function ExpenseFormModal({
     if (visible && showShopPicker) {
       api.shops.list(token)
         .then((res) => {
-          const list = res.data ?? [];
+          const raw = res.data ?? [];
+          const list = allowedShopIds == null
+            ? raw
+            : raw.filter((s) => allowedShopIds.includes(s.id));
           setShops(list);
           // Pre-fill from last expense's shop if still in allowed set.
           SecureStore.getItemAsync(STORAGE_KEYS.prefLastShopId)
@@ -68,7 +73,7 @@ export function ExpenseFormModal({
         })
         .catch((e) => reportError(e, { tag: "expense-modal-shops-load" }));
     }
-  }, [visible, showShopPicker, token]);
+  }, [visible, showShopPicker, token, allowedShopIds]);
 
   const qtyRef = React.useRef<RNTextInput>(null);
   const priceRef = React.useRef<RNTextInput>(null);
@@ -139,7 +144,25 @@ export function ExpenseFormModal({
       if (!editing && showShopPicker && shopId) {
         SecureStore.setItemAsync(STORAGE_KEYS.prefLastShopId, shopId).catch(() => {});
       }
+      // Persist the row locally with the scope it belongs to. Without this,
+      // the next loadFromLocal (after a sync transition or on remount) reads
+      // an empty result for owners / sellers because the server response
+      // omits shop_id and our default insert leaves the row with shop_id=NULL
+      // — outside the user's scoped read.
+      const persistShopId = editing
+        ? (editing as Expense & { shop_id?: number | null }).shop_id ?? undefined
+        : targetShopId ?? undefined;
+      const persistUserId = user?.role === "seller" ? user.id : undefined;
+      await insertOrUpdateExpenses(
+        [saved],
+        persistShopId ?? undefined,
+        persistUserId,
+      ).catch((err) => reportError(err, { tag: "expense-form-persist" }));
       onSaved(saved, !!editing);
+      showToast({
+        message: editing ? "Расход обновлён" : "Расход добавлен",
+        variant: "success",
+      });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {

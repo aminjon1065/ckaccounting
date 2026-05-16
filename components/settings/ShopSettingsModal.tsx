@@ -4,24 +4,27 @@ import { Modal, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
-import { api, ApiError, type Shop, type ShopSettings } from "@/lib/api";
+import { api, ApiError, type Shop, type ShopSettings, type User } from "@/lib/api";
 import { getLocalShops } from "@/lib/db";
+import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { useToast } from "@/store/toast";
 
 export function ShopSettingsModal({
   visible,
   onClose,
   token,
-  isSuperAdmin,
-  currentShopId,
+  user,
 }: {
   visible: boolean;
   onClose: () => void;
   token: string;
-  isSuperAdmin: boolean;
-  currentShopId?: number | null;
+  user: User | null;
 }) {
   const { showToast } = useToast();
+  const showPicker = needsShopPicker(user);
+  const implicitShopId = effectiveShopId(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
+
   const [shopId, setShopId] = React.useState("");
   const [shops, setShops] = React.useState<Shop[]>([]);
   const [currency, setCurrency] = React.useState("");
@@ -36,31 +39,45 @@ export function ShopSettingsModal({
     setCurrency("");
     setTaxPercent("");
 
-    if (isSuperAdmin) {
-      setShopId("");
-      getLocalShops()
-        .then((local) => {
-          if (local.length > 0) {
-            setShops(local.map((s) => ({ id: s.id, name: s.name, is_active: s.is_active } as Shop)));
-          }
-        })
-        .catch(() => {});
-
-      api.shops
-        .list(token)
-        .then((res) => {
-          setShops(res.data ?? []);
-        })
-        .catch(() => {});
-    } else {
-      setShopId(currentShopId ? String(currentShopId) : "");
+    if (!showPicker) {
+      // Single-shop owner / seller — no selector, use implicit shop.
+      setShopId(implicitShopId != null ? String(implicitShopId) : "");
+      return;
     }
-  }, [visible, token, isSuperAdmin, currentShopId]);
+
+    // Multi-shop owner or super_admin needs a selector.
+    setShopId("");
+
+    // For owners we already have the list of owned shop ids locally —
+    // start with what's in the cache, then refine from the API.
+    const filterByAccess = (list: Shop[]): Shop[] =>
+      allowedShopIds == null ? list : list.filter((s) => allowedShopIds.includes(s.id));
+
+    getLocalShops()
+      .then((local) => {
+        if (local.length > 0) {
+          const mapped = local.map(
+            (s) => ({ id: s.id, name: s.name, is_active: s.is_active } as Shop),
+          );
+          setShops(filterByAccess(mapped));
+        }
+      })
+      .catch(() => {});
+
+    api.shops
+      .list(token)
+      .then((res) => {
+        setShops(filterByAccess(res.data ?? []));
+      })
+      .catch(() => {});
+  }, [visible, token, showPicker, implicitShopId, allowedShopIds]);
 
   React.useEffect(() => {
     if (!visible) return;
-    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
-    if (isSuperAdmin && !selectedShopId) return;
+    const selectedShopId = showPicker
+      ? (shopId ? Number(shopId) : undefined)
+      : implicitShopId ?? undefined;
+    if (!selectedShopId) return;
 
     setError("");
     setLoading(true);
@@ -72,13 +89,15 @@ export function ShopSettingsModal({
       })
       .catch(() => setError("Не удалось загрузить настройки."))
       .finally(() => setLoading(false));
-  }, [visible, token, isSuperAdmin, currentShopId, shopId]);
+  }, [visible, token, showPicker, implicitShopId, shopId]);
 
   async function handleSave() {
     setError("");
-    const selectedShopId = isSuperAdmin ? Number(shopId) : currentShopId ?? undefined;
-    if (isSuperAdmin && !selectedShopId) {
-      setError("Выберите магазин.");
+    const selectedShopId = showPicker
+      ? (shopId ? Number(shopId) : undefined)
+      : implicitShopId ?? undefined;
+    if (!selectedShopId) {
+      setError(showPicker ? "Выберите магазин." : "Магазин не задан.");
       return;
     }
     if (!currency.trim()) { setError("Введите код валюты."); return; }
@@ -149,7 +168,7 @@ export function ShopSettingsModal({
             <Text variant="muted" className="text-center py-8">Загрузка…</Text>
           ) : (
             <View className="gap-4">
-              {isSuperAdmin && (
+              {showPicker && (
                 <Select
                   label="Магазин"
                   required
@@ -184,7 +203,7 @@ export function ShopSettingsModal({
             size="lg"
             onPress={handleSave}
             loading={submitting}
-            disabled={submitting || loading || (isSuperAdmin && !shopId)}
+            disabled={submitting || loading || (showPicker && !shopId)}
           >
             Сохранить
           </Button>

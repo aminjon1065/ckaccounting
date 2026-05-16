@@ -1,9 +1,11 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
+import * as LocalAuthentication from "expo-local-authentication";
 import * as React from "react";
 import {
-  ActivityIndicator,
   Alert,
+  Linking,
+  Platform,
   Pressable,
   ScrollView,
   View,
@@ -12,16 +14,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Avatar, Text } from "@/components/ui";
 import { can, ROLE_LABELS } from "@/lib/permissions";
-import { getEntityRowCounts } from "@/lib/db";
 import { useAuth } from "@/store/auth";
-import { useToast } from "@/store/toast";
 
 import { SettingsRow } from "@/components/settings/SettingsRow";
 import { ShopSettingsModal } from "@/components/settings/ShopSettingsModal";
 import { EditProfileModal } from "@/components/settings/EditProfileModal";
+import { ChangePinModal } from "@/components/settings/ChangePinModal";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
-import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 // ─── Section label ───────────────────────────────────────────────────────────
 
@@ -46,79 +45,83 @@ function GroupCard({ children }: { children: React.ReactNode }) {
 // ─── Main screen ─────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
-  const { user, signOut, token } = useAuth();
+  const { user, signOut, token, hasPin } = useAuth();
   const router = useRouter();
   const [shopSettingsVisible, setShopSettingsVisible] = React.useState(false);
   const [editProfileVisible, setEditProfileVisible] = React.useState(false);
+  const [changePinVisible, setChangePinVisible] = React.useState(false);
+  const [pinIsSet, setPinIsSet] = React.useState(false);
+  const [biometricStatus, setBiometricStatus] = React.useState<
+    "checking" | "ready" | "not-enrolled" | "unavailable"
+  >("checking");
+  const [biometricLabel, setBiometricLabel] = React.useState("Проверка…");
   const { colorScheme, toggleColorScheme } = useColorScheme();
-  const { fetchAllHistory } = useCacheMethods();
-  const isOnline = useIsOnline();
-  const { showToast } = useToast();
 
-  // Full-history backfill state — shown inline so the user sees per-entity progress.
-  const [historyLoading, setHistoryLoading] = React.useState(false);
-  const [historyProgress, setHistoryProgress] = React.useState<{
-    products: number;
-    shops: number;
-    debts: number;
-    sales: number;
-    expenses: number;
-    purchases: number;
-  }>({
-    products: 0,
-    shops: 0,
-    debts: 0,
-    sales: 0,
-    expenses: 0,
-    purchases: 0,
-  });
+  // Probe PIN + biometric state so the rows reflect reality.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [pinSet, hasHardware, isEnrolled, types] = await Promise.all([
+        hasPin(),
+        LocalAuthentication.hasHardwareAsync(),
+        LocalAuthentication.isEnrolledAsync(),
+        LocalAuthentication.supportedAuthenticationTypesAsync(),
+      ]);
+      if (cancelled) return;
+      setPinIsSet(pinSet);
+      if (!hasHardware) {
+        setBiometricStatus("unavailable");
+        setBiometricLabel("Недоступно");
+      } else if (!isEnrolled) {
+        setBiometricStatus("not-enrolled");
+        setBiometricLabel("Не настроено");
+      } else {
+        setBiometricStatus("ready");
+        const hasFace = types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION);
+        const hasFinger = types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT);
+        setBiometricLabel(
+          hasFace && Platform.OS === "ios"
+            ? "Face ID включён"
+            : hasFace
+              ? "Распознавание лица включено"
+              : hasFinger
+                ? "Отпечаток включён"
+                : "Включена",
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPin, changePinVisible]);
 
-  const handleLoadAllHistory = React.useCallback(() => {
-    if (historyLoading) return;
-    if (!isOnline) {
-      showToast({ message: "Нет сети. Подключитесь к интернету.", variant: "warning" });
-      return;
-    }
+  const handleBiometricPress = React.useCallback(() => {
+    const titleMap = {
+      checking: "Биометрия",
+      ready: "Биометрия включена",
+      "not-enrolled": "Биометрия не настроена",
+      unavailable: "Биометрия недоступна",
+    } as const;
+    const messageMap = {
+      checking: "Подождите, идёт проверка устройства…",
+      ready: "Управление биометрией доступно в системных настройках устройства.",
+      "not-enrolled":
+        "На устройстве не настроен Face ID / отпечаток. Добавьте их в системных настройках, чтобы использовать в приложении.",
+      unavailable: "Это устройство не поддерживает биометрическую разблокировку.",
+    } as const;
+    const canOpenSettings =
+      biometricStatus === "ready" || biometricStatus === "not-enrolled";
     Alert.alert(
-      "Загрузить всю историю?",
-      "Будут скачаны все товары, магазины, долги, продажи, расходы и закупки. Это может занять несколько минут и потребует трафика.",
-      [
-        { text: "Отмена", style: "cancel" },
-        {
-          text: "Загрузить",
-          onPress: async () => {
-            setHistoryLoading(true);
-            setHistoryProgress({ products: 0, shops: 0, debts: 0, sales: 0, expenses: 0, purchases: 0 });
-            try {
-              await fetchAllHistory(({ entity, pagesPulled }) => {
-                setHistoryProgress((prev) => ({ ...prev, [entity]: pagesPulled }));
-              });
-              const counts = await getEntityRowCounts();
-              const summary = [
-                `Товары: ${counts.products}`,
-                `Магазины: ${counts.shops}`,
-                `Долги: ${counts.debts}`,
-                `Продажи: ${counts.sales}`,
-                `Расходы: ${counts.expenses}`,
-                `Закупки: ${counts.purchases}`,
-              ].join("\n");
-              const total =
-                counts.products + counts.shops + counts.debts + counts.sales + counts.expenses + counts.purchases;
-              Alert.alert(
-                total > 0 ? "История загружена" : "Загрузка завершена, но данных нет",
-                summary,
-                [{ text: "OK" }],
-              );
-            } catch {
-              showToast({ message: "Не удалось загрузить всю историю.", variant: "error" });
-            } finally {
-              setHistoryLoading(false);
-            }
-          },
-        },
-      ],
+      titleMap[biometricStatus],
+      messageMap[biometricStatus],
+      canOpenSettings
+        ? [
+            { text: "Закрыть", style: "cancel" },
+            { text: "Открыть настройки", onPress: () => Linking.openSettings() },
+          ]
+        : [{ text: "OK" }],
     );
-  }, [historyLoading, isOnline, fetchAllHistory, showToast]);
+  }, [biometricStatus]);
 
   const themeLabel =
     colorScheme === "dark" ? "Тёмная" : colorScheme === "system" ? "Системная" : "Светлая";
@@ -314,47 +317,18 @@ export default function SettingsScreen() {
             label="Биометрия"
             description="Face ID / отпечаток"
             iconTone="primary"
+            onPress={handleBiometricPress}
+            rightText={biometricLabel}
           />
           <SettingsRow
             icon="lock"
             label="PIN-код"
             description="4-значный код"
             iconTone="primary"
-            rightText="Изменить"
+            onPress={() => setChangePinVisible(true)}
+            rightText={pinIsSet ? "Изменить" : "Задать"}
             last
           />
-        </GroupCard>
-
-        {/* Data */}
-        <SectionLabel>Данные</SectionLabel>
-        <GroupCard>
-          <SettingsRow
-            icon="cloud-download"
-            label="Загрузить всю историю"
-            description="На устройство для офлайн-работы"
-            iconTone="primary"
-            onPress={handleLoadAllHistory}
-            rightText={historyLoading ? undefined : "Запустить"}
-            last={!historyLoading}
-          />
-          {historyLoading && (
-            <View className="px-3.5 pb-3.5 pt-2 border-t border-slate-100 dark:border-zinc-800">
-              <View className="flex-row items-center gap-2 mb-2">
-                <ActivityIndicator size="small" color="#0a7ea4" />
-                <Text className="text-[12.5px] text-slate-500 dark:text-zinc-400">
-                  Идёт загрузка истории…
-                </Text>
-              </View>
-              <Text className="text-[11px] text-slate-500 dark:text-zinc-400 leading-[16px]">
-                Товары {historyProgress.products > 0 ? "✓" : "…"} ·
-                {" "}Магазины {historyProgress.shops > 0 ? "✓" : "…"} ·
-                {" "}Долги {historyProgress.debts > 0 ? "✓" : "…"} ·
-                {" "}Продажи {historyProgress.sales} стр. ·
-                {" "}Расходы {historyProgress.expenses} стр. ·
-                {" "}Закупки {historyProgress.purchases} стр.
-              </Text>
-            </View>
-          )}
         </GroupCard>
 
         {/* Sign out */}
@@ -384,14 +358,19 @@ export default function SettingsScreen() {
         visible={shopSettingsVisible}
         onClose={() => setShopSettingsVisible(false)}
         token={token!}
-        isSuperAdmin={user?.role === "super_admin"}
-        currentShopId={user?.shop_id}
+        user={user ?? null}
       />
 
       <EditProfileModal
         visible={editProfileVisible}
         onClose={() => setEditProfileVisible(false)}
         token={token!}
+      />
+
+      <ChangePinModal
+        visible={changePinVisible}
+        onClose={() => setChangePinVisible(false)}
+        hasExistingPin={pinIsSet}
       />
     </SafeAreaView>
   );

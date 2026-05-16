@@ -244,7 +244,14 @@ export default function ProductMovementScreen() {
       ) : (
         <FlatList
           data={movements}
-          keyExtractor={(item) => String(item.id)}
+          // Movements come from three different tables joined on the
+          // backend — no shared primary key. Compose a stable key from
+          // the reference tuple plus index as a tie-breaker (two items
+          // sharing the same reference_id from different types is
+          // possible, e.g. sale + return of the same sale).
+          keyExtractor={(item, index) =>
+            `${item.reference_type ?? "x"}-${item.reference_id ?? "n"}-${item.created_at}-${index}`
+          }
           renderItem={({ item }) => <MovementRow item={item} />}
           contentContainerStyle={{ paddingBottom: 32 }}
           showsVerticalScrollIndicator={false}

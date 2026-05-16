@@ -1,72 +1,72 @@
 // ─── useShops ────────────────────────────────────────────────────────────────
 //
-// Local SQLite is the single source of truth for the screen. The cache layer
-// (RemoteShopFetcher) keeps SQLite in sync with the server — including
-// applying soft-delete tombstones and, on reconcile, pruning ghost rows the
-// server hard-deleted. This hook just reads from SQLite and asks the cache
-// to refresh; it does not merge a transient API response into local state.
-//
-// Why this matters: an earlier version called `api.shops.list` directly and
-// merged the result with local rows, keeping any local row that was absent
-// from the server response. That preserved deleted shops indefinitely and
-// produced "Resource not found" on subsequent edits.
+// Server-first: the shops list always reflects what `/shops` returns.
+// On a network failure we fall back to whatever SQLite has so the screen
+// is still useful offline. Writes refetch from the server instead of
+// merging server responses by hand.
 
-import { useCallback, useEffect, useState } from "react";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, ApiError, type Shop } from "@/lib/api";
 import { deleteLocalShop, getLocalShops } from "@/lib/db";
-import type { Shop } from "@/lib/api";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { reportError } from "@/lib/observability/reporter";
 
 export function useShops({ token }: { token: string | null }) {
-  const { reconcileRemoteShops, fetchRemoteShops } = useCacheMethods();
+  const isOnline = useIsOnline();
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [isOffline, setIsOffline] = useState(false);
 
-  const loadFromLocal = useCallback(async () => {
-    const local = await getLocalShops();
-    setShops(local);
-  }, []);
-
-  const reconcileAndLoad = useCallback(async () => {
+  const fetchShops = useCallback(async () => {
+    if (!token) return;
     setError("");
-    // Reconcile prunes ghosts (server hard-deletes); fetch pulls fresh row
-    // data via delta sync — including owner_id / owner_name / is_active /
-    // name updates made on this device or another. Without the fetch call,
-    // SQLite would stay frozen on its initial snapshot for everything but
-    // shop existence, and edits made elsewhere would never appear locally.
     try {
-      await Promise.all([reconcileRemoteShops(), fetchRemoteShops()]);
+      const res = await api.shops.list(token);
+      setShops(res.data ?? []);
+      setIsOffline(false);
     } catch (e) {
-      reportError(e, { tag: "useShops-reconcile" });
+      if (e instanceof ApiError && e.status === 0) {
+        try {
+          const local = await getLocalShops();
+          setShops(local);
+          setIsOffline(true);
+        } catch (le) {
+          reportError(le, { tag: "useShops-offline-fallback" });
+          setError("Нет сети и нет локальных данных.");
+        }
+      } else {
+        reportError(e, { tag: "useShops-fetch" });
+        setError(e instanceof Error ? e.message : "Не удалось загрузить магазины.");
+      }
     }
-    try {
-      await loadFromLocal();
-    } catch (e) {
-      reportError(e, { tag: "useShops-load" });
-      setError("Не удалось загрузить магазины.");
-    }
-  }, [reconcileRemoteShops, fetchRemoteShops, loadFromLocal]);
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    loadFromLocal()
-      .catch((e) => reportError(e, { tag: "useShops-initial-load" }))
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    reconcileAndLoad().catch(() => {});
+    fetchShops().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
     return () => {
       cancelled = true;
     };
-  }, [token, loadFromLocal, reconcileAndLoad]);
+  }, [token, fetchShops]);
+
+  // Refresh when connectivity returns after we'd fallen back to the cache.
+  const wasOfflineRef = useRef(false);
+  useEffect(() => {
+    if (isOnline && wasOfflineRef.current) {
+      fetchShops().catch(() => {});
+    }
+    wasOfflineRef.current = !isOnline;
+  }, [isOnline, fetchShops]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
-    reconcileAndLoad().finally(() => setRefreshing(false));
-  }, [reconcileAndLoad]);
+    fetchShops().finally(() => setRefreshing(false));
+  }, [fetchShops]);
 
   /**
    * Drop a shop from local SQLite without going through the server. Use when
@@ -75,8 +75,8 @@ export function useShops({ token }: { token: string | null }) {
    */
   const dropLocal = useCallback(async (id: number) => {
     await deleteLocalShop(id);
-    await loadFromLocal();
-  }, [loadFromLocal]);
+    setShops((prev) => prev.filter((s) => s.id !== id));
+  }, []);
 
   return {
     shops,
@@ -84,6 +84,7 @@ export function useShops({ token }: { token: string | null }) {
     loading,
     refreshing,
     error,
+    isOffline,
     handleRefresh,
     dropLocal,
   };

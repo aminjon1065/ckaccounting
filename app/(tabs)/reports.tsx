@@ -20,9 +20,10 @@ import {
   type ExpensesReport,
   type ProfitReport,
   type SalesReport,
+  type Shop,
   type StockReport,
 } from "@/lib/api";
-import { can } from "@/lib/permissions";
+import { can, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { reportError } from "@/lib/observability/reporter";
@@ -32,6 +33,8 @@ import {
   computeLocalProfitReport,
   computeLocalStockReport,
 } from "@/lib/cache/offlineReports";
+import { getSalesExportRows, localScope } from "@/lib/db";
+import { ShopPicker } from "@/components/dashboard/ShopPicker";
 
 import { fmt as fmtNumber } from "@/lib/formatters";
 import { DEFAULT_CURRENCY } from "@/constants/config";
@@ -463,7 +466,12 @@ function StockReportView({ data }: { data: StockReport }) {
         <CardContent className="py-3">
           <StatRow label="Всего товаров" value={String(data.total_products)} />
           <StatRow
-            label="Общая стоимость"
+            label="Сумма себестоимости"
+            value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
+            color="text-slate-500"
+          />
+          <StatRow
+            label="Сумма продажи"
             value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
             color="text-primary-500"
             large
@@ -560,6 +568,28 @@ export default function ReportsScreen() {
   const [error, setError] = React.useState("");
   const [generatingPDF, setGeneratingPDF] = React.useState(false);
 
+  // Shop picker — super_admin and multi-shop owners get one. Single-shop
+  // users always operate within their implicit shop and don't need a picker.
+  const showShopPicker = needsShopPicker(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
+  const [shops, setShops] = React.useState<Shop[]>([]);
+  const [activeShopId, setActiveShopId] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!showShopPicker || !token) return;
+    api.shops
+      .list(token)
+      .then((res) => {
+        const raw = res.data ?? [];
+        setShops(
+          allowedShopIds == null
+            ? raw
+            : raw.filter((s) => allowedShopIds.includes(s.id)),
+        );
+      })
+      .catch((e) => reportError(e, { tag: "reports-shops-load" }));
+  }, [showShopPicker, token, allowedShopIds]);
+
   const handleDatePickerChange = React.useCallback(
     (event: DateTimePickerEvent, selectedDate?: Date) => {
       if (Platform.OS === "android") setPickerTarget(null);
@@ -612,6 +642,10 @@ export default function ReportsScreen() {
           <div class="card">
       `;
       if (activeTab === "sales") {
+        // Summary mirrors what's on screen (server when online, local
+        // fallback when offline). Per-item breakdown still comes from
+        // the local mirror because no server endpoint returns sale_items
+        // with cost_price.
         const d = currentData as SalesReport;
         html += `
           <div class="stat-row"><span class="stat-label">Кол-во продаж</span><span class="stat-value">${fmt(d.total_sales)}</span></div>
@@ -620,10 +654,37 @@ export default function ReportsScreen() {
           <div class="stat-row"><span class="stat-label">Карта</span><span class="stat-value">${fmt(d.card)}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Перевод</span><span class="stat-value">${fmt(d.transfer)}</span></div>
         </div>`;
-        if (d.data?.length) {
-          html += `<div class="table-title">По дням</div><table><thead><tr><th>Дата</th><th>Продажи</th><th class="text-right">Сумма</th></tr></thead><tbody>`;
-          d.data.forEach((it) => {
-            html += `<tr><td>${it.date}</td><td>${it.count}</td><td class="text-right"><b>${fmt(it.amount)}</b></td></tr>`;
+        const exportRows = await getSalesExportRows(localScope(user, activeShopId), {
+          dateFrom,
+          dateTo,
+        });
+        if (exportRows.length > 0) {
+          html += `<div class="table-title">По товарам</div><table><thead><tr>
+            <th>Дата</th>
+            <th>Продавец</th>
+            <th>Товар</th>
+            <th class="text-right">Кол-во</th>
+            <th class="text-right">Себест.</th>
+            <th class="text-right">Цена</th>
+            <th class="text-right">Сумма</th>
+          </tr></thead><tbody>`;
+          exportRows.forEach((it) => {
+            const d2 = it.created_at
+              ? new Date(it.created_at).toLocaleDateString("ru-RU", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "numeric",
+                })
+              : "—";
+            html += `<tr>
+              <td>${d2}</td>
+              <td>${it.seller_name ?? "—"}</td>
+              <td>${it.product_name ?? "—"}</td>
+              <td class="text-right">${fmt(it.quantity)}</td>
+              <td class="text-right">${fmt(it.cost_price)}</td>
+              <td class="text-right">${fmt(it.unit_price)}</td>
+              <td class="text-right"><b>${fmt(it.line_total)}</b></td>
+            </tr>`;
           });
           html += `</tbody></table>`;
         }
@@ -646,14 +707,29 @@ export default function ReportsScreen() {
         const d = currentData as StockReport;
         html += `
           <div class="stat-row"><span class="stat-label">Всего товаров</span><span class="stat-value">${d.total_products}</span></div>
-          <div class="stat-row"><span class="stat-label">Общая стоимость</span><span class="stat-value" style="color:#0a7ea4">${fmt(d.total_value)}</span></div>
+          <div class="stat-row"><span class="stat-label">Сумма себестоимости</span><span class="stat-value" style="color:#64748b">${fmt(d.total_cost_value)}</span></div>
+          <div class="stat-row"><span class="stat-label">Сумма продажи</span><span class="stat-value" style="color:#0a7ea4">${fmt(d.total_value)}</span></div>
           <div class="stat-row"><span class="stat-label">Мало на складе</span><span class="stat-value" style="color:#f59e0b">${d.low_stock}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Нет в наличии</span><span class="stat-value" style="color:#ef4444">${d.out_of_stock}</span></div>
         </div>`;
         if (d.data?.length) {
-          html += `<div class="table-title">Товары по стоимости</div><table><thead><tr><th>Товар</th><th>Остаток</th><th class="text-right">Стоимость</th></tr></thead><tbody>`;
-          d.data.slice(0, 50).forEach((it) => {
-            html += `<tr><td>${it.name}</td><td>${it.stock_quantity}</td><td class="text-right"><b>${fmt(it.value)}</b></td></tr>`;
+          html += `<div class="table-title">Товары</div><table><thead><tr>
+            <th>Товар</th>
+            <th class="text-right">Остаток</th>
+            <th class="text-right">Себест.</th>
+            <th class="text-right">Цена</th>
+            <th class="text-right">Сумма себест.</th>
+            <th class="text-right">Сумма продажи</th>
+          </tr></thead><tbody>`;
+          d.data.forEach((it) => {
+            html += `<tr>
+              <td>${it.name}</td>
+              <td class="text-right">${fmt(it.stock_quantity)}</td>
+              <td class="text-right">${fmt(it.cost_price)}</td>
+              <td class="text-right">${fmt(it.sale_price)}</td>
+              <td class="text-right">${fmt(it.cost_value)}</td>
+              <td class="text-right"><b>${fmt(it.value)}</b></td>
+            </tr>`;
           });
           html += `</tbody></table>`;
         }
@@ -682,28 +758,33 @@ export default function ReportsScreen() {
     } finally {
       setGeneratingPDF(false);
     }
-  }, [activeTab, currentData, dateFrom, dateTo]);
+  }, [activeTab, currentData, dateFrom, dateTo, user, activeShopId]);
 
   const loadReport = React.useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setError("");
-    const params = { date_from: dateFrom, date_to: dateTo };
+    const params = {
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(activeShopId != null ? { shop_id: activeShopId } : {}),
+    };
     const range = { dateFrom, dateTo };
 
+    const scope = localScope(user, activeShopId);
     const computeLocal = async () => {
       switch (activeTab) {
         case "sales":
-          setSalesReport(await computeLocalSalesReport(range, user?.shop_id));
+          setSalesReport(await computeLocalSalesReport(range, scope));
           break;
         case "expenses":
-          setExpensesReport(await computeLocalExpensesReport(range, user?.shop_id));
+          setExpensesReport(await computeLocalExpensesReport(range, scope));
           break;
         case "profit":
-          setProfitReport(await computeLocalProfitReport(range, user?.shop_id));
+          setProfitReport(await computeLocalProfitReport(range, scope));
           break;
         case "stock":
-          setStockReport(await computeLocalStockReport(user?.shop_id));
+          setStockReport(await computeLocalStockReport(scope));
           break;
       }
     };
@@ -743,14 +824,18 @@ export default function ReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, dateFrom, dateTo, token, isOnline, user?.shop_id]);
+  }, [activeTab, dateFrom, dateTo, token, isOnline, user, activeShopId]);
 
+  // Reset cached reports when any of the inputs that affect the result
+  // changes — period or active shop. Without `activeShopId` here, the
+  // alreadyLoaded gate below kept the previous shop's report and the
+  // screen looked stuck on stale data until you hit "Применить".
   React.useEffect(() => {
     setSalesReport(null);
     setExpensesReport(null);
     setProfitReport(null);
     setStockReport(null);
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, activeShopId]);
 
   React.useEffect(() => {
     if (!can(user?.role, "reports:view")) return;
@@ -808,6 +893,18 @@ export default function ReportsScreen() {
           )}
         </Pressable>
       </View>
+
+      {/* Shop picker — multi-shop owner / super_admin only. Sellers and
+          single-shop owners are implicitly scoped via localScope. */}
+      {showShopPicker && (
+        <View className="bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800 py-1">
+          <ShopPicker
+            shops={shops}
+            activeShopId={activeShopId}
+            onChange={setActiveShopId}
+          />
+        </View>
+      )}
 
       {/* Tabs */}
       <View className="bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800">

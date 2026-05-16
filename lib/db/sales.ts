@@ -144,6 +144,11 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
         await db.runAsync("DELETE FROM sales WHERE id = ?", [sale.id]);
         continue;
       }
+      // Prefer the row's own shop_id (server returns it on every sale);
+      // fall back to the param when the caller knows the scope from context
+      // (create-from-form). Without this, the fetcher stored shop_id=NULL
+      // and scoped reads for owner/seller returned nothing.
+      const resolvedShopId = sale.shop_id ?? shopId ?? null;
       await db.runAsync(
         `INSERT OR REPLACE INTO sales (
           id, shop_id, user_id, seller_name, customer_name, type,
@@ -152,7 +157,7 @@ export async function insertOrUpdateRemoteSales(sales: Sale[], shopId?: number):
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sale.id,
-          shopId ?? null,
+          resolvedShopId,
           sale.user_id ?? null,
           sale.seller_name ?? null,
           sale.customer_name,
@@ -218,6 +223,79 @@ export async function getLocalSaleById(id: string): Promise<LocalSale | null> {
   const r = await db.getFirstAsync<SaleRow>("SELECT * FROM sales WHERE id = ?", [id]);
   if (!r) return null;
   return await mapRowToLocalSale(r);
+}
+
+/**
+ * Per-item rows used by the sales export. Joins sale_items with the parent
+ * sale and the product (for cost_price). Service items have product_id=null
+ * — they appear with cost_price=0.
+ */
+export interface SaleExportRow {
+  sale_id: string;
+  created_at: string;
+  seller_name: string | null;
+  product_name: string | null;
+  quantity: number;
+  unit_price: number;
+  cost_price: number;
+  line_total: number;
+}
+
+export async function getSalesExportRows(
+  scope: LocalScope,
+  range: { dateFrom?: string; dateTo?: string }
+): Promise<SaleExportRow[]> {
+  const db = getDb();
+  let query = `
+    SELECT s.id AS sale_id, s.created_at AS created_at, s.seller_name AS seller_name,
+           si.product_name AS product_name, si.quantity AS quantity,
+           si.unit_price_kopecks AS unit_price_kopecks,
+           p.cost_price_kopecks AS cost_price_kopecks,
+           si.total_kopecks AS line_total_kopecks
+    FROM sale_items si
+    INNER JOIN sales s ON s.id = si.sale_id
+    LEFT JOIN products p ON p.id = si.product_id
+    WHERE 1=1
+  `;
+  const params: (string | number)[] = [];
+  const shopFilter = shopIdInClause(scope.shopIds, "s.shop_id");
+  query += shopFilter.sql;
+  params.push(...shopFilter.params);
+  if (scope.userId !== null) {
+    query += " AND s.user_id = ?";
+    params.push(scope.userId);
+  }
+  if (range.dateFrom) {
+    query += " AND s.created_at >= ?";
+    params.push(`${range.dateFrom}T00:00:00`);
+  }
+  if (range.dateTo) {
+    query += " AND s.created_at <= ?";
+    params.push(`${range.dateTo}T23:59:59.999`);
+  }
+  query += " ORDER BY s.created_at DESC, si.id ASC";
+
+  const rows = await db.getAllAsync<{
+    sale_id: string;
+    created_at: string;
+    seller_name: string | null;
+    product_name: string | null;
+    quantity: number;
+    unit_price_kopecks: number | null;
+    cost_price_kopecks: number | null;
+    line_total_kopecks: number | null;
+  }>(query, params);
+
+  return rows.map((r) => ({
+    sale_id: r.sale_id,
+    created_at: r.created_at,
+    seller_name: r.seller_name,
+    product_name: r.product_name,
+    quantity: r.quantity,
+    unit_price: fromKopecks(r.unit_price_kopecks),
+    cost_price: fromKopecks(r.cost_price_kopecks),
+    line_total: fromKopecks(r.line_total_kopecks),
+  }));
 }
 
 /**

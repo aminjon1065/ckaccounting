@@ -786,6 +786,27 @@ async function performInitDb() {
         !columnExists(db, "shops", "owner_id") ||
         !columnExists(db, "shops", "owner_name"),
     },
+    // v35: Backfill missing `shop_id` for previously-synced sales and
+    // expenses. Older builds called `insertOrUpdateRemoteSales(rows)` /
+    // `insertOrUpdateExpenses(rows)` without a shopId argument and the
+    // helpers hard-coded `shop_id = NULL`, so scoped reads (owner / seller)
+    // returned an empty set. The fetcher now persists the row's own
+    // `shop_id` (server includes it) — but existing local rows would stay
+    // NULL until they were updated server-side. Wiping the high-watermark
+    // and the cached rows forces the next sync to repopulate them with the
+    // correct shop_id.
+    {
+      version: 35,
+      migrate: (db) => {
+        db.execSync("DELETE FROM sale_items;");
+        db.execSync("DELETE FROM sales;");
+        db.execSync("DELETE FROM expenses;");
+        db.execSync(
+          "DELETE FROM sync_metadata WHERE key IN ('sales_last_synced_at', 'expenses_last_synced_at', 'sales_oldest_synced_at', 'expenses_oldest_synced_at');",
+        );
+      },
+      check: () => true,
+    },
   ];
 
   db.execSync(`

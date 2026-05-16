@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -20,8 +20,8 @@ import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { getLocalDebts, getLocalShops, localScope } from "@/lib/db";
-import { useLastSyncedAt } from "@/lib/cache/CacheProvider";
-import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
+import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
 import { fmt as fmtNumber } from "@/lib/formatters";
 
@@ -168,6 +168,7 @@ function CreateDebtModal({
   onCreated,
   showShopPicker,
   implicitShopId,
+  allowedShopIds,
   userId: _userId,
   token,
 }: {
@@ -178,6 +179,8 @@ function CreateDebtModal({
   showShopPicker: boolean;
   /** Implicit shop for sellers / single-shop owners. */
   implicitShopId?: number | null;
+  /** Shop ids the user may pick. `null` means "no restriction" (super_admin). */
+  allowedShopIds?: number[] | null;
   userId?: number | null;
   token: string;
 }) {
@@ -199,14 +202,20 @@ function CreateDebtModal({
       setError("");
 
       if (showShopPicker) {
-        // getLocalShops returns shops the user can access (server-scoped
-        // when synced; for owners that's their owned set).
+        // Filter to the ids the current user is actually allowed to operate in
+        // — the local cache may hold shops the user can't post to (server
+        // returns them for context), and the API would reject the create.
         getLocalShops()
-          .then((local) => setShops(local.map((shop) => ({ id: shop.id, name: shop.name }))))
+          .then((local) => {
+            const filtered = allowedShopIds == null
+              ? local
+              : local.filter((s) => allowedShopIds.includes(s.id));
+            setShops(filtered.map((shop) => ({ id: shop.id, name: shop.name })));
+          })
           .catch(() => {});
       }
     }
-  }, [showShopPicker, visible]);
+  }, [showShopPicker, visible, allowedShopIds]);
 
   async function handleSubmit() {
     setError("");
@@ -381,16 +390,17 @@ function CreateDebtModal({
 export default function DebtsScreen() {
   const { user, token } = useAuth();
   const { showToast } = useToast();
-  const lastSyncedAt = useLastSyncedAt();
+  const isOnline = useIsOnline();
   const router = useRouter();
 
   const [debts, setDebts] = React.useState<Debt[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
-  const [hasMore, setHasMore] = React.useState(false); // local lists are unpaginated
+  const [hasMore, setHasMore] = React.useState(false);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [createVisible, setCreateVisible] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [isOfflineView, setIsOfflineView] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<DebtTab>("receivable");
   const canCreateDebt = can(user?.role, "debts:create");
 
@@ -421,32 +431,59 @@ export default function DebtsScreen() {
   );
   const debtKey = React.useCallback((item: Debt) => String(item.id), []);
 
-  const fetchDebts = React.useCallback(
-    async (reset = false) => {
-      setError("");
-      try {
-        const localDebts = await getLocalDebts(localScope(user));
-        setDebts(localDebts);
-        setHasMore(false);
-      } catch (e) {
+  // Server-first: try `/debts` and fall back to the local mirror only when
+  // the network is down. Pagination is server-side cursor based; on offline
+  // fallback we just dump what's in SQLite as a one-shot snapshot.
+  const fetchDebts = React.useCallback(async () => {
+    if (!token) return;
+    setError("");
+    try {
+      const res = await api.debts.list(token, { limit: 50 });
+      setDebts(res.data ?? []);
+      setHasMore(!!(res as { next_cursor?: string | null }).next_cursor);
+      setIsOfflineView(false);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 0) {
+        try {
+          const localDebts = await getLocalDebts(localScope(user));
+          setDebts(localDebts);
+          setIsOfflineView(true);
+          setHasMore(false);
+        } catch (le) {
+          reportError(le, { tag: "debts-offline-fallback" });
+          setError("Нет сети и нет локальных данных.");
+        }
+      } else {
         reportError(e, { tag: "debts-fetch" });
-        if (reset) setError("Не удалось загрузить долги.");
+        setError(e instanceof Error ? e.message : "Не удалось загрузить долги.");
       }
-    },
-    [user]
-  );
+    }
+  }, [token, user]);
 
   React.useEffect(() => {
-    fetchDebts(true).finally(() => setLoading(false));
+    fetchDebts().finally(() => setLoading(false));
   }, [fetchDebts]);
 
-  // FIX: re-fetch whenever a sync cycle completes so that synced debts (with
-  // updated real server ids) replace stale tempId records in the list.
+  // When connectivity returns after an offline fallback, refresh.
+  const wasOfflineRef = React.useRef(false);
   React.useEffect(() => {
-    if (lastSyncedAt) {
-      fetchDebts(false).catch((e) => reportError(e, { tag: "debts-refetch-on-sync" }));
+    if (isOnline && wasOfflineRef.current) {
+      fetchDebts().catch(() => {});
     }
-  }, [fetchDebts, lastSyncedAt]);
+    wasOfflineRef.current = !isOnline;
+  }, [isOnline, fetchDebts]);
+
+  // Refresh on screen focus so balances reflect detail-page mutations.
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      fetchDebts().catch(() => {});
+    }, [fetchDebts]),
+  );
 
   const isReceivable = activeTab === "receivable";
 
@@ -497,7 +534,7 @@ export default function DebtsScreen() {
           <TouchableOpacity
             onPress={() => {
               setLoading(true);
-              fetchDebts(true).finally(() => setLoading(false));
+              fetchDebts().finally(() => setLoading(false));
             }}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
@@ -521,12 +558,13 @@ export default function DebtsScreen() {
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true);
-            fetchDebts(true).finally(() => setRefreshing(false));
+            fetchDebts().finally(() => setRefreshing(false));
           }}
           onEndReached={() => {
+            // Future enhancement: paginate via `cursor`. For now the first
+            // page (limit 50) is enough for the typical use case; the user
+            // can search/filter when we add it.
             if (!hasMore || loadingMore) return;
-            setLoadingMore(true);
-            fetchDebts(false).finally(() => setLoadingMore(false));
           }}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
@@ -559,11 +597,16 @@ export default function DebtsScreen() {
           visible={createVisible}
           onClose={() => setCreateVisible(false)}
           onCreated={(d) => {
+            // Optimistic prepend so the user sees the row immediately;
+            // server-first refetch below makes sure the list matches what
+            // the server thinks (real server id, computed balance, etc).
             setDebts((prev) => [d, ...prev]);
             showToast({ message: "Запись добавлена", variant: "success" });
+            fetchDebts().catch(() => {});
           }}
           showShopPicker={needsShopPicker(user)}
           implicitShopId={effectiveShopId(user)}
+          allowedShopIds={pickerShopIds(user)}
           userId={user?.id}
           token={token}
         />

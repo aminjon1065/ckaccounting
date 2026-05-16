@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -51,6 +51,19 @@ export default function ProductsScreen() {
   const [editing, setEditing] = React.useState<Product | null>(null);
   const [scannerVisible, setScannerVisible] = React.useState(false);
   const [stockFilter, setStockFilter] = React.useState<StockFilter>("all");
+
+  // Refresh on tab focus so stock changes from a sale (or another device)
+  // appear immediately when the user comes back to the products tab.
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      handleRefresh();
+    }, [handleRefresh]),
+  );
 
   const openEdit = React.useCallback((item: Product) => {
     setEditing(item);

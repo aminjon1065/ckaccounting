@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   Alert,
@@ -23,7 +23,6 @@ import {
   Text,
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type Shop, type CreateShopPayload } from "@/lib/api";
-import { insertOrUpdateShops } from "@/lib/db";
 import { reportError } from "@/lib/observability/reporter";
 import { useShops } from "@/hooks/useShops";
 import { useAuth } from "@/store/auth";
@@ -159,6 +158,7 @@ function CreateShopModal({
     try {
       const created = await api.shops.create(payload, token);
       onCreated(created);
+      showToast({ message: "Магазин создан", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
@@ -309,6 +309,7 @@ function EditShopModal({
     try {
       const updated = await api.shops.update(editingShop!.id, payload, token);
       onSaved(updated);
+      showToast({ message: "Магазин обновлён", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
@@ -442,6 +443,17 @@ export default function ShopsScreen() {
   const [editingShop, setEditingShop] = React.useState<Shop | null>(null);
   const [activeTab, setActiveTab] = React.useState<"all" | "active" | "suspended">("active");
 
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      handleRefresh();
+    }, [handleRefresh]),
+  );
+
   const isSuperAdmin = user?.role === "super_admin";
 
   const displayedShops = React.useMemo(() => {
@@ -492,9 +504,6 @@ export default function ShopsScreen() {
             try {
               const updated = await api.shops.update(shop.id, { is_active: !shop.is_active }, token!);
               setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-              insertOrUpdateShops([updated]).catch((e) =>
-                reportError(e, { tag: "shops-toggle-persist", id: updated.id })
-              );
               showToast({ message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`, variant: "success" });
             } catch (e) {
               setShops((prev) => prev.map((s) =>
@@ -691,11 +700,10 @@ export default function ShopsScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(s) => {
           setShops((prev) => [s, ...prev]);
-          // Persist immediately so re-entering the screen (which reloads
-          // from SQLite) doesn't drop this row until the next remote pull.
-          insertOrUpdateShops([s]).catch((e) =>
-            reportError(e, { tag: "shops-onCreated-persist", id: s.id })
-          );
+          // Refetch from server so the row reflects any server-computed
+          // fields (owner relations, timestamps) and we drop reliance on
+          // the local mirror staying in lockstep.
+          handleRefresh();
         }}
         token={token!}
         showToast={showToast}
@@ -707,13 +715,7 @@ export default function ShopsScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-          // Mirror the server response into SQLite immediately. Without this
-          // the owner_id / owner_name / is_active edit only lives in React
-          // state until the next reconcileAndLoad — backing out and re-entering
-          // the screen would show stale data.
-          insertOrUpdateShops([updated]).catch((e) =>
-            reportError(e, { tag: "shops-onSaved-persist", id: updated.id })
-          );
+          handleRefresh();
         }}
         onMissing={(id) => {
           dropLocal(id).catch(() => {});

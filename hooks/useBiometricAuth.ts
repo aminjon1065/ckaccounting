@@ -118,11 +118,11 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: resolvePromptMessage(caps.supportedTypes),
-        fallbackLabel: "Use Passcode",
+        fallbackLabel: "Использовать пароль",
         // Note: On Android, disableDeviceFallback: true completely disables Face Recognition
         // because it requires Class 3 biometrics. We only enforce disable on iOS.
         disableDeviceFallback: Platform.OS === "ios",
-        cancelLabel: "Cancel",
+        cancelLabel: "Отмена",
       });
 
       if (result.success) {
@@ -132,7 +132,7 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
       }
     } catch (err: any) {
       setStatus("failed");
-      setErrorMessage(`Auth exception: ${err?.message || err}`);
+      setErrorMessage(`Ошибка аутентификации: ${err?.message || err}`);
     }
   }, []);
 
@@ -149,11 +149,11 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
         break;
       case "lockout":
         setStatus("failed");
-        setErrorMessage("Too many failed attempts. Use your device passcode to unlock.");
+        setErrorMessage("Слишком много неудачных попыток. Разблокируйте паролем устройства.");
         break;
       case "lockout_permanent":
         setStatus("failed");
-        setErrorMessage("Biometrics have been disabled. Use your device passcode.");
+        setErrorMessage("Биометрия отключена. Используйте пароль устройства.");
         break;
       case "not_enrolled":
       case "not_available":
@@ -164,7 +164,7 @@ export function useBiometricAuth(isEnabled: boolean): UseBiometricAuthReturn {
         break;
       default:
         setStatus("failed");
-        setErrorMessage(`Authentication failed (${error}). Please try again.`);
+        setErrorMessage(`Не удалось подтвердить личность (${error}). Попробуйте снова.`);
     }
   }
 }
@@ -175,17 +175,17 @@ function resolvePromptMessage(types: LocalAuthentication.AuthenticationType[]): 
   const hasFace = types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION);
   const hasFingerprint = types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT);
 
-  if (hasFace && Platform.OS === "ios") return "Unlock with Face ID";
-  if (hasFace) return "Unlock with Face Recognition";
-  if (hasFingerprint) return "Unlock with Fingerprint";
-  return "Authenticate to continue";
+  if (hasFace && Platform.OS === "ios") return "Разблокировать через Face ID";
+  if (hasFace) return "Разблокировать распознаванием лица";
+  if (hasFingerprint) return "Разблокировать отпечатком";
+  return "Подтвердите личность для продолжения";
 }
 
 /** Human-readable label shown on the lock-screen button. */
 export function resolveBiometricLabel(
   capabilities: BiometricCapabilities | null,
 ): string {
-  if (!capabilities) return "Unlock App";
+  if (!capabilities) return "Разблокировать";
 
   const { supportedTypes } = capabilities;
   const hasFace = supportedTypes.includes(
@@ -195,8 +195,8 @@ export function resolveBiometricLabel(
     LocalAuthentication.AuthenticationType.FINGERPRINT,
   );
 
-  if (hasFace && Platform.OS === "ios") return "Unlock with Face ID";
-  if (hasFace) return "Unlock with Face Recognition";
-  if (hasFingerprint) return "Unlock with Fingerprint";
-  return "Unlock with Passcode";
+  if (hasFace && Platform.OS === "ios") return "Войти через Face ID";
+  if (hasFace) return "Войти распознаванием лица";
+  if (hasFingerprint) return "Войти по отпечатку";
+  return "Войти по паролю устройства";
 }

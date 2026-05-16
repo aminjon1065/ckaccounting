@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -43,6 +43,19 @@ export default function ExpensesScreen() {
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);
+
+  // Refresh when returning to the screen so external mutations (other
+  // device, role with edit access on detail) reflect immediately.
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      handleRefresh();
+    }, [handleRefresh]),
+  );
 
   const handleEditExpense = React.useCallback((expense: Expense) => {
     setEditing(expense);

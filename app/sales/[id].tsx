@@ -263,30 +263,32 @@ export default function SaleDetailScreen() {
   const fetchSale = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
-
-    const local = await getLocalSaleById(id);
-    if (local) setSale(local);
-
-    if (local?.sync_action === "create") {
-      setLoading(false);
-      return;
-    }
-
     try {
       const s = await api.sales.get(id, token);
       setSale(s);
-    } catch (e: any) {
-      if (e instanceof ApiError && e.status === 404 && local) {
-        try {
-          await deleteLocalSale(id);
-        } catch {}
+    } catch (e: unknown) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Server says it's gone — wipe the local mirror too so a future
+        // offline view doesn't show a ghost.
+        deleteLocalSale(id).catch(() => {});
         setSale(null);
-        setError("Продажа была удалена. Локальная копия очищена.");
+        setError("Продажа была удалена.");
         return;
       }
-      if (!local) {
-        const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-        setError(isOfflineError ? "Нет сети. Продажа недоступна офлайн." : "Не удалось загрузить продажу.");
+      if (e instanceof ApiError && e.status === 0) {
+        // Offline — try the local mirror as a fallback.
+        try {
+          const local = await getLocalSaleById(id);
+          if (local) {
+            setSale(local);
+            return;
+          }
+        } catch {
+          // fall through to error message
+        }
+        setError("Нет сети. Продажа недоступна офлайн.");
+      } else {
+        setError(e instanceof Error ? e.message : "Не удалось загрузить продажу.");
       }
     }
   }, [id, token]);

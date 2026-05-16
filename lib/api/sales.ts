@@ -34,6 +34,9 @@ export interface SaleItem {
 export interface Sale {
   id: string;
   type?: SaleType;
+  /** Backend returns this on every sale; local mirror needs it so scoped
+   *  reads (owner / seller) don't filter out rows with shop_id=NULL. */
+  shop_id?: number | null;
   user_id?: number | null;
   /** Display name of the seller who rang up the receipt. Populated by the
    *  server when `user` is eager-loaded; null for sales whose seller has
@@ -86,10 +89,36 @@ export interface CreateSalePayload {
 export const salesApi = {
   list: async (
     token: string,
-    params: { page?: number; limit?: number; after_id?: number; updated_since?: string; updated_before?: string; cursor?: string } = {}
+    params: {
+      page?: number;
+      limit?: number;
+      after_id?: number;
+      updated_since?: string;
+      updated_before?: string;
+      cursor?: string;
+      /** Substring match on customer name, notes, and seller name. */
+      search?: string;
+      /** Filter by payment method. */
+      payment_type?: "cash" | "card" | "transfer";
+      /** Filter by sale type. */
+      type?: "product" | "service";
+      /** When true, only sales with outstanding debt are returned. */
+      debt_only?: boolean;
+    } = {}
   ): Promise<Paginated<Sale>> => {
     const raw = await request<Paginated<Sale>>(
-      `/sales${qs({ page: params.page, limit: params.limit ?? 20, after_id: params.after_id, updated_since: params.updated_since, updated_before: params.updated_before, cursor: params.cursor })}`,
+      `/sales${qs({
+        page: params.page,
+        limit: params.limit ?? 20,
+        after_id: params.after_id,
+        updated_since: params.updated_since,
+        updated_before: params.updated_before,
+        cursor: params.cursor,
+        search: params.search,
+        payment_type: params.payment_type,
+        type: params.type,
+        debt_only: params.debt_only ? 1 : undefined,
+      })}`,
       { token }
     );
     return parseOrLog(paginatedSchema(saleSchema), raw, { tag: "sales-list" }) as Paginated<Sale>;

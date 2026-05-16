@@ -5,10 +5,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { can, hasNoAccessibleShops } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useColorScheme } from "@/hooks/use-color-scheme";
 import { NoShopsAssignedScreen } from "@/components/NoShopsAssignedScreen";
 
 const PRIMARY = "#0a7ea4";
-const MUTED = "#94a3b8";
+const MUTED_LIGHT = "#94a3b8";
+const MUTED_DARK = "#71717a";
+const BG_LIGHT = "#ffffff";
+const BG_DARK = "#18181b";
+const BORDER_LIGHT = "#e2e8f0";
+const BORDER_DARK = "#27272a";
 
 type IconName = React.ComponentProps<typeof MaterialIcons>["name"];
 
@@ -18,6 +24,8 @@ function TabIcon({ name, color }: { name: IconName; color: string }) {
 
 export default function TabLayout() {
   const { user } = useAuth();
+  const { colorScheme } = useColorScheme();
+  const isDark = colorScheme === "dark";
   const insets = useSafeAreaInsets();
   const bottomInset = Platform.OS === "android" ? insets.bottom : Math.max(insets.bottom, 20);
   const tabBarPaddingBottom = Math.max(bottomInset, Platform.OS === "ios" ? 20 : 10);
@@ -36,10 +44,10 @@ export default function TabLayout() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: PRIMARY,
-        tabBarInactiveTintColor: MUTED,
+        tabBarInactiveTintColor: isDark ? MUTED_DARK : MUTED_LIGHT,
         tabBarStyle: {
-          backgroundColor: Platform.OS === "ios" ? undefined : "#ffffff",
-          borderTopColor: "#e2e8f0",
+          backgroundColor: isDark ? BG_DARK : BG_LIGHT,
+          borderTopColor: isDark ? BORDER_DARK : BORDER_LIGHT,
           borderTopWidth: 1,
           elevation: 0,
           height: tabBarHeight,

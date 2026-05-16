@@ -10,6 +10,10 @@ export interface Expense {
   price: number;
   total: number;
   note: string | null;
+  /** Backend returns this; local mirror needs it so scoped reads don't
+   *  filter out rows with shop_id=NULL. */
+  shop_id?: number | null;
+  user_id?: number | null;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;

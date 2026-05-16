@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -102,6 +102,17 @@ export default function PurchasesScreen() {
   } = usePurchases({ token, user });
 
   const [createVisible, setCreateVisible] = React.useState(false);
+
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      handleRefresh();
+    }, [handleRefresh]),
+  );
 
   // Period stats — month label + total, total outstanding debt across all rows.
   const stats = React.useMemo(() => {
@@ -236,6 +247,7 @@ export default function PurchasesScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(p) => {
           setPurchases((prev) => [p, ...prev]);
+          handleRefresh();
         }}
         token={token!}
       />

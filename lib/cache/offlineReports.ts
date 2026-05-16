@@ -24,6 +24,7 @@
 
 import { getDb } from "../db";
 import { fromKopecks } from "../db/money";
+import { shopIdInClause, type LocalScope } from "../db/scope";
 import type { ProfitReport, SalesReport, ExpensesReport, StockReport } from "../api";
 import {
   aggregateCostOfGoodsSold,
@@ -39,6 +40,23 @@ import {
   type SaleItemAggregateRow,
   type SalesAggregateRow,
 } from "./offlineReportsAggregators";
+
+// Build the WHERE-clause additions for a given scope. Owners get filtered
+// across their full owned-shop set (not just `user.shop_id`, which is null
+// for owners). Sellers also get a `user_id = ?` constraint. Used by every
+// fetcher below so the offline numbers match what the user actually sees on
+// the screens — without this, multi-shop owners and sellers got an unscoped
+// union across the local DB.
+function scopeFilter(scope: LocalScope, includeUser: boolean): { sql: string; params: (string | number)[] } {
+  const shop = shopIdInClause(scope.shopIds);
+  const params: (string | number)[] = [...shop.params];
+  let sql = shop.sql;
+  if (includeUser && scope.userId !== null) {
+    sql += " AND user_id = ?";
+    params.push(scope.userId);
+  }
+  return { sql, params };
+}
 
 export type {
   DateRange,
@@ -60,43 +78,35 @@ export {
 
 // ─── Sales ──────────────────────────────────────────────────────────────────
 
-async function fetchSalesRows(shopId?: number): Promise<SalesAggregateRow[]> {
+async function fetchSalesRows(scope: LocalScope): Promise<SalesAggregateRow[]> {
   const db = getDb();
-  let query = "SELECT id, type, payment_type, shop_id, created_at, total_kopecks FROM sales WHERE 1=1";
-  const params: (string | number)[] = [];
-  if (shopId !== undefined) {
-    query += " AND shop_id = ?";
-    params.push(shopId);
-  }
+  const { sql, params } = scopeFilter(scope, true);
+  const query = `SELECT id, type, payment_type, shop_id, created_at, total_kopecks FROM sales WHERE 1=1${sql}`;
   return db.getAllAsync<SalesAggregateRow>(query, params);
 }
 
 export async function computeLocalSalesReport(
   range: DateRange,
-  shopId?: number
+  scope: LocalScope
 ): Promise<SalesReport> {
-  const rows = await fetchSalesRows(shopId);
+  const rows = await fetchSalesRows(scope);
   return aggregateSalesReport(rows, range);
 }
 
 // ─── Expenses ───────────────────────────────────────────────────────────────
 
-async function fetchExpensesRows(shopId?: number): Promise<ExpensesAggregateRow[]> {
+async function fetchExpensesRows(scope: LocalScope): Promise<ExpensesAggregateRow[]> {
   const db = getDb();
-  let query = "SELECT shop_id, created_at, total_kopecks FROM expenses WHERE 1=1";
-  const params: (string | number)[] = [];
-  if (shopId !== undefined) {
-    query += " AND shop_id = ?";
-    params.push(shopId);
-  }
+  const { sql, params } = scopeFilter(scope, true);
+  const query = `SELECT shop_id, created_at, total_kopecks FROM expenses WHERE 1=1${sql}`;
   return db.getAllAsync<ExpensesAggregateRow>(query, params);
 }
 
 export async function computeLocalExpensesReport(
   range: DateRange,
-  shopId?: number
+  scope: LocalScope
 ): Promise<ExpensesReport> {
-  const rows = await fetchExpensesRows(shopId);
+  const rows = await fetchExpensesRows(scope);
   return aggregateExpensesReport(rows, range);
 }
 
@@ -104,22 +114,18 @@ export async function computeLocalExpensesReport(
 
 export async function computeLocalProfitReport(
   range: DateRange,
-  shopId?: number
+  scope: LocalScope
 ): Promise<ProfitReport> {
   const db = getDb();
 
   const [salesResult, expensesResult] = await Promise.all([
-    computeLocalSalesReport(range, shopId),
-    computeLocalExpensesReport(range, shopId),
+    computeLocalSalesReport(range, scope),
+    computeLocalExpensesReport(range, scope),
   ]);
 
-  let salesQuery = "SELECT id, type, shop_id, created_at FROM sales WHERE 1=1";
-  const salesParams: (string | number)[] = [];
-  if (shopId !== undefined) {
-    salesQuery += " AND shop_id = ?";
-    salesParams.push(shopId);
-  }
-  const saleRows = await db.getAllAsync<ProfitSaleRow>(salesQuery, salesParams);
+  const salesFilter = scopeFilter(scope, true);
+  const salesQuery = `SELECT id, type, shop_id, created_at FROM sales WHERE 1=1${salesFilter.sql}`;
+  const saleRows = await db.getAllAsync<ProfitSaleRow>(salesQuery, salesFilter.params);
 
   // Batch-fetch sale_items in a single query — N+1 would explode on large
   // ranges. Filter the parent sale set first to keep the IN(...) bounded.
@@ -153,20 +159,18 @@ export async function computeLocalProfitReport(
 
 // ─── Stock ──────────────────────────────────────────────────────────────────
 
-async function fetchStockRows(shopId?: number): Promise<ProductAggregateRow[]> {
+async function fetchStockRows(scope: LocalScope): Promise<ProductAggregateRow[]> {
   const db = getDb();
-  let query = "SELECT id, name, shop_id, stock_quantity, low_stock_alert, cost_price_kopecks, sale_price_kopecks FROM products WHERE 1=1";
-  const params: (string | number)[] = [];
-  if (shopId !== undefined) {
-    query += " AND shop_id = ?";
-    params.push(shopId);
-  }
+  // Products aren't owned by a specific user, so the user-id filter is
+  // intentionally skipped.
+  const { sql, params } = scopeFilter(scope, false);
+  const query = `SELECT id, name, shop_id, stock_quantity, low_stock_alert, cost_price_kopecks, sale_price_kopecks FROM products WHERE 1=1${sql}`;
   return db.getAllAsync<ProductAggregateRow>(query, params);
 }
 
 export async function computeLocalStockReport(
-  shopId?: number
+  scope: LocalScope
 ): Promise<StockReport> {
-  const rows = await fetchStockRows(shopId);
+  const rows = await fetchStockRows(scope);
   return aggregateStockReport(rows);
 }

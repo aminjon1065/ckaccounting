@@ -1,6 +1,7 @@
 import { Alert, Button, Input, Text } from "@/components/ui";
 import { useLocalSearchParams } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Image } from "expo-image";
 import * as React from "react";
 import { Alert as RNAlertDialog } from "react-native";
 import {
@@ -302,6 +303,7 @@ export default function LoginScreen() {
           className="flex-1"
           contentContainerStyle={{
             flexGrow: 1,
+            justifyContent: "center",
             paddingHorizontal: 24,
             paddingTop: 32,
             paddingBottom: 24,
@@ -309,27 +311,18 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* ── Brand row ── */}
-          <View className="flex-row items-center gap-2.5 mb-10">
-            <View className="w-11 h-11 rounded-xl bg-primary-500 items-center justify-center">
-              <Text className="font-heading text-white text-[20px] tracking-tighter">ck</Text>
-            </View>
-            <View>
-              <Text className="font-heading text-[17px] text-slate-900 dark:text-white tracking-tight">
-                CK Accounting
-              </Text>
-              <Text className="text-slate-500 dark:text-zinc-400 text-[12px] mt-px">
-                Магазин и финансы
-              </Text>
-            </View>
+          {/* ── Brand icon ── */}
+          <View className="items-center mb-10">
+            <Image
+              source={require("@/assets/images/ckicon.png")}
+              style={{ width: 96, height: 96 }}
+              contentFit="contain"
+            />
           </View>
 
           {/* ── Heading ── */}
-          <Text className="font-heading text-[28px] leading-[34px] text-slate-900 dark:text-white tracking-tight">
+          <Text className="font-heading text-[28px] leading-[34px] text-slate-900 dark:text-white tracking-tight text-center mb-7">
             Войти в аккаунт
-          </Text>
-          <Text className="text-slate-500 dark:text-zinc-400 text-[14px] leading-[20px] mt-1.5 mb-7">
-            Введите данные сотрудника. Первый вход требует интернет — дальше можно работать офлайн.
           </Text>
 
           {/* ── Error banner ── */}
@@ -422,7 +415,7 @@ export default function LoginScreen() {
           </View>
 
           {/* ── Footer ── */}
-          <View className="flex-row items-center justify-center gap-1.5 mt-auto pt-10">
+          <View className="flex-row items-center justify-center gap-1.5 pt-10">
             <MaterialIcons name="lock" size={13} color="#94a3b8" />
             <Text className="text-slate-400 dark:text-zinc-500 text-[12px]">
               Данные защищены SecureStore

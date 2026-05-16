@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as React from "react";
 import {
   Alert,
@@ -29,7 +29,7 @@ import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { useUsers } from "@/hooks/useUsers";
 import { reportError } from "@/lib/observability/reporter";
-import { effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 
 // ─── User card ────────────────────────────────────────────────────────────────
 
@@ -132,6 +132,7 @@ function CreateUserModal({
   showToast,
   ownerImplicitShopId,
   ownerNeedsShopPicker,
+  allowedShopIds,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -143,6 +144,8 @@ function CreateUserModal({
   ownerImplicitShopId: number | null;
   /** For owner role only — true when they need to pick from owned set. */
   ownerNeedsShopPicker: boolean;
+  /** Allowed shop ids for the current user. `null` = no restriction (super_admin). */
+  allowedShopIds: number[] | null;
 }) {
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -178,13 +181,19 @@ function CreateUserModal({
       setShopId("");
       setError("");
       if (isSuperAdmin || ownerNeedsShopPicker) {
-        // Server-side scoping in api.shops.list — owners get only their owned shops.
         api.shops.list(token)
-          .then((res) => setShops(res.data ?? []))
+          .then((res) => {
+            const raw = res.data ?? [];
+            setShops(
+              allowedShopIds == null
+                ? raw
+                : raw.filter((s) => allowedShopIds.includes(s.id)),
+            );
+          })
           .catch((e) => reportError(e, { tag: "users-create-shops-load" }));
       }
     }
-  }, [visible, isSuperAdmin, ownerNeedsShopPicker, token]);
+  }, [visible, isSuperAdmin, ownerNeedsShopPicker, token, allowedShopIds]);
 
   async function handleSubmit() {
     setError("");
@@ -221,6 +230,7 @@ function CreateUserModal({
     try {
       const created = await api.users.create(payload, token);
       onCreated(created);
+      showToast({ message: "Сотрудник добавлен", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
@@ -359,6 +369,7 @@ function EditUserModal({
   isSuperAdmin,
   showToast,
   ownerNeedsShopPicker,
+  allowedShopIds,
 }: {
   visible: boolean;
   editingUser: AppUser | null;
@@ -371,6 +382,8 @@ function EditUserModal({
   showToast: ReturnType<typeof useToast>["showToast"];
   /** Owner editing seller — show picker only when owner has multiple shops. */
   ownerNeedsShopPicker: boolean;
+  /** Allowed shop ids for the current user. `null` = no restriction (super_admin). */
+  allowedShopIds: number[] | null;
 }) {
   const [name, setName] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -402,11 +415,18 @@ function EditUserModal({
       setError("");
       if (isSuperAdmin || ownerNeedsShopPicker) {
         api.shops.list(token)
-          .then((res) => setShops(res.data ?? []))
+          .then((res) => {
+            const raw = res.data ?? [];
+            setShops(
+              allowedShopIds == null
+                ? raw
+                : raw.filter((s) => allowedShopIds.includes(s.id)),
+            );
+          })
           .catch((e) => reportError(e, { tag: "users-edit-shops-load" }));
       }
     }
-  }, [visible, editingUser, isSuperAdmin, ownerNeedsShopPicker, token]);
+  }, [visible, editingUser, isSuperAdmin, ownerNeedsShopPicker, token, allowedShopIds]);
 
   async function handleSubmit() {
     setError("");
@@ -427,6 +447,7 @@ function EditUserModal({
     try {
       const updated = await api.users.update(editingUser!.id, payload, token);
       onSaved(updated);
+      showToast({ message: "Сотрудник обновлён", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
@@ -563,6 +584,17 @@ export default function UsersScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingUser, setEditingUser] = React.useState<AppUser | null>(null);
+
+  const isFirstFocusRef = React.useRef(true);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      handleRefresh();
+    }, [handleRefresh]),
+  );
 
   const hasAccess = can(user?.role, "users:view");
 
@@ -714,12 +746,14 @@ export default function UsersScreen() {
         onClose={() => setCreateVisible(false)}
         onCreated={(u) => {
           setUsers((prev) => [u, ...prev]);
+          handleRefresh();
         }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
         showToast={showToast}
         ownerImplicitShopId={effectiveShopId(user)}
         ownerNeedsShopPicker={user?.role === "owner" && needsShopPicker(user)}
+        allowedShopIds={pickerShopIds(user)}
       />
 
       <EditUserModal
@@ -728,6 +762,7 @@ export default function UsersScreen() {
         onClose={() => setEditVisible(false)}
         onSaved={(updated) => {
           setUsers((prev) => prev.map((u) => u.id === updated.id ? updated : u));
+          handleRefresh();
         }}
         onMissing={(id) => {
           setUsers((prev) => prev.filter((u) => u.id !== id));
@@ -736,6 +771,7 @@ export default function UsersScreen() {
         isSuperAdmin={user?.role === "super_admin"}
         showToast={showToast}
         ownerNeedsShopPicker={user?.role === "owner" && needsShopPicker(user)}
+        allowedShopIds={pickerShopIds(user)}
       />
     </SafeAreaView>
   );

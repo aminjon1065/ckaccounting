@@ -51,7 +51,9 @@ export interface CreateProductPayload {
 export type ProductMovementType = "purchase" | "sale" | "return" | "write_off";
 
 export interface ProductMovement {
-  id: number;
+  // Backend composes movements from purchase_items, sale_items, and
+  // sale_return_items, so there's no single primary key — the row is
+  // identified by the (reference_type, reference_id, created_at) tuple.
   type: ProductMovementType;
   quantity: number;
   price: number;

@@ -14,10 +14,10 @@ import { defaultPriceMode, deriveProductPrice, fmt, PAYMENT_ICONS, PAYMENT_LABEL
 import { PriceMode, CartItem, ServiceLineItem } from "./types";
 import { CartRow } from "./CartRow";
 import { ServiceItemRow } from "./ServiceItemRow";
-import { deleteLocalProduct, getLocalProducts, insertOrUpdateProducts, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, localScope } from "@/lib/db";
+import { deleteLocalProduct, getLocalProducts, insertOrUpdateProducts, insertOrUpdateRemoteSales, insertNotification, hasLowStockAlertBeenSent, markLowStockAlertSent, localScope } from "@/lib/db";
 import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
-import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
 import { useCacheMethods } from "@/lib/cache/CacheProvider";
 import { STORAGE_KEYS } from "@/constants/config";
@@ -47,6 +47,7 @@ export function CreateSaleModal({
   // picker.
   const showShopPicker = needsShopPicker(user);
   const implicitShopId = effectiveShopId(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
   const canEditPrice = user?.role !== "seller";
   const { showToast } = useToast();
 
@@ -106,7 +107,10 @@ export function CreateSaleModal({
     if (visible && showShopPicker) {
       api.shops.list(token)
         .then((res) => {
-          const list = res.data ?? [];
+          const raw = res.data ?? [];
+          const list = allowedShopIds == null
+            ? raw
+            : raw.filter((s) => allowedShopIds.includes(s.id));
           setShops(list);
           // Pre-fill from the last successful sale if the saved shop is
           // still in the user's allowed set — multi-shop owners doing PoS
@@ -122,7 +126,7 @@ export function CreateSaleModal({
         })
         .catch((e) => reportError(e, { tag: "sale-modal-shops-load" }));
     }
-  }, [visible, showShopPicker, token]);
+  }, [visible, showShopPicker, token, allowedShopIds]);
 
   const loadProductsForSale = React.useCallback(async (selectedShopId?: number, cursor?: string) => {
     setProductsLoading(true);
@@ -598,7 +602,18 @@ export function CreateSaleModal({
           }
         }
       }
+      // Persist into local DB immediately with the correct shop_id so
+      // scoped reads (reports, list screens) include it before the next
+      // sync cycle. Without this the fetcher catches it eventually, but
+      // it'd be invisible right after creation.
+      const persistShopId = showShopPicker && shopId
+        ? Number(shopId)
+        : implicitShopId ?? undefined;
+      await insertOrUpdateRemoteSales([created], persistShopId).catch((err) =>
+        reportError(err, { tag: "sale-modal-persist" }),
+      );
       onCreated(created);
+      showToast({ message: "Продажа записана", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {

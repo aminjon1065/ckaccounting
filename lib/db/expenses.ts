@@ -83,7 +83,11 @@ export async function deleteLocalExpense(id: string | number): Promise<void> {
   await invalidateAggregatedCaches();
 }
 
-export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: number) {
+export async function insertOrUpdateExpenses(
+  expenses: Expense[],
+  shopId?: number,
+  userId?: number,
+) {
   const db = getDb();
   await db.withTransactionAsync(async () => {
     for (const e of expenses) {
@@ -91,6 +95,14 @@ export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: numbe
         await db.runAsync("DELETE FROM expenses WHERE id = ?", [e.id]);
         continue;
       }
+      // Prefer the row's own shop_id / user_id (server may include them);
+      // fall back to the explicit params (caller from a create flow knows
+      // which shop/user the row belongs to). Without this, rows would land
+      // with shop_id=NULL and the scoped read in getLocalExpenses would
+      // filter them out for non-super-admins.
+      const rowAny = e as Expense & { shop_id?: number | null; user_id?: number | null };
+      const resolvedShopId = rowAny.shop_id ?? shopId ?? null;
+      const resolvedUserId = rowAny.user_id ?? userId ?? null;
       await db.runAsync(
         `INSERT OR REPLACE INTO expenses (
           id, shop_id, user_id, name, quantity, note,
@@ -98,7 +110,7 @@ export async function insertOrUpdateExpenses(expenses: Expense[], shopId?: numbe
           price_kopecks, total_kopecks
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          e.id, shopId ?? null, null, e.name, e.quantity,
+          e.id, resolvedShopId, resolvedUserId, e.name, e.quantity,
           e.note ?? null,
           e.created_at, e.updated_at,
           toKopecks(e.price), toKopecks(e.total),

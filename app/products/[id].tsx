@@ -1,15 +1,18 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { Pressable, ScrollView, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, ScrollView, TouchableOpacity, View } from "react-native";
 import { Image, type ImageSource } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
+import { ProductFormModal } from "@/components/products/ProductFormModal";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import { api, ApiError, resolveBackendAssetUrl, type Product } from "@/lib/api";
 import { deleteLocalProduct, getLocalProductById } from "@/lib/db";
+import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -109,13 +112,18 @@ function InfoRow({
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { token, user } = useAuth();
+  const { showToast } = useToast();
   const canViewCost = user?.role !== "seller";
+  const canEdit = can(user?.role, "products:edit");
+  const canDelete = can(user?.role, "products:delete");
   const router = useRouter();
 
   const [product, setProduct] = React.useState<Product | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [imageFailed, setImageFailed] = React.useState(false);
+  const [editVisible, setEditVisible] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(product?.photo_url ?? product?.image_url ?? null);
   const imageSource = React.useMemo<ImageSource | undefined>(() => {
     if (!imageUri) return undefined;
@@ -138,27 +146,29 @@ export default function ProductDetailScreen() {
   const fetchProduct = React.useCallback(async () => {
     if (!token || !id) return;
     setError("");
-
-    const local = await getLocalProductById(id);
-    if (local) setProduct(local);
-
     try {
       const p = await api.products.get(id, token);
       setProduct(p);
-    } catch (e: any) {
-      if (e instanceof ApiError && e.status === 404 && local) {
-        try {
-          await deleteLocalProduct(id);
-        } catch {}
+    } catch (e: unknown) {
+      if (e instanceof ApiError && e.status === 404) {
+        deleteLocalProduct(id).catch(() => {});
         setProduct(null);
-        setError("Товар был удалён. Локальная копия очищена.");
+        setError("Товар был удалён.");
         return;
       }
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      if (isOfflineError) {
-        if (!local) setError("Нет сети. Данные недоступны.");
+      if (e instanceof ApiError && e.status === 0) {
+        try {
+          const local = await getLocalProductById(id);
+          if (local) {
+            setProduct(local);
+            return;
+          }
+        } catch {
+          // fall through
+        }
+        setError("Нет сети. Данные недоступны.");
       } else {
-        if (!local) setError("Не удалось загрузить товар.");
+        setError(e instanceof Error ? e.message : "Не удалось загрузить товар.");
       }
     }
   }, [id, token]);
@@ -166,6 +176,45 @@ export default function ProductDetailScreen() {
   React.useEffect(() => {
     fetchProduct().finally(() => setLoading(false));
   }, [fetchProduct]);
+
+  const handleDelete = React.useCallback(() => {
+    if (!product || !token) return;
+    Alert.alert(
+      "Удалить товар",
+      `${product.name} будет удалён безвозвратно.`,
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await api.products.delete(product.id, token, `prod-delete-${product.id}`);
+              deleteLocalProduct(product.id).catch(() => {});
+              showToast({ message: "Товар удалён", variant: "success" });
+              router.back();
+            } catch (e: unknown) {
+              if (e instanceof ApiError && e.status === 0) {
+                showToast({
+                  message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
+              } else if (e instanceof ApiError && e.status === 404) {
+                deleteLocalProduct(product.id).catch(() => {});
+                showToast({ message: "Товар уже был удалён.", variant: "success" });
+                router.back();
+              } else {
+                showToast({ message: "Не удалось удалить товар.", variant: "error" });
+              }
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [product, token, router, showToast]);
 
   // ── Loading ──
   if (loading) {
@@ -258,6 +307,25 @@ export default function ProductDetailScreen() {
         >
           <MaterialIcons name="history" size={18} color="#475569" />
         </Pressable>
+        {canEdit && (
+          <Pressable
+            onPress={() => setEditVisible(true)}
+            hitSlop={8}
+            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
+          >
+            <MaterialIcons name="edit" size={18} color="#475569" />
+          </Pressable>
+        )}
+        {canDelete && (
+          <Pressable
+            onPress={handleDelete}
+            disabled={deleting}
+            hitSlop={8}
+            className="w-9 h-9 rounded-full bg-red-100 dark:bg-red-900/30 items-center justify-center active:opacity-70 disabled:opacity-50"
+          >
+            <MaterialIcons name="delete-outline" size={18} color="#ef4444" />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView
@@ -411,6 +479,19 @@ export default function ProductDetailScreen() {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {canEdit && token && (
+        <ProductFormModal
+          visible={editVisible}
+          editing={product}
+          token={token}
+          onClose={() => setEditVisible(false)}
+          onSaved={(saved) => {
+            setProduct(saved);
+            setEditVisible(false);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

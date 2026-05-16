@@ -1,83 +1,125 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Purchase, type User } from "@/lib/api";
-import { getLocalPurchases, localScope, type LocalPurchase } from "@/lib/db";
-import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
+import { api, ApiError, type Purchase, type User } from "@/lib/api";
+import { getLocalPurchases, localScope } from "@/lib/db";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 /**
- * Local-first purchases feed. SQLite is source of truth; SyncProvider
- * delta-sync brings new server records in; load-more extends history
- * via fetchOlderPurchases.
- *
- * Scoping is derived from `user` via `localScope`. Purchases are owner-only
- * on the backend.
+ * Server-first purchases feed. Hits `/purchases` for the first page on
+ * mount / refresh, paginates via cursor on load-more. The local SQLite
+ * mirror is consulted only when the request fails with a network error,
+ * so the screen still shows something offline.
  */
+const PAGE_SIZE = 30;
+
 export function usePurchases({ token, user }: { token: string | null; user: User | null | undefined }) {
-  const { triggerSync, fetchOlderPurchases } = useCacheMethods();
-  const isSyncing = useIsSyncing();
+  const isOnline = useIsOnline();
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const isOffline = false;
+  const [isOffline, setIsOffline] = useState(false);
 
-  const wasSyncingRef = useRef(false);
+  const inFlightRef = useRef(false);
 
-  const loadFromLocal = useCallback(async () => {
-    if (!token) return;
-    const local = await getLocalPurchases(localScope(user));
-    setPurchases(dedupePurchases(local as Purchase[]));
-  }, [token, user]);
+  const fetchPage = useCallback(
+    async (cursor?: string | null): Promise<{ data: Purchase[]; nextCursor: string | null } | null> => {
+      if (!token) return null;
+      const response = await api.purchases.list(token, {
+        limit: PAGE_SIZE,
+        cursor: cursor ?? undefined,
+      });
+      return {
+        data: response.data ?? [],
+        nextCursor: (response as { next_cursor?: string | null }).next_cursor ?? null,
+      };
+    },
+    [token],
+  );
+
+  const loadFirstPage = useCallback(async () => {
+    if (!token || inFlightRef.current) return;
+    inFlightRef.current = true;
+    setError("");
+    try {
+      const page = await fetchPage(null);
+      if (!page) return;
+      setPurchases(page.data);
+      setNextCursor(page.nextCursor);
+      setHasMore(!!page.nextCursor);
+      setIsOffline(false);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 0) {
+        try {
+          const local = await getLocalPurchases(localScope(user));
+          setPurchases(local);
+          setIsOffline(true);
+          setHasMore(false);
+          setNextCursor(null);
+        } catch {
+          setError("Нет сети и нет локальных данных.");
+        }
+      } else {
+        setError(e instanceof Error ? e.message : "Не удалось загрузить закупки.");
+      }
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [token, user, fetchPage]);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     (async () => {
-      await loadFromLocal();
+      await loadFirstPage();
       if (!cancelled) setLoading(false);
     })();
-    return () => { cancelled = true; };
-  }, [token, loadFromLocal]);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, loadFirstPage]);
 
+  const wasOfflineRef = useRef(false);
   useEffect(() => {
-    if (wasSyncingRef.current && !isSyncing) {
-      loadFromLocal().catch(() => {});
+    if (isOnline && wasOfflineRef.current) {
+      loadFirstPage().catch(() => {});
     }
-    wasSyncingRef.current = isSyncing;
-  }, [isSyncing, loadFromLocal]);
+    wasOfflineRef.current = !isOnline;
+  }, [isOnline, loadFirstPage]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    setError("");
     try {
-      await triggerSync();
-      await loadFromLocal();
-    } catch {
-      setError("Не удалось обновить закупки.");
+      await loadFirstPage();
     } finally {
       setRefreshing(false);
     }
-  }, [triggerSync, loadFromLocal]);
+  }, [loadFirstPage]);
 
   const handleLoadMore = useCallback(async () => {
-    if (!hasMore || loadingMore) return;
+    if (!hasMore || loadingMore || !nextCursor || isOffline) return;
     setLoadingMore(true);
     try {
-      const moreAvailable = await fetchOlderPurchases(1);
-      await loadFromLocal();
-      setHasMore(moreAvailable);
+      const page = await fetchPage(nextCursor);
+      if (page) {
+        setPurchases((prev) => [...prev, ...page.data]);
+        setNextCursor(page.nextCursor);
+        setHasMore(!!page.nextCursor);
+      }
+    } catch {
+      // non-fatal
     } finally {
       setLoadingMore(false);
     }
-  }, [hasMore, loadingMore, fetchOlderPurchases, loadFromLocal]);
+  }, [hasMore, loadingMore, nextCursor, isOffline, fetchPage]);
 
   const retryFetch = useCallback(async () => {
     setLoading(true);
-    setError("");
-    await loadFromLocal();
+    await loadFirstPage();
     setLoading(false);
-  }, [loadFromLocal]);
+  }, [loadFirstPage]);
 
   return {
     purchases,
@@ -92,32 +134,4 @@ export function usePurchases({ token, user }: { token: string | null; user: User
     handleLoadMore,
     retryFetch,
   };
-}
-
-function purchaseKey(purchase: Purchase): string {
-  return `id:${purchase.id}`;
-}
-
-function dedupePurchases(purchases: Purchase[]): Purchase[] {
-  const byKey = new Map<string, Purchase>();
-
-  for (const purchase of purchases) {
-    const key = purchaseKey(purchase);
-    const existing = byKey.get(key);
-    if (!existing) {
-      byKey.set(key, purchase);
-      continue;
-    }
-
-    const existingIsPending = (existing as LocalPurchase).sync_action &&
-      (existing as LocalPurchase).sync_action !== "none";
-    const currentIsPending = (purchase as LocalPurchase).sync_action &&
-      (purchase as LocalPurchase).sync_action !== "none";
-
-    if (existingIsPending && !currentIsPending) {
-      byKey.set(key, purchase);
-    }
-  }
-
-  return Array.from(byKey.values());
 }

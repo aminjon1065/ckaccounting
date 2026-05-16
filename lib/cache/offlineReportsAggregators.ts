@@ -240,6 +240,7 @@ export function aggregateProfitReport(
 export function aggregateStockReport(rows: ProductAggregateRow[]): StockReport {
   let totalProducts = 0;
   let totalValue = 0;
+  let totalCostValue = 0;
   let lowStock = 0;
   let outOfStock = 0;
   const data: StockReport["data"] = [];
@@ -247,10 +248,13 @@ export function aggregateStockReport(rows: ProductAggregateRow[]): StockReport {
   for (const p of rows) {
     const qty = p.stock_quantity ?? 0;
     const costPrice = fromKopecks(p.cost_price_kopecks);
-    const value = qty * costPrice;
+    const salePrice = fromKopecks(p.sale_price_kopecks);
+    const costValue = qty * costPrice;
+    const saleValue = qty * salePrice;
 
     totalProducts++;
-    totalValue += value;
+    totalValue += saleValue;
+    totalCostValue += costValue;
 
     const alert = p.low_stock_alert ?? 0;
     if (qty === 0) {
@@ -263,14 +267,17 @@ export function aggregateStockReport(rows: ProductAggregateRow[]): StockReport {
       id: p.id,
       name: p.name,
       stock_quantity: qty,
-      sale_price: fromKopecks(p.sale_price_kopecks),
-      value,
+      sale_price: salePrice,
+      cost_price: costPrice,
+      value: saleValue,
+      cost_value: costValue,
     });
   }
 
   return {
     total_products: totalProducts,
     total_value: totalValue,
+    total_cost_value: totalCostValue,
     low_stock: lowStock,
     out_of_stock: outOfStock,
     data,

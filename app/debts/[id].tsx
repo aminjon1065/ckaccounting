@@ -180,6 +180,10 @@ function AddTransactionModal({
       const updated = await api.debts.addTransaction(debtId, payload, token, idempotencyKey);
 
       onAdded(updated);
+      showToast({
+        message: type === "give" ? "Долг увеличен" : "Оплата принята",
+        variant: "success",
+      });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
@@ -337,14 +341,35 @@ export default function DebtDetailScreen() {
   const [loading, setLoading] = React.useState(true);
   const [txVisible, setTxVisible] = React.useState(false);
 
+  // Server-first: fetch the debt by id. Fall back to the local mirror only
+  // when the device is offline so the user can still view what they had
+  // cached.
   React.useEffect(() => {
-    if (!id) return;
-
-    getLocalDebtById(id)
-      .then(setDebt)
-      .catch((e) => reportError(e, { tag: "debt-detail-load", debtId: id }))
-      .finally(() => setLoading(false));
-  }, [id]);
+    if (!id || !token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fresh = await api.debts.get(String(id), token);
+        if (!cancelled) setDebt(fresh);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 0) {
+          try {
+            const local = await getLocalDebtById(String(id));
+            if (!cancelled) setDebt(local);
+          } catch (le) {
+            reportError(le, { tag: "debt-detail-offline-fallback", debtId: id });
+          }
+        } else {
+          reportError(e, { tag: "debt-detail-load", debtId: id });
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, token]);
 
   function handleTxAdded(updated: Debt) {
     // Server returns the full updated debt including the new transaction

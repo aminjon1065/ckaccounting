@@ -40,13 +40,20 @@ export function CustomPeriodModal({
   const [from, setFrom] = React.useState(new Date());
   const [to, setTo] = React.useState(new Date());
   const [error, setError] = React.useState("");
+  // Native pickers must be opened on demand — Android shows its picker
+  // dialog the moment the component mounts, which would collide with this modal.
+  const [activeField, setActiveField] = React.useState<"from" | "to" | null>(null);
 
   React.useEffect(() => {
     if (!visible) return;
     setFrom(parseLocalDate(initialFrom));
     setTo(parseLocalDate(initialTo));
     setError("");
+    setActiveField(null);
   }, [visible, initialFrom, initialTo]);
+
+  const formatDisplay = (d: Date) =>
+    d.toLocaleDateString("ru-RU", { day: "2-digit", month: "long", year: "numeric" });
 
   const handleApply = () => {
     if (from.getTime() > to.getTime()) {
@@ -106,39 +113,38 @@ export function CustomPeriodModal({
               </View>
             </View>
           ) : (
-            <View className="gap-5 mb-8">
-              <View className="flex-row items-center justify-between p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl">
+            <View className="gap-3 mb-8">
+              <TouchableOpacity
+                onPress={() => setActiveField("from")}
+                className="flex-row items-center justify-between p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl"
+              >
                 <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">От</Text>
-                {DateTimePicker && (
-                  <DateTimePicker
-                    value={from}
-                    mode="date"
-                    display="default"
-                    onChange={(_e: unknown, d?: Date) => {
-                      if (d) {
-                        setFrom(d);
-                        if (error) setError("");
-                      }
-                    }}
-                  />
-                )}
-              </View>
-              <View className="flex-row items-center justify-between p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl">
+                <Text className="text-sm text-slate-900 dark:text-white">{formatDisplay(from)}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setActiveField("to")}
+                className="flex-row items-center justify-between p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl"
+              >
                 <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">До</Text>
-                {DateTimePicker && (
-                  <DateTimePicker
-                    value={to}
-                    mode="date"
-                    display="default"
-                    onChange={(_e: unknown, d?: Date) => {
-                      if (d) {
-                        setTo(d);
-                        if (error) setError("");
-                      }
-                    }}
-                  />
-                )}
-              </View>
+                <Text className="text-sm text-slate-900 dark:text-white">{formatDisplay(to)}</Text>
+              </TouchableOpacity>
+
+              {DateTimePicker && activeField && (
+                <DateTimePicker
+                  value={activeField === "from" ? from : to}
+                  mode="date"
+                  display={Platform.OS === "ios" ? "inline" : "default"}
+                  onChange={(event: { type?: string }, d?: Date) => {
+                    // Android fires once and dismisses itself; iOS keeps the inline picker open.
+                    if (Platform.OS === "android") setActiveField(null);
+                    if (event?.type === "dismissed") return;
+                    if (!d) return;
+                    if (activeField === "from") setFrom(d);
+                    else setTo(d);
+                    if (error) setError("");
+                  }}
+                />
+              )}
             </View>
           )}
 

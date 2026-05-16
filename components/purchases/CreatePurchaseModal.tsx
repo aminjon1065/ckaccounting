@@ -25,7 +25,7 @@ import { useToast } from "@/store/toast";
 import { useAuth } from "@/store/auth";
 import { fmt } from "@/lib/formatters";
 import { reportError } from "@/lib/observability/reporter";
-import { can, effectiveShopId, needsShopPicker } from "@/lib/permissions";
+import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
 
 // ─── Product picker ───────────────────────────────────────────────────────────
@@ -176,6 +176,7 @@ export function CreatePurchaseModal({
   const { user } = useAuth();
   const showShopPicker = needsShopPicker(user);
   const implicitShopId = effectiveShopId(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
   // Inline create flow from the product picker. We carry the seed name so
@@ -190,10 +191,13 @@ export function CreatePurchaseModal({
     setShopId("");
     if (showShopPicker) {
       api.shops.list(token)
-        .then((res) => setShops(res.data ?? []))
+        .then((res) => {
+          const list = res.data ?? [];
+          setShops(allowedShopIds == null ? list : list.filter((s) => allowedShopIds.includes(s.id)));
+        })
         .catch((e) => reportError(e, { tag: "purchase-modal-shops-load" }));
     }
-  }, [token, visible, showShopPicker]);
+  }, [token, visible, showShopPicker, allowedShopIds]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -308,6 +312,7 @@ export function CreatePurchaseModal({
     try {
       const created = await api.purchases.create(payload, token, idempotencyKey);
       onCreated(created);
+      showToast({ message: "Приход добавлен", variant: "success" });
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {

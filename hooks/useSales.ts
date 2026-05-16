@@ -1,95 +1,168 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Sale, type User } from "@/lib/api";
+import { api, ApiError, type Sale, type User } from "@/lib/api";
 import { getLocalSales, localScope } from "@/lib/db";
-import { useCacheMethods, useIsSyncing } from "@/lib/cache/CacheProvider";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 /**
- * Local-first sales feed.
+ * Server-first sales feed with server-side search + filter passthrough.
  *
- * - mount → render whatever's in SQLite immediately (no network blocking).
- * - SyncProvider runs delta-sync in the background; when it finishes, we
- *   reload from SQLite to pick up new server records.
- * - pull-to-refresh → manual triggerSync, then reload.
- * - load-more (scroll bottom) → fetchOlderSales pulls one historical page
- *   beyond the cap window, then we reload. hasMore tracks whether the
- *   server still has older history.
- *
- * Scoping: derives (shopId, userId) from `user` via `localScope`. Owners and
- * super-admins see all sales in the shop; sellers see only their own. The
- * previous shape passed `userId` only when the role was seller, but left
- * `shopId` as `undefined` (= "every shop on this device"), which would leak
- * data on devices shared between shops. Always pass through localScope now.
+ * - `/sales` is hit on mount / refresh / load-more via cursor pagination.
+ * - On a network failure we fall back to whatever is in the local SQLite
+ *   mirror so the screen still has data offline (the offline view is NOT
+ *   filtered server-side, so the caller can mention "filters disabled
+ *   offline" in the UI when `isOffline=true`).
+ * - Search/filter params are passed straight to the API. Changing them
+ *   resets to page 1 and re-fetches.
  */
-export function useSales({ token, user }: { token: string | null; user: User | null | undefined }) {
-  const { triggerSync, fetchOlderSales } = useCacheMethods();
-  const isSyncing = useIsSyncing();
+const PAGE_SIZE = 30;
+
+export interface SalesQuery {
+  search?: string;
+  paymentType?: "cash" | "card" | "transfer";
+  saleType?: "product" | "service";
+  debtOnly?: boolean;
+}
+
+export function useSales({
+  token,
+  user,
+  query,
+}: {
+  token: string | null;
+  user: User | null | undefined;
+  query?: SalesQuery;
+}) {
+  const isOnline = useIsOnline();
 
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const isOffline = false; // kept for backward-compatible API; the global offline banner handles UI now
+  const [isOffline, setIsOffline] = useState(false);
 
-  // Track previous isSyncing so we only refresh on completion edge.
-  const wasSyncingRef = useRef(false);
+  const inFlightRef = useRef(false);
+  // Capture the current query in a ref so fetchPage closures always see
+  // the latest values without forcing the callback identity to change on
+  // every keystroke.
+  const queryRef = useRef<SalesQuery | undefined>(query);
+  queryRef.current = query;
 
-  const loadFromLocal = useCallback(async () => {
-    if (!token) return;
-    const localSales = await getLocalSales(localScope(user));
-    setSales(localSales);
-  }, [token, user]);
+  const fetchPage = useCallback(
+    async (cursor?: string | null): Promise<{ data: Sale[]; nextCursor: string | null } | null> => {
+      if (!token) return null;
+      const q = queryRef.current;
+      const response = await api.sales.list(token, {
+        limit: PAGE_SIZE,
+        cursor: cursor ?? undefined,
+        search: q?.search?.trim() ? q.search.trim() : undefined,
+        payment_type: q?.paymentType,
+        type: q?.saleType,
+        debt_only: q?.debtOnly ? true : undefined,
+      });
+      return {
+        data: response.data ?? [],
+        nextCursor: (response as { next_cursor?: string | null }).next_cursor ?? null,
+      };
+    },
+    [token],
+  );
 
-  // Initial load + reload after each completed background sync.
+  const loadFirstPage = useCallback(async () => {
+    if (!token || inFlightRef.current) return;
+    inFlightRef.current = true;
+    setError("");
+    try {
+      const page = await fetchPage(null);
+      if (!page) return;
+      setSales(page.data);
+      setNextCursor(page.nextCursor);
+      setHasMore(!!page.nextCursor);
+      setIsOffline(false);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 0) {
+        try {
+          const local = await getLocalSales(localScope(user));
+          setSales(local);
+          setIsOffline(true);
+          setHasMore(false);
+          setNextCursor(null);
+        } catch {
+          setError("Нет сети и нет локальных данных.");
+        }
+      } else {
+        setError(e instanceof Error ? e.message : "Не удалось загрузить продажи.");
+      }
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [token, user, fetchPage]);
+
+  // Initial load + reload whenever the query changes. Using a stringified
+  // serialization keeps the effect deps stable (we don't want to depend
+  // on a reference that the caller might recreate every render).
+  const querySignature = JSON.stringify({
+    search: query?.search?.trim() ?? "",
+    paymentType: query?.paymentType ?? "",
+    saleType: query?.saleType ?? "",
+    debtOnly: !!query?.debtOnly,
+  });
+
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
+    setLoading(true);
     (async () => {
-      await loadFromLocal();
+      await loadFirstPage();
       if (!cancelled) setLoading(false);
     })();
-    return () => { cancelled = true; };
-  }, [token, loadFromLocal]);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, querySignature, loadFirstPage]);
 
+  // Refresh when connectivity returns after we'd fallen back to the cache.
+  const wasOfflineRef = useRef(false);
   useEffect(() => {
-    if (wasSyncingRef.current && !isSyncing) {
-      loadFromLocal().catch(() => {});
+    if (isOnline && wasOfflineRef.current) {
+      loadFirstPage().catch(() => {});
     }
-    wasSyncingRef.current = isSyncing;
-  }, [isSyncing, loadFromLocal]);
+    wasOfflineRef.current = !isOnline;
+  }, [isOnline, loadFirstPage]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    setError("");
     try {
-      await triggerSync();
-      await loadFromLocal();
-    } catch {
-      setError("Не удалось обновить продажи.");
+      await loadFirstPage();
     } finally {
       setRefreshing(false);
     }
-  }, [triggerSync, loadFromLocal]);
+  }, [loadFirstPage]);
 
   const handleLoadMore = useCallback(async () => {
-    if (!hasMore || loadingMore) return;
+    if (!hasMore || loadingMore || !nextCursor || isOffline) return;
     setLoadingMore(true);
     try {
-      const moreAvailable = await fetchOlderSales(1);
-      await loadFromLocal();
-      setHasMore(moreAvailable);
+      const page = await fetchPage(nextCursor);
+      if (page) {
+        setSales((prev) => [...prev, ...page.data]);
+        setNextCursor(page.nextCursor);
+        setHasMore(!!page.nextCursor);
+      }
+    } catch {
+      // non-fatal — user can retry by scrolling again
     } finally {
       setLoadingMore(false);
     }
-  }, [hasMore, loadingMore, fetchOlderSales, loadFromLocal]);
+  }, [hasMore, loadingMore, nextCursor, isOffline, fetchPage]);
 
   const retryFetch = useCallback(async () => {
     setLoading(true);
-    setError("");
-    await loadFromLocal();
+    await loadFirstPage();
     setLoading(false);
-  }, [loadFromLocal]);
+  }, [loadFirstPage]);
 
   return {
     sales,

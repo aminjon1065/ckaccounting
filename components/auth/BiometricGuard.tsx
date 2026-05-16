@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Image } from "expo-image";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Haptics from "expo-haptics";
 
@@ -328,28 +329,19 @@ function LockScreen({
       style={{ zIndex: 9999 }}
     >
       <SafeAreaView className="flex-1 px-6 py-4">
-        {/* ── Brand row ── */}
-        <View className="flex-row items-center gap-2.5 mb-4">
-          <View className="w-11 h-11 rounded-xl bg-primary-500 items-center justify-center">
-            <Text className="font-heading text-white text-[20px] tracking-tighter">ck</Text>
-          </View>
-          <View>
-            <Text className="font-heading text-[17px] text-slate-900 dark:text-white tracking-tight">
-              CK Accounting
-            </Text>
-            <Text className="text-slate-500 dark:text-zinc-400 text-[12px] mt-px">
-              Защищено биометрией
-            </Text>
-          </View>
-        </View>
+        <View className="h-2" />
 
         {/* ── Centre ── */}
         <View className="flex-1 items-center justify-center px-2">
-          <View className="w-[120px] h-[120px] rounded-[32px] bg-primary-100 dark:bg-primary-900/30 items-center justify-center border-2 border-primary-200 dark:border-primary-900/60">
+          <View className="w-[120px] h-[120px] items-center justify-center">
             {isAuthenticating ? (
               <ActivityIndicator size="large" color="#0a7ea4" />
             ) : (
-              <MaterialIcons name={iconName} size={52} color="#0a7ea4" />
+              <Image
+                source={require("@/assets/images/ckicon.png")}
+                style={{ width: 120, height: 120 }}
+                contentFit="contain"
+              />
             )}
           </View>
 
@@ -549,17 +541,17 @@ function resolveSubtitle(
   capabilities: BiometricCapabilities | null,
   status: BiometricStatus,
 ): string {
-  if (status === "authenticating") return "Follow the prompt on your device";
-  if (status === "failed") return "Verify your identity to access the app";
-  if (!capabilities) return "Verify your identity to continue";
+  if (status === "authenticating") return "Следуйте подсказке на устройстве";
+  if (status === "failed") return "Подтвердите личность, чтобы войти";
+  if (!capabilities) return "Подтвердите личность для продолжения";
 
   const { supportedTypes } = capabilities;
   if (supportedTypes.includes(FACIAL_RECOGNITION) && Platform.OS === "ios")
-    return "Use Face ID to unlock";
+    return "Разблокируйте с помощью Face ID";
   if (supportedTypes.includes(FACIAL_RECOGNITION))
-    return "Use face recognition to unlock";
+    return "Разблокируйте с помощью распознавания лица";
   if (supportedTypes.includes(FINGERPRINT))
-    return "Use fingerprint or passcode to unlock";
-  return "Use your device passcode to unlock";
+    return "Разблокируйте отпечатком или паролем устройства";
+  return "Разблокируйте паролем устройства";
 }
 
