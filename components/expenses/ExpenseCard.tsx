@@ -14,17 +14,27 @@ function fmtShortDate(iso: string): string {
 interface ExpenseCardProps {
   item: Expense;
   onEdit: (item: Expense) => void;
-  onDelete: (id: string) => void;
+  /** Optional — sellers (and other restricted roles) can edit their
+   *  own rows but not delete them. The "Удалить" option is omitted
+   *  from the long-press menu when this is not provided. */
+  onDelete?: (id: string) => void;
 }
 
 function ExpenseCardImpl({ item, onEdit, onDelete }: ExpenseCardProps) {
   const handleEdit = React.useCallback(() => onEdit(item), [onEdit, item]);
   const handleLongPress = React.useCallback(() => {
-    Alert.alert(item.name, "Выберите действие", [
+    const buttons: Parameters<typeof Alert.alert>[2] = [
       { text: "Изменить", onPress: handleEdit },
-      { text: "Удалить", style: "destructive", onPress: () => onDelete(item.id) },
-      { text: "Отмена", style: "cancel" },
-    ]);
+    ];
+    if (onDelete) {
+      buttons.push({
+        text: "Удалить",
+        style: "destructive",
+        onPress: () => onDelete(item.id),
+      });
+    }
+    buttons.push({ text: "Отмена", style: "cancel" });
+    Alert.alert(item.name, "Выберите действие", buttons);
   }, [item, handleEdit, onDelete]);
 
   return (
@@ -53,6 +63,17 @@ function ExpenseCardImpl({ item, onEdit, onDelete }: ExpenseCardProps) {
                 ? `  ·  ${item.unit}`
                 : ""}
           </Text>
+          {item.created_by_name ? (
+            <View className="flex-row items-center gap-1 mt-0.5">
+              <MaterialIcons name="person" size={11} color="#94a3b8" />
+              <Text
+                className="text-[11px] text-slate-500 dark:text-zinc-400"
+                numberOfLines={1}
+              >
+                {item.created_by_name}
+              </Text>
+            </View>
+          ) : null}
         </View>
         <Text
           className="font-heading text-[16px] tracking-tight text-red-500"
@@ -77,6 +98,7 @@ export const ExpenseCard = React.memo(ExpenseCardImpl, (prev, next) => {
     && a.price === b.price
     && a.total === b.total
     && a.note === b.note
+    && a.created_by_name === b.created_by_name
     && a.created_at === b.created_at
   );
 });

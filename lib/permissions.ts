@@ -45,10 +45,15 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "sales:edit":           ["super_admin", "owner"],
   "sales:delete":         ["super_admin", "owner"],
   "sales:return":         ["super_admin", "owner"],
-  "expenses:view":        ["super_admin", "owner"],
-  "expenses:create":      ["super_admin", "owner"],
-  "expenses:edit":        ["super_admin", "owner"],
-  "expenses:delete":      ["super_admin", "owner"],
+  // Sellers fully manage their own expenses — view / create / edit /
+  // delete. Cross-seller mutation is gated server-side by ExpensePolicy
+  // (own-row check on user_id). The UI doesn't have a "which seller
+  // created this" indicator, so this coarse role check is enough —
+  // the server is the source of truth for per-row authorization.
+  "expenses:view":        ["super_admin", "owner", "seller"],
+  "expenses:create":      ["super_admin", "owner", "seller"],
+  "expenses:edit":        ["super_admin", "owner", "seller"],
+  "expenses:delete":      ["super_admin", "owner", "seller"],
   "purchases:view":       ["super_admin", "owner"],
   "purchases:create":     ["super_admin", "owner"],
   "purchases:edit":       ["super_admin", "owner"],

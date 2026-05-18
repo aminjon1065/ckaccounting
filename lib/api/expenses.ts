@@ -8,6 +8,10 @@ export interface Expense {
   name: string;
   /** Free-form unit (шт / кг / литр / услуга …). Optional. */
   unit?: string | null;
+  /** Display name of the seller / owner / admin who recorded the
+   *  expense. Owners use this to attribute spend across staff; falls
+   *  back to null if the original creator's account has been removed. */
+  created_by_name?: string | null;
   quantity: number;
   price: number;
   total: number;

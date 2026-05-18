@@ -105,4 +105,32 @@ export const debtsApi = {
    */
   delete: (id: string, token: string) =>
     request<void>(`/debts/${id}`, { method: "DELETE", token }),
+
+  /**
+   * Edit one transaction. Server recomputes the parent debt's balance
+   * and direction against the resulting history.
+   */
+  updateTransaction: (
+    debtId: string,
+    transactionId: string,
+    payload: { type: "give" | "take" | "repay"; amount: number; note?: string | null; version?: number },
+    token: string,
+    idempotencyKey?: string,
+  ) =>
+    request<Debt>(`/debts/${debtId}/transactions/${transactionId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+      token,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+    }),
+
+  /**
+   * Delete one transaction. Balance and direction recompute from
+   * what's left.
+   */
+  deleteTransaction: (debtId: string, transactionId: string, token: string) =>
+    request<Debt>(`/debts/${debtId}/transactions/${transactionId}`, {
+      method: "DELETE",
+      token,
+    }),
 };

@@ -21,6 +21,7 @@ import { fmt as fmtNumber } from "@/lib/formatters";
 import { useDebtDetail, useDeleteDebt } from "@/lib/queries/debts";
 import { AddTransactionModal } from "@/components/debts/AddTransactionModal";
 import { EditDebtModal } from "@/components/debts/EditDebtModal";
+import { EditTransactionModal } from "@/components/debts/EditTransactionModal";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,11 +51,21 @@ const TX_CONFIG: Record<
 
 // ─── Transaction card ────────────────────────────────────────────────────────
 
-function TxCard({ item }: { item: DebtTransaction }) {
+function TxCard({
+  item,
+  onPress,
+}: {
+  item: DebtTransaction;
+  onPress?: () => void;
+}) {
   const cfg = TX_CONFIG[item.type] ?? TX_CONFIG.give;
+  const Wrapper = onPress ? Pressable : View;
 
   return (
-    <View className="flex-row items-center py-3 gap-3">
+    <Wrapper
+      onPress={onPress}
+      className="flex-row items-center py-3 gap-3 active:opacity-70"
+    >
       <View
         className="w-9 h-9 rounded-[10px] items-center justify-center"
         style={{ backgroundColor: cfg.color + "20" }}
@@ -87,7 +98,10 @@ function TxCard({ item }: { item: DebtTransaction }) {
       >
         {fmt(item.amount)}
       </Text>
-    </View>
+      {onPress && (
+        <MaterialIcons name="chevron-right" size={18} color="#cbd5e1" />
+      )}
+    </Wrapper>
   );
 }
 
@@ -114,6 +128,10 @@ export default function DebtDetailScreen() {
 
   const [txVisible, setTxVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
+  // Tap-to-edit any transaction in the history. Sellers can edit their
+  // own debts' transactions; owners can edit any debt's transactions in
+  // their shop. Backend recomputes the parent debt's balance on save.
+  const [editingTx, setEditingTx] = React.useState<DebtTransaction | null>(null);
 
   const handleDelete = React.useCallback(() => {
     if (!debt) return;
@@ -325,7 +343,10 @@ export default function DebtDetailScreen() {
                     : "px-3.5 border-b border-slate-100 dark:border-zinc-800"
                 }
               >
-                <TxCard item={tx} />
+                <TxCard
+                  item={tx}
+                  onPress={canEditDebt ? () => setEditingTx(tx) : undefined}
+                />
               </View>
             ))}
           </View>
@@ -349,6 +370,16 @@ export default function DebtDetailScreen() {
             });
             router.back();
           }}
+        />
+      )}
+
+      {canEditDebt && token && editingTx && (
+        <EditTransactionModal
+          visible={true}
+          debt={debt}
+          transaction={editingTx}
+          token={token}
+          onClose={() => setEditingTx(null)}
         />
       )}
 

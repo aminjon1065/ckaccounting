@@ -90,11 +90,20 @@ export default function ExpensesScreen() {
     setFormVisible(true);
   }, []);
 
+  const canDeleteExpense = can(user?.role, "expenses:delete");
+
   const renderExpense = React.useCallback(
     ({ item }: { item: Expense }) => (
-      <ExpenseCard item={item} onEdit={handleEditExpense} onDelete={handleDelete} />
+      <ExpenseCard
+        item={item}
+        onEdit={handleEditExpense}
+        // Sellers don't get the delete action — see ApiPermissionMatrix +
+        // ExpensePolicy. Hide the menu entry instead of letting them tap
+        // it and hit a 403.
+        onDelete={canDeleteExpense ? handleDelete : undefined}
+      />
     ),
-    [handleEditExpense, handleDelete],
+    [handleEditExpense, handleDelete, canDeleteExpense],
   );
 
   const monthLabel = React.useMemo(() => {

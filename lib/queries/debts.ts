@@ -248,6 +248,55 @@ export function useUpdateDebt(token: string | null) {
   });
 }
 
+export interface UpdateDebtTransactionArgs {
+  debtId: string;
+  transactionId: string;
+  payload: { type: "give" | "take" | "repay"; amount: number; note?: string | null; version?: number };
+  idempotencyKey?: string;
+}
+
+export function useUpdateDebtTransaction(token: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ debtId, transactionId, payload, idempotencyKey }: UpdateDebtTransactionArgs) =>
+      api.debts.updateTransaction(debtId, transactionId, payload, token!, idempotencyKey),
+    onSuccess: (updatedDebt) => {
+      // Server response is the fully recomputed Debt (balance + direction
+      // walked from the modified transaction set). Trust it as source of
+      // truth — see DebtService::recomputeDebt.
+      queryClient.setQueryData(debtKeys.detail(updatedDebt.id), updatedDebt);
+      patchListsUpsert(queryClient, updatedDebt);
+    },
+    onSettled: (_data, _err, { debtId }) => {
+      queryClient.invalidateQueries({ queryKey: debtKeys.detail(debtId) });
+      queryClient.invalidateQueries({ queryKey: debtKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export interface DeleteDebtTransactionArgs {
+  debtId: string;
+  transactionId: string;
+}
+
+export function useDeleteDebtTransaction(token: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ debtId, transactionId }: DeleteDebtTransactionArgs) =>
+      api.debts.deleteTransaction(debtId, transactionId, token!),
+    onSuccess: (updatedDebt) => {
+      queryClient.setQueryData(debtKeys.detail(updatedDebt.id), updatedDebt);
+      patchListsUpsert(queryClient, updatedDebt);
+    },
+    onSettled: (_data, _err, { debtId }) => {
+      queryClient.invalidateQueries({ queryKey: debtKeys.detail(debtId) });
+      queryClient.invalidateQueries({ queryKey: debtKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export interface DeleteDebtArgs {
   id: string;
 }
