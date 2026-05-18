@@ -40,7 +40,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/ck-splash_screen.png",
-          "imageWidth": 288,
+          "imageWidth": 428,
           "resizeMode": "cover",
           "backgroundColor": "#ffffff",
           "dark": {
@@ -48,7 +48,7 @@
           },
           "android": {
             "image": "./assets/images/ck-splash_screen.png",
-            "imageWidth": 288,
+            "imageWidth": 428,
             "resizeMode": "contain",
             "backgroundColor": "#ffffff"
           },
