@@ -86,6 +86,21 @@ export interface CreateSalePayload {
   items: (ProductSaleItemPayload | ServiceSaleItemPayload)[];
 }
 
+/**
+ * Partial-update payload. Every field is optional — sending `items` is
+ * what triggers a full stock rollback + re-apply on the server (mirrors
+ * SaleService::updateSale). Metadata-only patches (e.g. just `paid`)
+ * leave items + stock untouched.
+ */
+export interface UpdateSalePayload {
+  customer_name?: string | null;
+  payment_type?: "cash" | "card" | "transfer";
+  notes?: string | null;
+  paid?: number;
+  discount?: number;
+  items?: (ProductSaleItemPayload | ServiceSaleItemPayload)[];
+}
+
 export const salesApi = {
   list: async (
     token: string,
@@ -104,6 +119,9 @@ export const salesApi = {
       type?: "product" | "service";
       /** When true, only sales with outstanding debt are returned. */
       debt_only?: boolean;
+      /** Narrow to a specific shop (must be in the user's accessible
+       *  set — server silently ignores otherwise). */
+      shop_id?: number;
     } = {}
   ): Promise<Paginated<Sale>> => {
     const raw = await request<Paginated<Sale>>(
@@ -118,6 +136,7 @@ export const salesApi = {
         payment_type: params.payment_type,
         type: params.type,
         debt_only: params.debt_only ? 1 : undefined,
+        shop_id: params.shop_id,
       })}`,
       { token }
     );
@@ -151,14 +170,16 @@ export const salesApi = {
     }),
 
   /**
-   * Partial metadata update — customer name, payment type, notes, paid
-   * amount. Sending `items` is supported by the backend but the mobile
-   * UI today only exposes the metadata-only shape; leaving `items` out
-   * keeps the sale's line items + stock untouched.
+   * Partial update. Pass only the fields you want to change.
+   *
+   * Sending `items` triggers the server's full rollback path: existing
+   * items get their stock returned, lines are deleted, the new items
+   * are inserted with fresh stock decrements. Without `items`, the
+   * existing line items + stock are left alone.
    */
   update: async (
     id: string,
-    payload: Partial<Pick<Sale, "customer_name" | "payment_type" | "notes" | "paid">>,
+    payload: UpdateSalePayload,
     token: string,
     idempotencyKey?: string
   ): Promise<Sale> => {

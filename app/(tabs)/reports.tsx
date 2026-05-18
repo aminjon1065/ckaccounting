@@ -27,12 +27,6 @@ import { can, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { reportError } from "@/lib/observability/reporter";
-import {
-  computeLocalSalesReport,
-  computeLocalExpensesReport,
-  computeLocalProfitReport,
-  computeLocalStockReport,
-} from "@/lib/cache/offlineReports";
 import { getSalesExportRows, localScope } from "@/lib/db";
 import { ShopPicker } from "@/components/dashboard/ShopPicker";
 
@@ -75,14 +69,25 @@ function dateLabel(value: string) {
 function shortDayLabel(value: string) {
   return dateFromValue(value).toLocaleDateString("ru-RU", { day: "numeric" });
 }
-function reportFileName(tab: ReportTab, dateFrom: string, dateTo: string) {
+function reportFileName(
+  tab: ReportTab,
+  dateFrom: string,
+  dateTo: string,
+  stockMode: "snapshot" | "period" = "snapshot",
+) {
   const names: Record<ReportTab, string> = {
     sales: "sales",
     expenses: "expenses",
     profit: "profit",
     stock: "stock",
   };
-  const period = tab === "stock" ? dateToValue(new Date()) : `${dateFrom}_${dateTo}`;
+  // Snapshot stock reports stamp today's date so the filename is
+  // unambiguous; period reports use the actual A→B range — same as
+  // every other tab.
+  const period =
+    tab === "stock" && stockMode === "snapshot"
+      ? dateToValue(new Date())
+      : `${dateFrom}_${dateTo}`;
   return `ck-report-${names[tab]}-${period}.pdf`;
 }
 
@@ -346,6 +351,41 @@ function SalesReportView({ data }: { data: SalesReport }) {
         </CardContent>
       </Card>
 
+      {/* Returns breakdown — visible only when the server reports any
+          refunds in this window. Keeps the typical "no returns" period
+          uncluttered while making the deduction obvious when it matters. */}
+      {(data.returns_total ?? 0) > 0 && (
+        <>
+          <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
+            Расшифровка выручки
+          </Text>
+          <Card className="mb-3.5">
+            <CardContent className="py-3">
+              <StatRow
+                label="Брутто продаж"
+                value={`${fmt(data.sales_gross ?? 0)} ${DEFAULT_CURRENCY}`}
+              />
+              <StatRow
+                label="Возвраты"
+                value={`− ${fmt(data.returns_total ?? 0)} ${DEFAULT_CURRENCY}`}
+                color="text-amber-500"
+              />
+              <View
+                className="my-2 border-t border-dashed border-slate-200 dark:border-zinc-700"
+                style={{ borderStyle: "dashed" }}
+              />
+              <StatRow
+                label="Чистая выручка"
+                value={`${fmt(data.total_amount)} ${DEFAULT_CURRENCY}`}
+                color="text-emerald-600 dark:text-emerald-400"
+                large
+                last
+              />
+            </CardContent>
+          </Card>
+        </>
+      )}
+
       <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
         Способы оплаты
       </Text>
@@ -407,7 +447,29 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
 
       <Card className="mb-3.5">
         <CardContent className="py-3">
-          <StatRow label="Выручка" value={`${fmt(data.total_sales)} ${DEFAULT_CURRENCY}`} />
+          {/* When returns happened in this window, show the gross→net
+              breakdown so the user can see WHY revenue is lower than
+              the sum of sale receipts. */}
+          {(data.returns_total ?? 0) > 0 ? (
+            <>
+              <StatRow
+                label="Брутто продаж"
+                value={`${fmt(data.sales_gross ?? data.total_sales)} ${DEFAULT_CURRENCY}`}
+              />
+              <StatRow
+                label="Возвраты"
+                value={`− ${fmt(data.returns_total ?? 0)} ${DEFAULT_CURRENCY}`}
+                color="text-amber-500"
+              />
+              <StatRow
+                label="Чистая выручка"
+                value={`${fmt(data.total_sales)} ${DEFAULT_CURRENCY}`}
+                color="text-emerald-600 dark:text-emerald-400"
+              />
+            </>
+          ) : (
+            <StatRow label="Выручка" value={`${fmt(data.total_sales)} ${DEFAULT_CURRENCY}`} />
+          )}
           <StatRow
             label="Себестоимость"
             value={`− ${fmt(data.total_cost)} ${DEFAULT_CURRENCY}`}
@@ -453,47 +515,91 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
 }
 
 function StockReportView({ data }: { data: StockReport }) {
+  const isPeriod = data.mode === "period";
   return (
     <View>
       <HeroSummary
-        label="Стоимость склада"
+        label={isPeriod ? "Остаток на конец периода" : "Стоимость склада"}
         value={fmt(data.total_value)}
-        sub={`${data.total_products} наименований`}
+        sub={
+          isPeriod
+            ? `${data.total_products} наименований · ${data.date_from} → ${data.date_to}`
+            : `${data.total_products} наименований`
+        }
         tone="indigo"
       />
 
-      <Card className="mb-3.5">
-        <CardContent className="py-3">
-          <StatRow label="Всего товаров" value={String(data.total_products)} />
-          <StatRow
-            label="Сумма себестоимости"
-            value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
-            color="text-slate-500"
-          />
-          <StatRow
-            label="Сумма продажи"
-            value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
-            color="text-primary-500"
-            large
-          />
-          <StatRow
-            label="Мало на складе"
-            value={String(data.low_stock)}
-            color="text-amber-500"
-          />
-          <StatRow
-            label="Нет в наличии"
-            value={String(data.out_of_stock)}
-            color="text-red-500"
-            last
-          />
-        </CardContent>
-      </Card>
+      {isPeriod ? (
+        // Period balance card — opening, movements, closing.
+        <Card className="mb-3.5">
+          <CardContent className="py-3">
+            <StatRow
+              label="Было на начало"
+              value={`${fmt(data.opening_qty ?? 0)} шт`}
+              color="text-slate-600 dark:text-slate-300"
+            />
+            <StatRow
+              label="Поступило (закупки)"
+              value={`+ ${fmt(data.incoming_qty ?? 0)} шт`}
+              color="text-emerald-600 dark:text-emerald-400"
+            />
+            <StatRow
+              label="Продано"
+              value={`− ${fmt(data.outgoing_qty ?? 0)} шт`}
+              color="text-red-500"
+            />
+            <StatRow
+              label="Вернули (возвраты)"
+              value={`+ ${fmt(data.returned_qty ?? 0)} шт`}
+              color="text-amber-500"
+            />
+            <View
+              className="my-2 border-t border-dashed border-slate-200 dark:border-zinc-700"
+              style={{ borderStyle: "dashed" }}
+            />
+            <StatRow
+              label="Осталось на конец"
+              value={`${fmt(data.closing_qty ?? 0)} шт`}
+              color="text-primary-500"
+              large
+              last
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="mb-3.5">
+          <CardContent className="py-3">
+            <StatRow label="Всего товаров" value={String(data.total_products)} />
+            <StatRow
+              label="Сумма себестоимости"
+              value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
+              color="text-slate-500"
+            />
+            <StatRow
+              label="Сумма продажи"
+              value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
+              color="text-primary-500"
+              large
+            />
+            <StatRow
+              label="Мало на складе"
+              value={String(data.low_stock)}
+              color="text-amber-500"
+            />
+            <StatRow
+              label="Нет в наличии"
+              value={String(data.out_of_stock)}
+              color="text-red-500"
+              last
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {data.data && data.data.length > 0 && (
         <>
           <Text className="text-[12px] font-semibold uppercase tracking-[0.8px] text-slate-500 dark:text-zinc-400 px-1 mb-2">
-            Топ по стоимости
+            {isPeriod ? "По активности за период" : "Топ по стоимости"}
           </Text>
           <Card className="p-0 overflow-hidden mb-3.5">
             {data.data.slice(0, 15).map((p, idx, arr) => (
@@ -513,15 +619,24 @@ function StockReportView({ data }: { data: StockReport }) {
                   >
                     {p.name}
                   </Text>
-                  <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
-                    Остаток: {p.stock_quantity}
-                  </Text>
+                  {isPeriod ? (
+                    <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
+                      {fmt(p.opening_qty ?? 0)} → {fmt(p.closing_qty ?? p.stock_quantity)}
+                      {(p.incoming_qty ?? 0) > 0 ? `  ·  +${fmt(p.incoming_qty ?? 0)}` : ""}
+                      {(p.outgoing_qty ?? 0) > 0 ? `  ·  −${fmt(p.outgoing_qty ?? 0)}` : ""}
+                      {(p.returned_qty ?? 0) > 0 ? `  ·  +${fmt(p.returned_qty ?? 0)} верн.` : ""}
+                    </Text>
+                  ) : (
+                    <Text className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
+                      Остаток: {p.stock_quantity}{p.unit ? ` ${p.unit}` : ""}
+                    </Text>
+                  )}
                 </View>
                 <Text
                   className="font-heading text-[14px] tracking-tight text-primary-500"
                   style={{ fontVariantLigatures: "none" }}
                 >
-                  {fmt(p.value)}
+                  {isPeriod ? `${fmt(p.closing_qty ?? p.stock_quantity)}` : fmt(p.value)}
                 </Text>
               </View>
             ))}
@@ -638,7 +753,13 @@ export default function ReportsScreen() {
           </style>
         </head><body>
           <h1>${TABS.find((t) => t.key === activeTab)?.label ?? "Отчёт"}</h1>
-          <h3>${activeTab === "stock" ? "На текущий момент" : `За период: ${dateFrom} — ${dateTo}`}</h3>
+          <h3>${
+            activeTab === "stock"
+              ? (currentData as StockReport | null)?.mode === "period"
+                ? `За период: ${dateFrom} — ${dateTo}`
+                : "На текущий момент"
+              : `За период: ${dateFrom} — ${dateTo}`
+          }</h3>
           <div class="card">
       `;
       if (activeTab === "sales") {
@@ -694,6 +815,34 @@ export default function ReportsScreen() {
           <div class="stat-row"><span class="stat-label">Кол-во расходов</span><span class="stat-value">${d.count}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Общая сумма</span><span class="stat-value" style="color:#ef4444">${fmt(d.total_amount)}</span></div>
         </div>`;
+        // Per-row table — columns specified by the user: name, unit,
+        // quantity, price, total, note. `items` is optional on older
+        // servers; guard with `?? []`.
+        const items = d.items ?? [];
+        if (items.length > 0) {
+          html += `<div class="table-title">Расшифровка</div><table><thead><tr>
+            <th>Название</th>
+            <th>Ед. изм.</th>
+            <th class="text-right">Кол-во</th>
+            <th class="text-right">Цена</th>
+            <th class="text-right">Сумма</th>
+            <th>Примечание</th>
+          </tr></thead><tbody>`;
+          items.forEach((it) => {
+            const escapedName = String(it.name ?? "").replace(/</g, "&lt;");
+            const escapedUnit = String(it.unit ?? "—").replace(/</g, "&lt;");
+            const escapedNote = String(it.note ?? "").replace(/</g, "&lt;");
+            html += `<tr>
+              <td>${escapedName}</td>
+              <td>${escapedUnit}</td>
+              <td class="text-right">${fmt(it.quantity)}</td>
+              <td class="text-right">${fmt(it.price)}</td>
+              <td class="text-right"><b>${fmt(it.total)}</b></td>
+              <td>${escapedNote}</td>
+            </tr>`;
+          });
+          html += `</tbody></table>`;
+        }
       } else if (activeTab === "profit") {
         const d = currentData as ProfitReport;
         const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#0f172a";
@@ -705,39 +854,82 @@ export default function ReportsScreen() {
         </div>`;
       } else {
         const d = currentData as StockReport;
-        html += `
+        const periodMode = d.mode === "period";
+        if (periodMode) {
+          html += `
+          <div class="stat-row"><span class="stat-label">Период</span><span class="stat-value">${d.date_from} → ${d.date_to}</span></div>
+          <div class="stat-row"><span class="stat-label">Было на начало</span><span class="stat-value">${fmt(d.opening_qty ?? 0)} шт</span></div>
+          <div class="stat-row"><span class="stat-label">Поступило</span><span class="stat-value" style="color:#16a34a">+ ${fmt(d.incoming_qty ?? 0)} шт</span></div>
+          <div class="stat-row"><span class="stat-label">Продано</span><span class="stat-value" style="color:#ef4444">− ${fmt(d.outgoing_qty ?? 0)} шт</span></div>
+          <div class="stat-row"><span class="stat-label">Вернули</span><span class="stat-value" style="color:#f59e0b">+ ${fmt(d.returned_qty ?? 0)} шт</span></div>
+          <div class="stat-row" style="border:0"><span class="stat-label">Осталось на конец</span><span class="stat-value" style="color:#0a7ea4;font-size:16px">${fmt(d.closing_qty ?? 0)} шт</span></div>
+        </div>`;
+        } else {
+          html += `
           <div class="stat-row"><span class="stat-label">Всего товаров</span><span class="stat-value">${d.total_products}</span></div>
           <div class="stat-row"><span class="stat-label">Сумма себестоимости</span><span class="stat-value" style="color:#64748b">${fmt(d.total_cost_value)}</span></div>
           <div class="stat-row"><span class="stat-label">Сумма продажи</span><span class="stat-value" style="color:#0a7ea4">${fmt(d.total_value)}</span></div>
           <div class="stat-row"><span class="stat-label">Мало на складе</span><span class="stat-value" style="color:#f59e0b">${d.low_stock}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Нет в наличии</span><span class="stat-value" style="color:#ef4444">${d.out_of_stock}</span></div>
         </div>`;
+        }
         if (d.data?.length) {
-          html += `<div class="table-title">Товары</div><table><thead><tr>
-            <th>Товар</th>
-            <th class="text-right">Остаток</th>
-            <th class="text-right">Себест.</th>
-            <th class="text-right">Цена</th>
-            <th class="text-right">Сумма себест.</th>
-            <th class="text-right">Сумма продажи</th>
-          </tr></thead><tbody>`;
-          d.data.forEach((it) => {
-            html += `<tr>
-              <td>${it.name}</td>
-              <td class="text-right">${fmt(it.stock_quantity)}</td>
-              <td class="text-right">${fmt(it.cost_price)}</td>
-              <td class="text-right">${fmt(it.sale_price)}</td>
-              <td class="text-right">${fmt(it.cost_value)}</td>
-              <td class="text-right"><b>${fmt(it.value)}</b></td>
-            </tr>`;
-          });
-          html += `</tbody></table>`;
+          if (periodMode) {
+            // Period balance table — opening / in / out / returned / closing per row.
+            html += `<div class="table-title">Движение за период</div><table><thead><tr>
+              <th>Товар</th>
+              <th>Ед.</th>
+              <th class="text-right">Было</th>
+              <th class="text-right">Пришло</th>
+              <th class="text-right">Ушло</th>
+              <th class="text-right">Возврат</th>
+              <th class="text-right">Остаток</th>
+            </tr></thead><tbody>`;
+            d.data.forEach((it) => {
+              const esc = (s: string) => s.replace(/</g, "&lt;");
+              html += `<tr>
+                <td>${esc(it.name)}</td>
+                <td>${esc(it.unit ?? "—")}</td>
+                <td class="text-right">${fmt(it.opening_qty ?? 0)}</td>
+                <td class="text-right" style="color:#16a34a">${fmt(it.incoming_qty ?? 0)}</td>
+                <td class="text-right" style="color:#ef4444">${fmt(it.outgoing_qty ?? 0)}</td>
+                <td class="text-right" style="color:#f59e0b">${fmt(it.returned_qty ?? 0)}</td>
+                <td class="text-right"><b>${fmt(it.closing_qty ?? it.stock_quantity)}</b></td>
+              </tr>`;
+            });
+            html += `</tbody></table>`;
+          } else {
+            html += `<div class="table-title">Товары</div><table><thead><tr>
+              <th>Товар</th>
+              <th class="text-right">Остаток</th>
+              <th class="text-right">Себест.</th>
+              <th class="text-right">Цена</th>
+              <th class="text-right">Сумма себест.</th>
+              <th class="text-right">Сумма продажи</th>
+            </tr></thead><tbody>`;
+            d.data.forEach((it) => {
+              html += `<tr>
+                <td>${it.name}</td>
+                <td class="text-right">${fmt(it.stock_quantity)}</td>
+                <td class="text-right">${fmt(it.cost_price)}</td>
+                <td class="text-right">${fmt(it.sale_price)}</td>
+                <td class="text-right">${fmt(it.cost_value)}</td>
+                <td class="text-right"><b>${fmt(it.value)}</b></td>
+              </tr>`;
+            });
+            html += `</tbody></table>`;
+          }
         }
       }
       html += `</body></html>`;
 
       const { uri } = await Print.printToFileAsync({ html });
-      const fileName = reportFileName(activeTab, dateFrom, dateTo);
+      const fileName = reportFileName(
+        activeTab,
+        dateFrom,
+        dateTo,
+        (currentData as StockReport | null)?.mode === "period" ? "period" : "snapshot",
+      );
       const generatedPdf = new File(uri);
       const savedPdf = new File(Paths.document, fileName);
       if (savedPdf.exists) savedPdf.delete();
@@ -769,62 +961,45 @@ export default function ReportsScreen() {
       date_to: dateTo,
       ...(activeShopId != null ? { shop_id: activeShopId } : {}),
     };
-    const range = { dateFrom, dateTo };
-
-    const scope = localScope(user, activeShopId);
-    const computeLocal = async () => {
-      switch (activeTab) {
-        case "sales":
-          setSalesReport(await computeLocalSalesReport(range, scope));
-          break;
-        case "expenses":
-          setExpensesReport(await computeLocalExpensesReport(range, scope));
-          break;
-        case "profit":
-          setProfitReport(await computeLocalProfitReport(range, scope));
-          break;
-        case "stock":
-          setStockReport(await computeLocalStockReport(scope));
-          break;
-      }
-    };
+    // Reports are server-computed only. The legacy local-SQLite fallback
+    // is gone because the read-side cache it depended on isn't populated
+    // any more (React Query keeps everything in memory). When the device
+    // is offline we surface a clear error rather than silently rendering
+    // an empty stale report.
+    if (!isOnline) {
+      setError("Отчёты доступны только в онлайн-режиме.");
+      setLoading(false);
+      return;
+    }
 
     try {
-      if (isOnline) {
-        switch (activeTab) {
-          case "sales":
-            setSalesReport(await api.reports.sales(token, params));
-            break;
-          case "expenses":
-            setExpensesReport(await api.reports.expenses(token, params));
-            break;
-          case "profit":
-            setProfitReport(await api.reports.profit(token, params));
-            break;
-          case "stock":
-            setStockReport(await api.reports.stock(token, params));
-            break;
-        }
-      } else {
-        await computeLocal();
+      switch (activeTab) {
+        case "sales":
+          setSalesReport(await api.reports.sales(token, params));
+          break;
+        case "expenses":
+          setExpensesReport(await api.reports.expenses(token, params));
+          break;
+        case "profit":
+          setProfitReport(await api.reports.profit(token, params));
+          break;
+        case "stock":
+          setStockReport(await api.reports.stock(token, params));
+          break;
       }
     } catch (e: any) {
       const isNetworkError =
         (e instanceof ApiError && e.status === 0)
         || e?.message?.includes("Network request failed");
-      if (isNetworkError) {
-        try {
-          await computeLocal();
-        } catch {
-          setError("Нет данных для отображения в офлайн режиме.");
-        }
-      } else {
-        setError(e?.message ?? "Не удалось загрузить отчёт.");
-      }
+      setError(
+        isNetworkError
+          ? "Нет соединения. Откройте отчёт, когда восстановится интернет."
+          : e?.message ?? "Не удалось загрузить отчёт.",
+      );
     } finally {
       setLoading(false);
     }
-  }, [activeTab, dateFrom, dateTo, token, isOnline, user, activeShopId]);
+  }, [activeTab, dateFrom, dateTo, token, isOnline]);
 
   // Reset cached reports when any of the inputs that affect the result
   // changes — period or active shop. Without `activeShopId` here, the
@@ -943,40 +1118,40 @@ export default function ReportsScreen() {
         </ScrollView>
       </View>
 
-      {/* Date filter */}
-      {activeTab !== "stock" && (
-        <View className="bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800">
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 6 }}
-          >
-            {PERIODS.map((p) => {
-              const active = dateFrom === p.from && dateTo === p.to;
-              return (
-                <Pressable
-                  key={p.label}
-                  onPress={() => {
-                    setDateFrom(p.from);
-                    setDateTo(p.to);
-                  }}
-                  className={`px-3 py-1 rounded-full active:opacity-80 ${
-                    active ? "bg-slate-900 dark:bg-white" : "bg-slate-100 dark:bg-zinc-800"
+      {/* Date filter — visible on every tab. On Stock the dates flip the
+          report into "period balance" mode (opening → closing reconstruction);
+          omit them to see the live snapshot. */}
+      <View className="bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 6 }}
+        >
+          {PERIODS.map((p) => {
+            const active = dateFrom === p.from && dateTo === p.to;
+            return (
+              <Pressable
+                key={p.label}
+                onPress={() => {
+                  setDateFrom(p.from);
+                  setDateTo(p.to);
+                }}
+                className={`px-3 py-1 rounded-full active:opacity-80 ${
+                  active ? "bg-slate-900 dark:bg-white" : "bg-slate-100 dark:bg-zinc-800"
+                }`}
+              >
+                <Text
+                  className={`text-[12px] font-semibold ${
+                    active ? "text-white dark:text-slate-900" : "text-slate-700 dark:text-zinc-300"
                   }`}
                 >
-                  <Text
-                    className={`text-[12px] font-semibold ${
-                      active ? "text-white dark:text-slate-900" : "text-slate-700 dark:text-zinc-300"
-                    }`}
-                  >
-                    {p.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
+                  {p.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
 
       {/* Content */}
       <ScrollView
@@ -984,53 +1159,51 @@ export default function ReportsScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Custom date picker row */}
-        {activeTab !== "stock" && (
-          <View className="flex-row items-end gap-2 mb-3">
-            <View className="flex-1">
-              <Text className="text-[11px] font-semibold uppercase tracking-[0.4px] text-slate-500 dark:text-zinc-400 mb-1">
-                С
-              </Text>
-              <Pressable
-                onPress={() => setPickerTarget("from")}
-                className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 active:opacity-70"
-              >
-                <Text className="text-[13px] font-medium text-slate-900 dark:text-white">
-                  {dateLabel(dateFrom)}
-                </Text>
-                <MaterialIcons name="calendar-today" size={15} color="#94a3b8" />
-              </Pressable>
-            </View>
-            <View className="flex-1">
-              <Text className="text-[11px] font-semibold uppercase tracking-[0.4px] text-slate-500 dark:text-zinc-400 mb-1">
-                По
-              </Text>
-              <Pressable
-                onPress={() => setPickerTarget("to")}
-                className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 active:opacity-70"
-              >
-                <Text className="text-[13px] font-medium text-slate-900 dark:text-white">
-                  {dateLabel(dateTo)}
-                </Text>
-                <MaterialIcons name="calendar-today" size={15} color="#94a3b8" />
-              </Pressable>
-            </View>
+        {/* Custom date picker row — visible on every tab. */}
+        <View className="flex-row items-end gap-2 mb-3">
+          <View className="flex-1">
+            <Text className="text-[11px] font-semibold uppercase tracking-[0.4px] text-slate-500 dark:text-zinc-400 mb-1">
+              С
+            </Text>
             <Pressable
-              onPress={loadReport}
-              className="bg-primary-500 rounded-xl px-4 py-2.5 active:opacity-80"
+              onPress={() => setPickerTarget("from")}
+              className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 active:opacity-70"
             >
-              <Text className="text-[12px] font-semibold text-white">Применить</Text>
+              <Text className="text-[13px] font-medium text-slate-900 dark:text-white">
+                {dateLabel(dateFrom)}
+              </Text>
+              <MaterialIcons name="calendar-today" size={15} color="#94a3b8" />
             </Pressable>
-            {pickerTarget && (
-              <DateTimePicker
-                value={dateFromValue(pickerTarget === "from" ? dateFrom : dateTo)}
-                mode="date"
-                display={Platform.OS === "ios" ? "spinner" : "default"}
-                onChange={handleDatePickerChange}
-              />
-            )}
           </View>
-        )}
+          <View className="flex-1">
+            <Text className="text-[11px] font-semibold uppercase tracking-[0.4px] text-slate-500 dark:text-zinc-400 mb-1">
+              По
+            </Text>
+            <Pressable
+              onPress={() => setPickerTarget("to")}
+              className="flex-row items-center justify-between bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 active:opacity-70"
+            >
+              <Text className="text-[13px] font-medium text-slate-900 dark:text-white">
+                {dateLabel(dateTo)}
+              </Text>
+              <MaterialIcons name="calendar-today" size={15} color="#94a3b8" />
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={loadReport}
+            className="bg-primary-500 rounded-xl px-4 py-2.5 active:opacity-80"
+          >
+            <Text className="text-[12px] font-semibold text-white">Применить</Text>
+          </Pressable>
+          {pickerTarget && (
+            <DateTimePicker
+              value={dateFromValue(pickerTarget === "from" ? dateFrom : dateTo)}
+              mode="date"
+              display={Platform.OS === "ios" ? "spinner" : "default"}
+              onChange={handleDatePickerChange}
+            />
+          )}
+        </View>
 
         {/* Error */}
         {!!error && (

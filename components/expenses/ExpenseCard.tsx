@@ -47,7 +47,11 @@ function ExpenseCardImpl({ item, onEdit, onDelete }: ExpenseCardProps) {
           <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5" numberOfLines={1}>
             {item.note ? `${item.note} · ` : ""}
             {fmtShortDate(item.created_at)}
-            {item.quantity > 1 ? `  ·  ${item.quantity} × ${fmt(item.price)}` : ""}
+            {item.quantity > 1
+              ? `  ·  ${item.quantity}${item.unit ? ` ${item.unit}` : ""} × ${fmt(item.price)}`
+              : item.unit
+                ? `  ·  ${item.unit}`
+                : ""}
           </Text>
         </View>
         <Text
@@ -68,6 +72,7 @@ export const ExpenseCard = React.memo(ExpenseCardImpl, (prev, next) => {
   return (
     a.id === b.id
     && a.name === b.name
+    && a.unit === b.unit
     && a.quantity === b.quantity
     && a.price === b.price
     && a.total === b.total

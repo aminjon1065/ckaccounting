@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   Alert,
@@ -27,7 +27,13 @@ import { api, ApiError, type AppUser, type CreateUserPayload, type Shop } from "
 import { can, ROLE_LABELS } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
-import { useUsers } from "@/hooks/useUsers";
+import {
+  useCreateUser,
+  useDeleteUser,
+  useResetPin,
+  useUpdateUser,
+  useUserList,
+} from "@/lib/queries/users";
 import { reportError } from "@/lib/observability/reporter";
 import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 
@@ -126,7 +132,6 @@ const UserCard = React.memo(function UserCard({
 function CreateUserModal({
   visible,
   onClose,
-  onCreated,
   token,
   isSuperAdmin,
   showToast,
@@ -136,7 +141,6 @@ function CreateUserModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onCreated: (u: AppUser) => void;
   token: string;
   isSuperAdmin: boolean;
   showToast: ReturnType<typeof useToast>["showToast"];
@@ -154,7 +158,8 @@ function CreateUserModal({
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const createMutation = useCreateUser(token);
+  const submitting = createMutation.isPending;
 
   // super_admin can create owners (no shop) or sellers (with shop). Owners
   // can only create sellers in their own shops.
@@ -219,7 +224,6 @@ function CreateUserModal({
       }
     }
 
-    setSubmitting(true);
     const payload: CreateUserPayload = {
       name: name.trim(),
       email: email.trim().toLowerCase(),
@@ -228,8 +232,7 @@ function CreateUserModal({
     };
     if (resolvedShopId !== null) payload.shop_id = resolvedShopId;
     try {
-      const created = await api.users.create(payload, token);
-      onCreated(created);
+      await createMutation.mutateAsync({ payload });
       showToast({ message: "Сотрудник добавлен", variant: "success" });
       onClose();
     } catch (e) {
@@ -241,8 +244,6 @@ function CreateUserModal({
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -363,7 +364,6 @@ function EditUserModal({
   visible,
   editingUser,
   onClose,
-  onSaved,
   onMissing,
   token,
   isSuperAdmin,
@@ -374,8 +374,7 @@ function EditUserModal({
   visible: boolean;
   editingUser: AppUser | null;
   onClose: () => void;
-  onSaved: (u: AppUser) => void;
-  /** Server reported the user no longer exists (404) — caller should evict locally. */
+  /** Server reported the user no longer exists (404). */
   onMissing: (id: number) => void;
   token: string;
   isSuperAdmin: boolean;
@@ -391,7 +390,8 @@ function EditUserModal({
   const [shopId, setShopId] = React.useState<string>("");
   const [shops, setShops] = React.useState<Shop[]>([]);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const updateMutation = useUpdateUser(token);
+  const submitting = updateMutation.isPending;
 
   const roleOptions = isSuperAdmin
     ? [
@@ -435,18 +435,15 @@ function EditUserModal({
       setError("Пароль должен быть не менее 8 символов.");
       return;
     }
-    setSubmitting(true);
     if (shopPickerVisible && !shopId) {
       setError("Выберите магазин.");
-      setSubmitting(false);
       return;
     }
     const payload: Partial<CreateUserPayload> = { name: name.trim(), role };
     if (shopPickerVisible && shopId) payload.shop_id = parseInt(shopId, 10);
     if (password) payload.password = password;
     try {
-      const updated = await api.users.update(editingUser!.id, payload, token);
-      onSaved(updated);
+      await updateMutation.mutateAsync({ id: editingUser!.id, payload });
       showToast({ message: "Сотрудник обновлён", variant: "success" });
       onClose();
     } catch (e) {
@@ -456,19 +453,11 @@ function EditUserModal({
           variant: "error",
         });
       } else if (e instanceof ApiError && e.status === 404) {
-        // User was deleted on the server while the modal was still open.
-        // Tell the parent to evict the local row + close.
         onMissing(editingUser!.id);
-        showToast({
-          message: "Сотрудник был удалён. Список обновлён.",
-          variant: "error",
-        });
         onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -573,28 +562,16 @@ export default function UsersScreen() {
   const { showToast } = useToast();
   const router = useRouter();
 
-  const {
-    users,
-    setUsers,
-    loading,
-    refreshing,
-    handleRefresh,
-  } = useUsers({ token });
+  const query = useUserList(token);
+  const deleteMutation = useDeleteUser(token);
+  const resetPinMutation = useResetPin(token);
+  const users = React.useMemo<AppUser[]>(() => query.data ?? [], [query.data]);
+  const loading = query.isPending && users.length === 0;
+  const refreshing = query.isRefetching;
 
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingUser, setEditingUser] = React.useState<AppUser | null>(null);
-
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
-  );
 
   const hasAccess = can(user?.role, "users:view");
 
@@ -621,14 +598,13 @@ export default function UsersScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              await api.users.resetPin(id, token!);
+              await resetPinMutation.mutateAsync({ id });
               showToast({ message: "PIN сброшен. Сотрудник задаст новый при следующем входе.", variant: "success" });
             } catch (e) {
               if (e instanceof ApiError && e.status === 0) {
                 showToast({ message: "Нет сети. Сброс PIN требует подключения к интернету.", variant: "warning" });
               } else if (e instanceof ApiError && e.status === 404) {
-                setUsers((prev) => prev.filter((u) => u.id !== id));
-                showToast({ message: "Сотрудник был удалён. Список обновлён.", variant: "error" });
+                showToast({ message: "Сотрудник был удалён.", variant: "error" });
               } else {
                 showToast({ message: e instanceof ApiError ? e.message : "Не удалось сбросить PIN.", variant: "error" });
               }
@@ -650,8 +626,7 @@ export default function UsersScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              await api.users.delete(id, token!);
-              setUsers((prev) => prev.filter((u) => u.id !== id));
+              await deleteMutation.mutateAsync({ id });
               showToast({ message: "Сотрудник удалён", variant: "success" });
             } catch (e) {
               if (e instanceof ApiError && e.status === 0) {
@@ -660,11 +635,8 @@ export default function UsersScreen() {
                   variant: "error",
                 });
               } else if (e instanceof ApiError && e.status === 404) {
-                // Already gone server-side. Drop the local row to keep the
-                // list aligned with the server.
-                setUsers((prev) => prev.filter((u) => u.id !== id));
                 showToast({
-                  message: "Сотрудник уже был удалён. Список обновлён.",
+                  message: "Сотрудник уже был удалён.",
                   variant: "success",
                 });
               } else {
@@ -712,7 +684,7 @@ export default function UsersScreen() {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           refreshing={refreshing}
-          onRefresh={handleRefresh}
+          onRefresh={() => query.refetch().catch(() => {})}
           ListEmptyComponent={
             <View className="items-center justify-center py-20">
               <MaterialIcons name="group" size={48} color="#94a3b8" />
@@ -744,10 +716,6 @@ export default function UsersScreen() {
       <CreateUserModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(u) => {
-          setUsers((prev) => [u, ...prev]);
-          handleRefresh();
-        }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}
         showToast={showToast}
@@ -760,12 +728,13 @@ export default function UsersScreen() {
         visible={editVisible}
         editingUser={editingUser}
         onClose={() => setEditVisible(false)}
-        onSaved={(updated) => {
-          setUsers((prev) => prev.map((u) => u.id === updated.id ? updated : u));
-          handleRefresh();
-        }}
-        onMissing={(id) => {
-          setUsers((prev) => prev.filter((u) => u.id !== id));
+        onMissing={() => {
+          // Mutation already rolled back optimistic state; the list will
+          // refetch on the next focus / pull-to-refresh.
+          showToast({
+            message: "Сотрудник был удалён.",
+            variant: "error",
+          });
         }}
         token={token!}
         isSuperAdmin={user?.role === "super_admin"}

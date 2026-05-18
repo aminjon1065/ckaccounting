@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -15,7 +15,8 @@ import { type Purchase } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { CreatePurchaseModal } from "@/components/purchases/CreatePurchaseModal";
 import { useAuth } from "@/store/auth";
-import { usePurchases } from "@/hooks/usePurchases";
+import { usePurchaseList } from "@/lib/queries/purchases";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { fmt } from "@/lib/formatters";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 
@@ -39,9 +40,6 @@ const PurchaseCard = React.memo(function PurchaseCard({
   item: Purchase;
   onPress: () => void;
 }) {
-  // Backend doesn't surface `paid`/`debt` on Purchase yet. We keep the card
-  // flexible: when those fields are present we render the badge, otherwise
-  // we fall back to a paid pill.
   const paid = (item as any).paid as number | undefined;
   const debt = paid != null ? Math.max(0, item.total - paid) : 0;
   const hasDebt = debt > 0;
@@ -88,33 +86,30 @@ const PurchaseCard = React.memo(function PurchaseCard({
 export default function PurchasesScreen() {
   const { token, user } = useAuth();
   const router = useRouter();
+  const isOnline = useIsOnline();
 
+  const query = usePurchaseList(token);
   const {
-    purchases,
-    setPurchases,
-    loading,
-    refreshing,
-    loadingMore,
+    data,
     error,
-    handleRefresh,
-    handleLoadMore,
-    retryFetch,
-  } = usePurchases({ token, user });
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
+
+  // Flatten paged data — TanStack hands us a list of pages, the FlatList
+  // wants one continuous array.
+  const purchases = React.useMemo<Purchase[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.data),
+    [data],
+  );
 
   const [createVisible, setCreateVisible] = React.useState(false);
 
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
-  );
-
-  // Period stats — month label + total, total outstanding debt across all rows.
   const stats = React.useMemo(() => {
     const total = purchases.reduce((s, p) => s + p.total, 0);
     const debt = purchases.reduce((s, p) => {
@@ -123,6 +118,16 @@ export default function PurchasesScreen() {
     }, 0);
     return { total, debt, count: purchases.length };
   }, [purchases]);
+
+  const handleRefresh = React.useCallback(() => {
+    refetch().catch(() => {});
+  }, [refetch]);
+
+  const handleLoadMore = React.useCallback(() => {
+    if (hasNextPage && !isFetchingNextPage) {
+      fetchNextPage().catch(() => {});
+    }
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (!can(user?.role, "purchases:view")) {
     return (
@@ -137,6 +142,16 @@ export default function PurchasesScreen() {
       </SafeAreaView>
     );
   }
+
+  // Show the skeleton only on the first load (no cached data yet). A
+  // background refetch — pull-to-refresh, reconnect, post-mutation —
+  // shows the existing list with `isRefetching` driving the spinner.
+  const showSkeleton = isPending && purchases.length === 0;
+
+  // Surface a hard error only when we have nothing to show. With cached
+  // data we keep rendering the list and let the spinner indicate work
+  // in progress — way nicer on flaky connections.
+  const showError = !!error && purchases.length === 0;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -154,13 +169,18 @@ export default function PurchasesScreen() {
             Закупки
           </Text>
           <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
-            История прихода товара
+            {isFetching && !isRefetching ? "Загрузка…" : "История прихода товара"}
           </Text>
         </View>
+        {/* Subtle background-fetch indicator: shows the user "we're working"
+            without taking over the screen during a refresh. */}
+        {isFetching && !isRefetching && purchases.length > 0 && (
+          <ActivityIndicator size="small" color="#94a3b8" />
+        )}
       </View>
 
       {/* List */}
-      {loading ? (
+      {showSkeleton ? (
         <View className="flex-1 px-4 pt-2">
           {[1, 2, 3, 4].map((i) => (
             <View key={i} className="mb-2.5">
@@ -168,17 +188,23 @@ export default function PurchasesScreen() {
             </View>
           ))}
         </View>
-      ) : error ? (
+      ) : showError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
           <Text variant="h5" className="mt-4 text-center">
-            Ошибка загрузки
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
           </Text>
           <Text variant="muted" className="mt-1 text-center">
-            {error}
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Список обновится автоматически, когда вернётся интернет."}
           </Text>
           <TouchableOpacity
-            onPress={retryFetch}
+            onPress={handleRefresh}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -190,7 +216,7 @@ export default function PurchasesScreen() {
           data={purchases}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-          refreshing={refreshing}
+          refreshing={isRefetching}
           onRefresh={handleRefresh}
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.3}
@@ -225,7 +251,7 @@ export default function PurchasesScreen() {
             />
           }
           ListFooterComponent={
-            loadingMore ? (
+            isFetchingNextPage ? (
               <View className="flex-row items-center justify-center gap-2 py-4">
                 <ActivityIndicator size="small" color="#0a7ea4" />
                 <Text variant="muted">Загружается история…</Text>
@@ -245,10 +271,6 @@ export default function PurchasesScreen() {
       <CreatePurchaseModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(p) => {
-          setPurchases((prev) => [p, ...prev]);
-          handleRefresh();
-        }}
         token={token!}
       />
     </SafeAreaView>

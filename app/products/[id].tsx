@@ -8,11 +8,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Badge, Card, CardContent, Skeleton, Text } from "@/components/ui";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import { api, ApiError, resolveBackendAssetUrl, type Product } from "@/lib/api";
-import { deleteLocalProduct, getLocalProductById } from "@/lib/db";
+import { ApiError, resolveBackendAssetUrl, type Product } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
+import { useDeleteProduct, useProductDetail } from "@/lib/queries/products";
 import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -117,13 +118,19 @@ export default function ProductDetailScreen() {
   const canEdit = can(user?.role, "products:edit");
   const canDelete = can(user?.role, "products:delete");
   const router = useRouter();
+  const isOnline = useIsOnline();
 
-  const [product, setProduct] = React.useState<Product | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState("");
+  const detailQuery = useProductDetail(id, token);
+  const deleteMutation = useDeleteProduct(token);
+
+  const product = detailQuery.data ?? null;
+  const loading = detailQuery.isPending;
+  const error = detailQuery.error;
+  const deleting = deleteMutation.isPending;
+  const isFetchingInBackground = detailQuery.isFetching && !loading;
+
   const [imageFailed, setImageFailed] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
-  const [deleting, setDeleting] = React.useState(false);
   const imageUri = resolveBackendAssetUrl(product?.photo_url ?? product?.image_url ?? null);
   const imageSource = React.useMemo<ImageSource | undefined>(() => {
     if (!imageUri) return undefined;
@@ -143,42 +150,8 @@ export default function ProductDetailScreen() {
     setImageFailed(false);
   }, [imageUri]);
 
-  const fetchProduct = React.useCallback(async () => {
-    if (!token || !id) return;
-    setError("");
-    try {
-      const p = await api.products.get(id, token);
-      setProduct(p);
-    } catch (e: unknown) {
-      if (e instanceof ApiError && e.status === 404) {
-        deleteLocalProduct(id).catch(() => {});
-        setProduct(null);
-        setError("Товар был удалён.");
-        return;
-      }
-      if (e instanceof ApiError && e.status === 0) {
-        try {
-          const local = await getLocalProductById(id);
-          if (local) {
-            setProduct(local);
-            return;
-          }
-        } catch {
-          // fall through
-        }
-        setError("Нет сети. Данные недоступны.");
-      } else {
-        setError(e instanceof Error ? e.message : "Не удалось загрузить товар.");
-      }
-    }
-  }, [id, token]);
-
-  React.useEffect(() => {
-    fetchProduct().finally(() => setLoading(false));
-  }, [fetchProduct]);
-
   const handleDelete = React.useCallback(() => {
-    if (!product || !token) return;
+    if (!product) return;
     Alert.alert(
       "Удалить товар",
       `${product.name} будет удалён безвозвратно.`,
@@ -188,10 +161,11 @@ export default function ProductDetailScreen() {
           text: "Удалить",
           style: "destructive",
           onPress: async () => {
-            setDeleting(true);
             try {
-              await api.products.delete(product.id, token, `prod-delete-${product.id}`);
-              deleteLocalProduct(product.id).catch(() => {});
+              await deleteMutation.mutateAsync({
+                id: product.id,
+                idempotencyKey: `prod-delete-${product.id}`,
+              });
               showToast({ message: "Товар удалён", variant: "success" });
               router.back();
             } catch (e: unknown) {
@@ -201,20 +175,17 @@ export default function ProductDetailScreen() {
                   variant: "error",
                 });
               } else if (e instanceof ApiError && e.status === 404) {
-                deleteLocalProduct(product.id).catch(() => {});
                 showToast({ message: "Товар уже был удалён.", variant: "success" });
                 router.back();
               } else {
                 showToast({ message: "Не удалось удалить товар.", variant: "error" });
               }
-            } finally {
-              setDeleting(false);
             }
           },
         },
       ],
     );
-  }, [product, token, router, showToast]);
+  }, [product, deleteMutation, router, showToast]);
 
   // ── Loading ──
   if (loading) {
@@ -240,13 +211,29 @@ export default function ProductDetailScreen() {
   }
 
   // ── Error / not found ──
-  if (error || !product) {
+  const is404 = error instanceof ApiError && error.status === 404;
+  if (!product) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
-        <MaterialIcons name="inventory-2" size={48} color="#94a3b8" />
+        <MaterialIcons
+          name={is404 ? "inventory-2" : isOnline ? "error-outline" : "cloud-off"}
+          size={48}
+          color="#94a3b8"
+        />
         <Text variant="h5" className="mt-4 text-center">
-          {error || "Товар не найден"}
+          {is404
+            ? "Товар не найден"
+            : isOnline
+              ? "Не удалось загрузить товар"
+              : "Нет соединения"}
         </Text>
+        {!is404 && (
+          <Text variant="muted" className="mt-1 text-center">
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Откройте экран, когда восстановится интернет."}
+          </Text>
+        )}
         <View className="flex-row gap-3 mt-4">
           <TouchableOpacity
             onPress={() => router.back()}
@@ -256,12 +243,9 @@ export default function ProductDetailScreen() {
               Назад
             </Text>
           </TouchableOpacity>
-          {!!error && (
+          {!is404 && (
             <TouchableOpacity
-              onPress={() => {
-                setLoading(true);
-                fetchProduct().finally(() => setLoading(false));
-              }}
+              onPress={() => detailQuery.refetch()}
               className="px-5 py-2.5 rounded-xl bg-primary-500 flex-row items-center gap-2"
             >
               <MaterialIcons name="refresh" size={16} color="#fff" />
@@ -292,9 +276,14 @@ export default function ProductDetailScreen() {
         >
           <MaterialIcons name="arrow-back" size={20} color="#475569" />
         </Pressable>
-        <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white flex-1">
-          Товар
-        </Text>
+        <View className="flex-1 flex-row items-center gap-2">
+          <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
+            Товар
+          </Text>
+          {isFetchingInBackground && (
+            <Text variant="muted" className="text-xs">Обновляется…</Text>
+          )}
+        </View>
         <Pressable
           onPress={() =>
             router.push({
@@ -486,8 +475,9 @@ export default function ProductDetailScreen() {
           editing={product}
           token={token}
           onClose={() => setEditVisible(false)}
-          onSaved={(saved) => {
-            setProduct(saved);
+          onSaved={() => {
+            // Mutation already updated the detail + list caches; nothing
+            // to do here beyond closing the modal.
             setEditVisible(false);
           }}
         />

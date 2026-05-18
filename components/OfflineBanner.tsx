@@ -3,8 +3,8 @@ import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text } from "@/components/ui";
+import { useIsFetching } from "@tanstack/react-query";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
-import { useIsSyncing } from "@/lib/cache/CacheProvider";
 
 /**
  * Top-of-screen connectivity / cache-refresh status banner.
@@ -19,11 +19,14 @@ import { useIsSyncing } from "@/lib/cache/CacheProvider";
  */
 export function OfflineBanner() {
   const isOnline = useIsOnline();
-  const isSyncing = useIsSyncing();
+  // `useIsFetching()` from React Query returns the number of currently
+  // running queries across the whole app. Any non-zero count means
+  // *something* is being pulled in the background.
+  const inflightCount = useIsFetching();
   const insets = useSafeAreaInsets();
 
   const offline = !isOnline;
-  const syncing = !offline && isSyncing;
+  const syncing = !offline && inflightCount > 0;
 
   if (!offline && !syncing) return null;
 

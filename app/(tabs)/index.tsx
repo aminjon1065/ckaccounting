@@ -12,9 +12,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Alert, Avatar, Text } from "@/components/ui";
 import { useAuth } from "@/store/auth";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
 
-import { useDashboard } from "@/hooks/useDashboard";
+import { useDashboardSummary } from "@/lib/queries/dashboard";
+import { api, type DashboardPeriod, type Shop } from "@/lib/api";
 import { getGreeting, formatDate } from "@/lib/formatters";
 import { PeriodFilter } from "@/components/dashboard/PeriodFilter";
 import { StatsGrid, StatsGridSkeleton } from "@/components/dashboard/StatsGrid";
@@ -37,7 +37,6 @@ import { can } from "@/lib/permissions";
 export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
-  const { refreshProducts } = useCacheMethods();
   const isSuperAdmin = user?.role === "super_admin";
   // Multi-shop owners get the same shop picker on the dashboard so they
   // can flip between an aggregated view and a single-shop view. Single-
@@ -102,23 +101,43 @@ export default function DashboardScreen() {
     setCustomModalVisible(true);
   }, []);
 
-  const {
+  // Filter state lives in the screen — each combination is a separate
+  // query slot in React Query's cache.
+  const [period, setPeriod] = React.useState<DashboardPeriod>("day");
+  const [activeShopId, setActiveShopId] = React.useState<number | null>(null);
+  const [dateFrom, setDateFrom] = React.useState<string | null>(null);
+  const [dateTo, setDateTo] = React.useState<string | null>(null);
+
+  // Shop list for the picker — super_admin and multi-shop owners only.
+  const [shops, setShops] = React.useState<Shop[]>([]);
+  React.useEffect(() => {
+    if (!token || !showShopPicker) return;
+    api.shops
+      .list(token)
+      .then((res: any) =>
+        setShops(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []),
+      )
+      .catch(() => {});
+  }, [token, showShopPicker]);
+
+  const dashboardQuery = useDashboardSummary(token, {
     period,
-    setPeriod,
-    activeShopId,
-    setActiveShopId,
-    shops,
-    summary,
-    loading,
-    refreshing,
-    error,
-    isOffline,
-    fetchDashboard,
+    shopId: activeShopId,
     dateFrom,
-    setDateFrom,
     dateTo,
-    setDateTo,
-  } = useDashboard({ token, isSuperAdmin, isMultiShopOwner });
+  });
+
+  const summary = dashboardQuery.data?.summary ?? null;
+  const isOffline = !!dashboardQuery.data?.fromCache;
+  // First load: no cached data → skeletons.
+  const loading = dashboardQuery.isPending && !summary;
+  // Background fetch with cache present → tiny refresh indicator.
+  const refreshing = dashboardQuery.isFetching && !dashboardQuery.isPending;
+  // Surface a hard error only when we have nothing to show.
+  const error = !summary && dashboardQuery.error
+    ? (dashboardQuery.error as Error).message
+    : null;
+  const refetchDashboard = dashboardQuery.refetch;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -127,8 +146,11 @@ export default function DashboardScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={async () => {
-              await Promise.all([fetchDashboard(true), refreshProducts(true)]);
+            onRefresh={() => {
+              // Products + other domains refetch automatically via React
+              // Query when their respective screens mount or when a
+              // mutation invalidates them.
+              refetchDashboard().catch(() => {});
             }}
             tintColor="#0a7ea4"
             colors={["#0a7ea4"]}
@@ -281,12 +303,15 @@ export default function DashboardScreen() {
         ) : null}
       </ScrollView>
 
-      {/* ── Modals (mounted lazily on first open) ── */}
+      {/* ── Modals (mounted lazily on first open) ──
+          We don't pass onCreated/onSaved anymore — every domain's
+          mutation invalidates the dashboard query automatically, so the
+          home screen reactively reflects the new data without manual
+          refetch wiring. */}
       {saleModalMounted && (
         <CreateSaleModal
           visible={saleModalVisible}
           onClose={() => setSaleModalVisible(false)}
-          onCreated={() => { fetchDashboard(true); }}
           token={token!}
         />
       )}
@@ -294,7 +319,6 @@ export default function DashboardScreen() {
         <CreatePurchaseModal
           visible={purchaseModalVisible}
           onClose={() => setPurchaseModalVisible(false)}
-          onCreated={() => { fetchDashboard(true); }}
           token={token!}
         />
       )}
@@ -303,7 +327,6 @@ export default function DashboardScreen() {
           visible={expenseModalVisible}
           editing={null}
           onClose={() => setExpenseModalVisible(false)}
-          onSaved={() => { fetchDashboard(true); }}
           token={token!}
         />
       )}

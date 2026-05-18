@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
@@ -26,13 +26,13 @@ import {
   activeFiltersCount,
   type SalesFilters,
 } from "@/components/sales/SalesFilterModal";
-import { useSales } from "@/hooks/useSales";
+import { useDeleteSale, useSaleList } from "@/lib/queries/sales";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
-import { api, ApiError, type Sale } from "@/lib/api";
-import { deleteLocalSale } from "@/lib/db";
-import { can } from "@/lib/permissions";
+import { api, ApiError, type Sale, type Shop } from "@/lib/api";
+import { can, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import { fmt } from "@/lib/formatters";
+import { ShopPicker } from "@/components/dashboard/ShopPicker";
 
 // ─── Date grouping ───────────────────────────────────────────────────────────
 
@@ -52,7 +52,6 @@ function dayLabel(key: string): string {
   if (key === yKey) return "Сегодня";
   if (key === yestKey) return "Вчера";
   const [y, m, d] = key.split("-").map(Number);
-  // ru month names, day + month
   const date = new Date(y, m - 1, d);
   return date.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
 }
@@ -88,7 +87,7 @@ export default function SalesScreen() {
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState<Sale | null>(null);
 
-  // Search + filter state. Passed through to the server via `useSales`
+  // Search + filter state. Passed through to the server via `useSaleList`
   // so the result set narrows server-side instead of just on the loaded
   // page — important once the user has more than `PAGE_SIZE` sales.
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -105,42 +104,62 @@ export default function SalesScreen() {
     return () => clearTimeout(handle);
   }, [searchQuery]);
 
-  const {
-    sales,
-    setSales,
-    loading,
-    refreshing,
-    loadingMore,
-    error,
-    isOffline: salesIsOffline,
-    handleRefresh,
-    handleLoadMore,
-    retryFetch,
-  } = useSales({
-    token,
-    user,
-    query: {
+  // Shop picker — super_admin and multi-shop owners only. Default "Все
+  // магазины" (null) so the user lands on the aggregated view first.
+  const showShopPicker = needsShopPicker(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
+  const [activeShopId, setActiveShopId] = React.useState<number | null>(null);
+  const [shops, setShops] = React.useState<Shop[]>([]);
+
+  React.useEffect(() => {
+    if (!token || !showShopPicker) return;
+    api.shops
+      .list(token)
+      .then((res: any) => {
+        const raw: Shop[] = Array.isArray(res)
+          ? res
+          : Array.isArray(res?.data)
+            ? res.data
+            : [];
+        const filtered =
+          allowedShopIds == null
+            ? raw
+            : raw.filter((s) => allowedShopIds.includes(s.id));
+        setShops(filtered);
+      })
+      .catch(() => {});
+  }, [token, showShopPicker, allowedShopIds]);
+
+  const queryFilters = React.useMemo(
+    () => ({
       search: debouncedSearch || undefined,
       paymentType: filters.paymentType === "all" ? undefined : filters.paymentType,
       saleType: filters.saleType === "all" ? undefined : filters.saleType,
       debtOnly: filters.debtOnly,
-    },
-  });
-
-  // Refresh when the user returns to this tab (e.g. after editing /
-  // returning a sale on the detail page). Skipping the very first focus
-  // event avoids a redundant refetch right after mount, since useSales
-  // already loads the first page on mount.
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
+      shopId: activeShopId,
+    }),
+    [debouncedSearch, filters, activeShopId],
   );
+
+  const query = useSaleList(token, queryFilters);
+  const {
+    data,
+    error,
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
+
+  const sales = React.useMemo<Sale[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.data),
+    [data],
+  );
+
+  const deleteMutation = useDeleteSale(token);
 
   const canEditSale = can(user?.role, "sales:edit");
   const canDeleteSale = can(user?.role, "sales:delete");
@@ -153,18 +172,6 @@ export default function SalesScreen() {
   const handleEditSale = React.useCallback((sale: Sale) => {
     setEditingSale(sale);
   }, []);
-
-  const dropLocalSaleAndList = React.useCallback(
-    async (id: string) => {
-      try {
-        await deleteLocalSale(id);
-      } catch {
-        // best-effort; the periodic reconcile / next sync will catch up
-      }
-      setSales((prev) => prev.filter((s) => s.id !== id));
-    },
-    [setSales],
-  );
 
   const handleDeleteSale = React.useCallback(
     (sale: Sale) => {
@@ -183,8 +190,7 @@ export default function SalesScreen() {
                 const idempotencyKey = Array.from(bytes)
                   .map((b) => b.toString(16).padStart(2, "0"))
                   .join("");
-                await api.sales.delete(sale.id, token, idempotencyKey);
-                await dropLocalSaleAndList(sale.id);
+                await deleteMutation.mutateAsync({ id: sale.id, idempotencyKey });
                 showToast({ message: "Продажа удалена", variant: "success" });
               } catch (e) {
                 if (e instanceof ApiError && e.status === 0) {
@@ -193,9 +199,10 @@ export default function SalesScreen() {
                     variant: "error",
                   });
                 } else if (e instanceof ApiError && e.status === 404) {
-                  await dropLocalSaleAndList(sale.id);
+                  // The mutation's onMutate already removed it from the
+                  // list cache; just inform the user.
                   showToast({
-                    message: "Продажа уже была удалена. Локальная копия очищена.",
+                    message: "Продажа уже была удалена.",
                     variant: "success",
                   });
                 } else {
@@ -207,40 +214,15 @@ export default function SalesScreen() {
         ],
       );
     },
-    [token, dropLocalSaleAndList, showToast],
+    [token, deleteMutation, showToast],
   );
 
-  // The server already applies search + filters; on offline fallback we
-  // narrow client-side so the UI feels consistent (the local mirror is
-  // an unfiltered dump otherwise).
-  const visibleSales = React.useMemo(() => {
-    if (!salesIsOffline) return sales;
-    const q = debouncedSearch.toLowerCase();
-    return sales.filter((s) => {
-      if (filters.paymentType !== "all" && s.payment_type !== filters.paymentType) return false;
-      if (filters.saleType !== "all" && s.type !== filters.saleType) return false;
-      if (filters.debtOnly && (s.debt ?? 0) <= 0) return false;
-      if (q.length > 0) {
-        const haystack = [
-          s.customer_name ?? "",
-          s.seller_name ?? "",
-          s.id,
-          s.notes ?? "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [sales, salesIsOffline, debouncedSearch, filters]);
-
-  const rows = React.useMemo(() => buildRows(visibleSales), [visibleSales]);
+  const rows = React.useMemo(() => buildRows(sales), [sales]);
 
   const periodStats = React.useMemo(() => {
-    const total = visibleSales.reduce((s, x) => s + x.total, 0);
-    return { count: visibleSales.length, total };
-  }, [visibleSales]);
+    const total = sales.reduce((s, x) => s + x.total, 0);
+    return { count: sales.length, total };
+  }, [sales]);
 
   const isFilterActive = filterCount > 0 || searchQuery.trim().length > 0;
 
@@ -274,6 +256,12 @@ export default function SalesScreen() {
     [handleSelectSale, handleEditSale, handleDeleteSale, canEditSale, canDeleteSale],
   );
 
+  // Skeleton only on the very first load (no cached data yet); a refetch
+  // — pull-to-refresh, reconnect, post-mutation — keeps the existing
+  // list rendered with the subtle background spinner.
+  const showSkeleton = isPending && sales.length === 0;
+  const showHardError = !!error && sales.length === 0;
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
@@ -284,11 +272,12 @@ export default function SalesScreen() {
               Продажи
             </Text>
             <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
-              {isOnline
-                ? `${periodStats.count} продаж · ${fmt(periodStats.total)} ${DEFAULT_CURRENCY}`
-                : "Офлайн · показаны сохранённые"}
+              {`${periodStats.count} продаж · ${fmt(periodStats.total)} ${DEFAULT_CURRENCY}`}
             </Text>
           </View>
+          {isFetching && !isRefetching && sales.length > 0 && (
+            <ActivityIndicator size="small" color="#94a3b8" />
+          )}
           <Pressable
             onPress={() => {
               setSearchOpen((open) => {
@@ -353,19 +342,30 @@ export default function SalesScreen() {
         )}
       </View>
 
+      {/* Shop picker — super_admin and multi-shop owners only */}
+      {showShopPicker && (
+        <View className="bg-white dark:bg-zinc-900 pt-2 pb-1 border-b border-slate-200 dark:border-zinc-800">
+          <ShopPicker
+            shops={shops}
+            activeShopId={activeShopId}
+            onChange={setActiveShopId}
+          />
+        </View>
+      )}
+
       {!isOnline && (
         <View className="mx-4 mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
           <Text className="text-sm font-semibold text-amber-900 dark:text-amber-200">
             Офлайн-режим
           </Text>
           <Text className="mt-1 text-xs text-amber-800 dark:text-amber-300">
-            Показаны сохранённые продажи. Новые операции станут доступны после восстановления сети.
+            Показаны сохранённые продажи. Список обновится автоматически, когда вернётся интернет.
           </Text>
         </View>
       )}
 
       {/* List */}
-      {loading ? (
+      {showSkeleton ? (
         <View className="flex-1 px-4 pt-4">
           {[1, 2, 3, 4].map((i) => (
             <View key={i} className="mb-2.5">
@@ -373,17 +373,23 @@ export default function SalesScreen() {
             </View>
           ))}
         </View>
-      ) : error ? (
+      ) : showHardError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
           <Text variant="h5" className="mt-4 text-center">
-            Ошибка загрузки
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
           </Text>
           <Text variant="muted" className="mt-1 text-center">
-            {error}
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Список обновится автоматически, когда вернётся интернет."}
           </Text>
           <TouchableOpacity
-            onPress={retryFetch}
+            onPress={() => refetch().catch(() => {})}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -401,9 +407,13 @@ export default function SalesScreen() {
           maxToRenderPerBatch={12}
           windowSize={5}
           removeClippedSubviews
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          onEndReached={handleLoadMore}
+          refreshing={isRefetching}
+          onRefresh={() => refetch().catch(() => {})}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage().catch(() => {});
+            }
+          }}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
             isFilterActive ? (
@@ -421,7 +431,7 @@ export default function SalesScreen() {
             )
           }
           ListFooterComponent={
-            loadingMore ? (
+            isFetchingNextPage ? (
               <View className="flex-row items-center justify-center gap-2 py-4">
                 <ActivityIndicator size="small" color="#0a7ea4" />
                 <Text variant="muted">Загружается история…</Text>
@@ -437,12 +447,6 @@ export default function SalesScreen() {
       <CreateSaleModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(s) => {
-          // Optimistic prepend; the next refresh hits the server and
-          // reconciles any computed fields (returned_total, etc.).
-          setSales((prev) => [s, ...prev]);
-          handleRefresh();
-        }}
         token={token!}
       />
 
@@ -452,16 +456,14 @@ export default function SalesScreen() {
           sale={editingSale}
           token={token}
           onClose={() => setEditingSale(null)}
-          onSuccess={(updated) => {
-            setSales((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+          onSuccess={() => {
+            // Mutation already patched the caches; nothing else to do.
             setEditingSale(null);
           }}
           onMissing={() => {
-            const id = editingSale.id;
             setEditingSale(null);
-            dropLocalSaleAndList(id).catch(() => {});
             showToast({
-              message: "Продажа была удалена. Локальная копия очищена.",
+              message: "Продажа была удалена.",
               variant: "error",
             });
           }}

@@ -18,8 +18,11 @@ export type Action =
   | "expenses:delete"
   | "purchases:view"
   | "purchases:create"
+  | "purchases:edit"
+  | "purchases:delete"
   | "debts:view"
   | "debts:create"
+  | "debts:edit"
   | "debts:addTransaction"
   | "debts:delete"
   | "reports:view"
@@ -48,15 +51,23 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "expenses:delete":      ["super_admin", "owner"],
   "purchases:view":       ["super_admin", "owner"],
   "purchases:create":     ["super_admin", "owner"],
+  "purchases:edit":       ["super_admin", "owner"],
+  "purchases:delete":     ["super_admin", "owner"],
   "debts:view":           ["super_admin", "owner", "seller"],
   "debts:create":         ["super_admin", "owner", "seller"],
+  "debts:edit":           ["super_admin", "owner", "seller"],
   "debts:addTransaction": ["super_admin", "owner", "seller"],
   "debts:delete":         ["super_admin", "owner"],
   "reports:view":         ["super_admin", "owner"],
   "settings:viewShop":    ["super_admin", "owner"],
   "settings:editShop":    ["super_admin", "owner"],
   "users:view":           ["super_admin", "owner"],
-  "users:create":         ["super_admin", "owner"],
+  // Mobile-only restriction: owners can't create employees from the app.
+  // Backend ApiPermissionMatrix still allows it — admin-side flows
+  // (web / Sanctum direct) remain unchanged. Hiding the mobile CTA
+  // pushes employee onboarding through the admin console where shop
+  // assignment + role choice is reviewed centrally.
+  "users:create":         ["super_admin"],
   "users:edit":           ["super_admin", "owner"],
   "users:delete":         ["super_admin", "owner"],
 };

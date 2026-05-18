@@ -1,8 +1,9 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   TextInput as RNTextInput,
@@ -13,14 +14,17 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
-import { type Product } from "@/lib/api";
-import { can } from "@/lib/permissions";
+import { api, ApiError, type Product, type Shop } from "@/lib/api";
+import { can, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 import { ProductCard } from "@/components/products/ProductCard";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
 import { ScannerOverlay } from "@/components/ScannerOverlay";
-import { useProducts } from "@/hooks/useProducts";
+import { ShopPicker } from "@/components/dashboard/ShopPicker";
+import { useDeleteProduct, useProductList } from "@/lib/queries/products";
 
 type StockFilter = "all" | "low" | "out";
 
@@ -28,51 +32,120 @@ type StockFilter = "all" | "low" | "out";
 
 export default function ProductsScreen() {
   const { token, user } = useAuth();
+  const { showToast } = useToast();
   const router = useRouter();
+  const isOnline = useIsOnline();
   const canEdit = can(user?.role, "products:edit");
 
+  const [search, setSearch] = React.useState("");
+  const [debouncedSearch, setDebouncedSearch] = React.useState("");
+
+  // Debounce search input — 250ms feels responsive without firing a
+  // request on every keystroke.
+  React.useEffect(() => {
+    const handle = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(handle);
+  }, [search]);
+
+  // Shop picker — visible for super_admin and multi-shop owners. Default
+  // is `null` ("all shops"), so the user sees the aggregated catalog
+  // first; per-shop narrowing is opt-in. Single-shop users don't see the
+  // picker at all (it would just show their one shop).
+  const showShopPicker = needsShopPicker(user);
+  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
+  const [activeShopId, setActiveShopId] = React.useState<number | null>(null);
+  const [shops, setShops] = React.useState<Shop[]>([]);
+
+  React.useEffect(() => {
+    if (!token || !showShopPicker) return;
+    api.shops
+      .list(token)
+      .then((res: any) => {
+        const raw: Shop[] = Array.isArray(res)
+          ? res
+          : Array.isArray(res?.data)
+            ? res.data
+            : [];
+        // Multi-shop owners only see their owned set even if the API
+        // returns extra (super_admin reuses the same list endpoint).
+        const filtered =
+          allowedShopIds == null
+            ? raw
+            : raw.filter((s) => allowedShopIds.includes(s.id));
+        setShops(filtered);
+      })
+      .catch(() => {});
+  }, [token, showShopPicker, allowedShopIds]);
+
+  const query = useProductList(token, {
+    search: debouncedSearch || undefined,
+    shopId: activeShopId ?? undefined,
+  });
   const {
-    products,
-    loading,
-    refreshing,
-    loadingMore,
-    search,
+    data,
     error,
-    handleRefresh,
-    handleLoadMore,
-    handleSearchChange,
-    handleDelete,
-    handleSaved,
-    dropLocalProduct,
-    retryFetch,
-  } = useProducts({ token, user });
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
+
+  const products = React.useMemo<Product[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.data),
+    [data],
+  );
+
+  const deleteMutation = useDeleteProduct(token);
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Product | null>(null);
   const [scannerVisible, setScannerVisible] = React.useState(false);
   const [stockFilter, setStockFilter] = React.useState<StockFilter>("all");
 
-  // Refresh on tab focus so stock changes from a sale (or another device)
-  // appear immediately when the user comes back to the products tab.
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
-  );
-
   const openEdit = React.useCallback((item: Product) => {
     setEditing(item);
     setFormVisible(true);
   }, []);
 
-  // Client-side stock filter on top of whatever the server returned. Search is
-  // already server-driven via `useProducts`; this adds the "show only low/out
-  // of stock" knob without a new query parameter.
+  const handleDelete = React.useCallback(
+    (id: string) => {
+      Alert.alert("Удалить товар", "Товар будет удалён безвозвратно.", [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteMutation.mutateAsync({
+                id,
+                idempotencyKey: `prod-delete-${id}`,
+              });
+              showToast({ message: "Товар удалён", variant: "success" });
+            } catch (e: unknown) {
+              if (e instanceof ApiError && e.status === 0) {
+                showToast({
+                  message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
+              } else if (e instanceof ApiError && e.status === 404) {
+                showToast({ message: "Товар уже был удалён.", variant: "success" });
+              } else {
+                showToast({ message: "Не удалось удалить товар.", variant: "error" });
+              }
+            }
+          },
+        },
+      ]);
+    },
+    [deleteMutation, showToast],
+  );
+
+  // Client-side stock filter on top of whatever the server returned. The
+  // search field already goes through the API; this adds the "show only
+  // low/out of stock" knob without a new query parameter.
   const filteredProducts = React.useMemo(() => {
     if (stockFilter === "all") return products;
     return products.filter((p) => {
@@ -85,7 +158,6 @@ export default function ProductsScreen() {
     });
   }, [products, stockFilter]);
 
-  // Counters for the chip badges.
   const counts = React.useMemo(() => {
     let out = 0;
     let low = 0;
@@ -114,7 +186,8 @@ export default function ProductsScreen() {
 
   const keyExtractor = React.useCallback((item: Product) => String(item.id), []);
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  const showSkeleton = isPending && products.length === 0;
+  const showHardError = !!error && products.length === 0;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -129,6 +202,9 @@ export default function ProductsScreen() {
             {counts.out > 0 ? ` · ${counts.out} нет в наличии` : ""}
           </Text>
         </View>
+        {isFetching && !isRefetching && products.length > 0 && (
+          <ActivityIndicator size="small" color="#94a3b8" />
+        )}
         <Pressable
           onPress={() => setScannerVisible(true)}
           className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
@@ -137,13 +213,24 @@ export default function ProductsScreen() {
         </Pressable>
       </View>
 
+      {/* Shop picker — super_admin and multi-shop owners only */}
+      {showShopPicker && (
+        <View className="bg-white dark:bg-zinc-900 pt-2 pb-1">
+          <ShopPicker
+            shops={shops}
+            activeShopId={activeShopId}
+            onChange={setActiveShopId}
+          />
+        </View>
+      )}
+
       {/* Search */}
       <View className="px-4 pt-3 pb-2 bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800">
         <View className="flex-row items-center bg-slate-100 dark:bg-zinc-800 rounded-xl px-3 gap-2">
           <MaterialIcons name="search" size={18} color="#94a3b8" />
           <RNTextInput
             value={search}
-            onChangeText={handleSearchChange}
+            onChangeText={setSearch}
             placeholder="Поиск по названию или коду"
             placeholderTextColor="#94a3b8"
             className="flex-1 py-2.5 text-[14px] text-slate-900 dark:text-white"
@@ -184,7 +271,7 @@ export default function ProductsScreen() {
       </View>
 
       {/* List */}
-      {loading ? (
+      {showSkeleton ? (
         <View className="flex-1 px-4 pt-4">
           {[1, 2, 3, 4, 5].map((i) => (
             <View key={i} className="mb-2.5">
@@ -192,17 +279,23 @@ export default function ProductsScreen() {
             </View>
           ))}
         </View>
-      ) : error ? (
+      ) : showHardError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
           <Text variant="h5" className="mt-4 text-center">
-            Ошибка загрузки
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
           </Text>
           <Text variant="muted" className="mt-1 text-center">
-            {error}
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Каталог обновится автоматически, когда вернётся интернет."}
           </Text>
           <TouchableOpacity
-            onPress={retryFetch}
+            onPress={() => refetch().catch(() => {})}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -218,16 +311,20 @@ export default function ProductsScreen() {
           maxToRenderPerBatch={8}
           windowSize={7}
           removeClippedSubviews
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          onEndReached={handleLoadMore}
+          refreshing={isRefetching}
+          onRefresh={() => refetch().catch(() => {})}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage().catch(() => {});
+            }
+          }}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
-            search ? (
+            debouncedSearch ? (
               <EmptyState
                 icon="search-off"
                 title="Ничего не найдено"
-                description={`По запросу «${search}» товары не найдены. Попробуйте другое слово или штрихкод.`}
+                description={`По запросу «${debouncedSearch}» товары не найдены. Попробуйте другое слово или штрихкод.`}
               />
             ) : stockFilter !== "all" ? (
               <EmptyState
@@ -248,7 +345,7 @@ export default function ProductsScreen() {
             )
           }
           ListFooterComponent={
-            loadingMore ? (
+            isFetchingNextPage ? (
               <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
             ) : null
           }
@@ -271,9 +368,13 @@ export default function ProductsScreen() {
         visible={formVisible}
         editing={editing}
         onClose={() => setFormVisible(false)}
-        onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
-        onMissing={(id) => {
-          dropLocalProduct(id).catch(() => {});
+        onMissing={() => {
+          // Mutation already rolled back optimistic state; the toast just
+          // tells the user.
+          showToast({
+            message: "Товар был удалён.",
+            variant: "error",
+          });
         }}
         token={token!}
       />
@@ -290,7 +391,7 @@ export default function ProductsScreen() {
           if (exact) {
             router.push(`/products/${exact.id}`);
           } else {
-            handleSearchChange(code);
+            setSearch(code);
           }
         }}
       />

@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   Alert,
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui";
 import { api, ApiError, type AppUser, type Shop, type CreateShopPayload } from "@/lib/api";
 import { reportError } from "@/lib/observability/reporter";
-import { useShops } from "@/hooks/useShops";
+import { useCreateShop, useShopList, useUpdateShop } from "@/lib/queries/shops";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 
@@ -116,13 +116,11 @@ const ShopCard = React.memo(function ShopCard({
 function CreateShopModal({
   visible,
   onClose,
-  onCreated,
   token,
   showToast,
 }: {
   visible: boolean;
   onClose: () => void;
-  onCreated: (s: Shop) => void;
   token: string;
   showToast: ReturnType<typeof useToast>["showToast"];
 }) {
@@ -130,7 +128,8 @@ function CreateShopModal({
   const [ownerId, setOwnerId] = React.useState<string>("");
   const [owners, setOwners] = React.useState<AppUser[]>([]);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const createMutation = useCreateShop(token);
+  const submitting = createMutation.isPending;
 
   React.useEffect(() => {
     if (visible) {
@@ -149,15 +148,13 @@ function CreateShopModal({
   async function handleSubmit() {
     setError("");
     if (!name.trim()) { setError("Введите название магазина."); return; }
-    setSubmitting(true);
     const payload: CreateShopPayload & { owner_id?: number } = {
       name: name.trim(),
       is_active: true,
     };
     if (ownerId) payload.owner_id = parseInt(ownerId, 10);
     try {
-      const created = await api.shops.create(payload, token);
-      onCreated(created);
+      await createMutation.mutateAsync({ payload });
       showToast({ message: "Магазин создан", variant: "success" });
       onClose();
     } catch (e) {
@@ -169,8 +166,6 @@ function CreateShopModal({
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -259,7 +254,6 @@ function EditShopModal({
   visible,
   editingShop,
   onClose,
-  onSaved,
   onMissing,
   token,
   showToast,
@@ -267,8 +261,7 @@ function EditShopModal({
   visible: boolean;
   editingShop: Shop | null;
   onClose: () => void;
-  onSaved: (s: Shop) => void;
-  /** Server reported the shop no longer exists — caller should evict it locally. */
+  /** Server reported the shop no longer exists — caller should react. */
   onMissing: (id: number) => void;
   token: string;
   showToast: ReturnType<typeof useToast>["showToast"];
@@ -278,7 +271,8 @@ function EditShopModal({
   const [ownerId, setOwnerId] = React.useState<string>("");
   const [owners, setOwners] = React.useState<AppUser[]>([]);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const updateMutation = useUpdateShop(token);
+  const submitting = updateMutation.isPending;
 
   React.useEffect(() => {
     if (visible && editingShop) {
@@ -298,7 +292,6 @@ function EditShopModal({
   async function handleSubmit() {
     setError("");
     if (!name.trim()) { setError("Введите название."); return; }
-    setSubmitting(true);
     const payload: Partial<CreateShopPayload> & { owner_id?: number | null } = {
       name: name.trim(),
       is_active: isActive === "active",
@@ -307,8 +300,7 @@ function EditShopModal({
       owner_id: ownerId ? parseInt(ownerId, 10) : null,
     };
     try {
-      const updated = await api.shops.update(editingShop!.id, payload, token);
-      onSaved(updated);
+      await updateMutation.mutateAsync({ id: editingShop!.id, payload });
       showToast({ message: "Магазин обновлён", variant: "success" });
       onClose();
     } catch (e) {
@@ -318,19 +310,13 @@ function EditShopModal({
           variant: "error",
         });
       } else if (e instanceof ApiError && e.status === 404) {
-        // Local cache had a ghost (server hard-deleted the shop and the
-        // tombstone never reached the delta sync). Evict locally + close.
+        // Server hard-deleted the shop; mutation's onError already
+        // rolled back the optimistic patch.
         onMissing(editingShop!.id);
-        showToast({
-          message: "Магазин был удалён. Локальная копия очищена.",
-          variant: "error",
-        });
         onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -429,46 +415,23 @@ export default function ShopsScreen() {
   const { showToast } = useToast();
   const router = useRouter();
 
-  const {
-    shops,
-    setShops,
-    loading,
-    refreshing,
-    handleRefresh,
-    dropLocal,
-  } = useShops({ token });
+  const query = useShopList(token);
+  const updateMutation = useUpdateShop(token);
+  const shops = React.useMemo<Shop[]>(() => query.data ?? [], [query.data]);
+  const loading = query.isPending && shops.length === 0;
+  const refreshing = query.isRefetching;
 
   const [createVisible, setCreateVisible] = React.useState(false);
   const [editVisible, setEditVisible] = React.useState(false);
   const [editingShop, setEditingShop] = React.useState<Shop | null>(null);
   const [activeTab, setActiveTab] = React.useState<"all" | "active" | "suspended">("active");
 
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
-  );
-
   const isSuperAdmin = user?.role === "super_admin";
 
   const displayedShops = React.useMemo(() => {
-    // Dedupe by id — optimistic insert + a fast refetch can briefly emit the
-    // same shop twice and FlatList crashes on duplicate keys.
-    const seen = new Set<number>();
-    const unique: Shop[] = [];
-    for (const s of shops) {
-      if (seen.has(s.id)) continue;
-      seen.add(s.id);
-      unique.push(s);
-    }
-    if (activeTab === "all") return unique;
-    if (activeTab === "active") return unique.filter((shop) => shop.is_active);
-    return unique.filter((shop) => !shop.is_active);
+    if (activeTab === "all") return shops;
+    if (activeTab === "active") return shops.filter((shop) => shop.is_active);
+    return shops.filter((shop) => !shop.is_active);
   }, [activeTab, shops]);
 
   if (!isSuperAdmin) {
@@ -495,59 +458,39 @@ export default function ShopsScreen() {
           text: confirmWord,
           style: shop.is_active ? "destructive" : "default",
           onPress: async () => {
-            // Optimistic update — instant feedback for a fast toggle. Rolled
-            // back on any error (including offline) so the visible state
-            // always matches what's actually persisted server-side.
-            setShops((prev) => prev.map((s) =>
-              s.id === shop.id ? { ...s, is_active: !s.is_active } : s
-            ));
+            // useUpdateShop already handles optimistic patch + rollback.
             try {
-              const updated = await api.shops.update(shop.id, { is_active: !shop.is_active }, token!);
-              setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-              showToast({ message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`, variant: "success" });
+              const updated = await updateMutation.mutateAsync({
+                id: shop.id,
+                payload: { is_active: !shop.is_active },
+              });
+              showToast({
+                message: `Магазин ${updated.is_active ? "активирован" : "приостановлен"}`,
+                variant: "success",
+              });
             } catch (e) {
-              setShops((prev) => prev.map((s) =>
-                s.id === shop.id ? { ...s, is_active: shop.is_active } : s
-              ));
               if (e instanceof ApiError && e.status === 0) {
                 showToast({
                   message: "Нет соединения. Проверьте интернет и попробуйте снова.",
                   variant: "error",
                 });
               } else if (e instanceof ApiError && e.status === 404) {
-                // Server hard-deleted the shop; ghost survived in local cache.
-                // Drop it so the list reflects reality.
-                dropLocal(shop.id).catch(() => {});
-                showToast({
-                  message: "Магазин был удалён. Локальная копия очищена.",
-                  variant: "error",
-                });
+                showToast({ message: "Магазин был удалён.", variant: "error" });
               } else {
                 showToast({ message: "Не удалось изменить статус.", variant: "error" });
               }
             }
           },
         },
-      ]
+      ],
     );
   }
 
-  // Summary counts (server-truth — these are the deduped list).
-  const allShops = React.useMemo(() => {
-    const seen = new Set<number>();
-    const unique: Shop[] = [];
-    for (const s of shops) {
-      if (seen.has(s.id)) continue;
-      seen.add(s.id);
-      unique.push(s);
-    }
-    return unique;
-  }, [shops]);
   const counts = React.useMemo(() => {
     let active = 0;
-    for (const s of allShops) if (s.is_active) active += 1;
-    return { total: allShops.length, active, suspended: allShops.length - active };
-  }, [allShops]);
+    for (const s of shops) if (s.is_active) active += 1;
+    return { total: shops.length, active, suspended: shops.length - active };
+  }, [shops]);
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -630,7 +573,7 @@ export default function ShopsScreen() {
             keyExtractor={(item) => String(item.id)}
             contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 }}
             refreshing={refreshing}
-            onRefresh={handleRefresh}
+            onRefresh={() => query.refetch().catch(() => {})}
             ListHeaderComponent={
               counts.total > 0 ? (
                 <View className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3.5 mb-3 flex-row">
@@ -698,13 +641,6 @@ export default function ShopsScreen() {
       <CreateShopModal
         visible={createVisible}
         onClose={() => setCreateVisible(false)}
-        onCreated={(s) => {
-          setShops((prev) => [s, ...prev]);
-          // Refetch from server so the row reflects any server-computed
-          // fields (owner relations, timestamps) and we drop reliance on
-          // the local mirror staying in lockstep.
-          handleRefresh();
-        }}
         token={token!}
         showToast={showToast}
       />
@@ -713,12 +649,11 @@ export default function ShopsScreen() {
         visible={editVisible}
         editingShop={editingShop}
         onClose={() => setEditVisible(false)}
-        onSaved={(updated) => {
-          setShops((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-          handleRefresh();
-        }}
-        onMissing={(id) => {
-          dropLocal(id).catch(() => {});
+        onMissing={() => {
+          showToast({
+            message: "Магазин был удалён.",
+            variant: "error",
+          });
         }}
         token={token!}
         showToast={showToast}

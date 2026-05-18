@@ -8,16 +8,16 @@ import * as Sharing from "expo-sharing";
 import * as Crypto from "expo-crypto";
 
 import { Badge, Button, Card, CardContent, Skeleton, Text } from "@/components/ui";
-import { api, ApiError, type Sale, type SaleItem } from "@/lib/api";
+import { ApiError, type Sale, type SaleItem } from "@/lib/api";
 import { generateReceiptHtml } from "@/lib/receipt";
-import { deleteLocalSale, getLocalSaleById } from "@/lib/db";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
 import { can } from "@/lib/permissions";
 import { ReturnSaleModal } from "@/components/sales/ReturnSaleModal";
 import { EditSaleModal } from "@/components/sales/EditSaleModal";
 import { fmt } from "@/lib/formatters";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
+import { useDeleteSale, useSaleDetail } from "@/lib/queries/sales";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 
 function fmtDate(iso: string) {
@@ -168,29 +168,19 @@ export default function SaleDetailScreen() {
   const { token, user } = useAuth();
   const { showToast } = useToast();
   const router = useRouter();
+  const isOnline = useIsOnline();
 
-  const [sale, setSale] = React.useState<Sale | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState("");
+  const detailQuery = useSaleDetail(id, token);
+  const deleteMutation = useDeleteSale(token);
+
+  const sale = detailQuery.data ?? null;
+  const loading = detailQuery.isPending;
+  const error = detailQuery.error;
+  const deleting = deleteMutation.isPending;
+  const isFetchingInBackground = detailQuery.isFetching && !loading;
+
   const [returnModalVisible, setReturnModalVisible] = React.useState(false);
   const [editModalVisible, setEditModalVisible] = React.useState(false);
-  const [deleting, setDeleting] = React.useState(false);
-
-  const { triggerSync } = useCacheMethods();
-
-  const evictGhostAndExit = React.useCallback(
-    async (reason: string) => {
-      if (!sale) return;
-      try {
-        await deleteLocalSale(sale.id);
-      } catch {
-        // Best-effort cleanup
-      }
-      showToast({ message: reason, variant: "error" });
-      router.back();
-    },
-    [sale, router, showToast],
-  );
 
   const handleDelete = React.useCallback(() => {
     if (!sale || !token) return;
@@ -203,29 +193,36 @@ export default function SaleDetailScreen() {
           text: "Удалить",
           style: "destructive",
           onPress: async () => {
-            setDeleting(true);
             try {
               const bytes = await Crypto.getRandomBytesAsync(16);
               const idempotencyKey = Array.from(bytes)
                 .map((b) => b.toString(16).padStart(2, "0"))
                 .join("");
-              await api.sales.delete(sale.id, token, idempotencyKey);
+              await deleteMutation.mutateAsync({ id: sale.id, idempotencyKey });
               showToast({ message: "Продажа удалена", variant: "success" });
               router.back();
             } catch (e: any) {
               if (e instanceof ApiError && e.status === 404) {
-                await evictGhostAndExit("Продажа уже была удалена. Локальная копия очищена.");
+                // Already gone — mutation's onMutate has cleared list cache.
+                showToast({
+                  message: "Продажа уже была удалена.",
+                  variant: "error",
+                });
+                router.back();
+              } else if (e instanceof ApiError && e.status === 0) {
+                Alert.alert(
+                  "Нет соединения",
+                  "Не удалось связаться с сервером. Попробуйте, когда восстановится интернет.",
+                );
               } else {
                 Alert.alert("Ошибка", e?.message ?? "Не удалось удалить продажу.");
               }
-            } finally {
-              setDeleting(false);
             }
           },
         },
       ],
     );
-  }, [sale, token, router, showToast, evictGhostAndExit]);
+  }, [sale, token, router, showToast, deleteMutation]);
 
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
@@ -260,43 +257,6 @@ export default function SaleDetailScreen() {
     setReturnModalVisible(true);
   }, [sale, token]);
 
-  const fetchSale = React.useCallback(async () => {
-    if (!token || !id) return;
-    setError("");
-    try {
-      const s = await api.sales.get(id, token);
-      setSale(s);
-    } catch (e: unknown) {
-      if (e instanceof ApiError && e.status === 404) {
-        // Server says it's gone — wipe the local mirror too so a future
-        // offline view doesn't show a ghost.
-        deleteLocalSale(id).catch(() => {});
-        setSale(null);
-        setError("Продажа была удалена.");
-        return;
-      }
-      if (e instanceof ApiError && e.status === 0) {
-        // Offline — try the local mirror as a fallback.
-        try {
-          const local = await getLocalSaleById(id);
-          if (local) {
-            setSale(local);
-            return;
-          }
-        } catch {
-          // fall through to error message
-        }
-        setError("Нет сети. Продажа недоступна офлайн.");
-      } else {
-        setError(e instanceof Error ? e.message : "Не удалось загрузить продажу.");
-      }
-    }
-  }, [id, token]);
-
-  React.useEffect(() => {
-    fetchSale().finally(() => setLoading(false));
-  }, [fetchSale]);
-
   // ── Loading ──
   if (loading) {
     return (
@@ -320,27 +280,34 @@ export default function SaleDetailScreen() {
     );
   }
 
-  // ── Error ──
-  if (error || !sale) {
+  // ── Error / not found ──
+  const is404 = error instanceof ApiError && error.status === 404;
+  if (!sale) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
-        <MaterialIcons name="receipt-long" size={48} color="#94a3b8" />
+        <MaterialIcons
+          name={is404 ? "receipt-long" : isOnline ? "error-outline" : "cloud-off"}
+          size={48}
+          color="#94a3b8"
+        />
         <Text variant="h5" className="mt-4 text-center">
-          {error || "Продажа не найдена"}
+          {is404
+            ? "Продажа не найдена."
+            : isOnline
+              ? "Не удалось загрузить продажу."
+              : "Нет соединения"}
         </Text>
+        {!is404 && (
+          <Text variant="muted" className="mt-2 text-center">
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Откройте экран, когда восстановится интернет."}
+          </Text>
+        )}
         <View className="flex-row gap-3 mt-4">
-          <Button variant="outline" onPress={() => router.back()}>
-            Назад
-          </Button>
-          {!!error && (
-            <Button
-              onPress={() => {
-                setLoading(true);
-                fetchSale().finally(() => setLoading(false));
-              }}
-            >
-              Повторить
-            </Button>
+          <Button variant="outline" onPress={() => router.back()}>Назад</Button>
+          {!is404 && (
+            <Button onPress={() => detailQuery.refetch()}>Повторить</Button>
           )}
         </View>
       </SafeAreaView>
@@ -375,6 +342,9 @@ export default function SaleDetailScreen() {
             {shortId(sale.id)} · {fmtTimeShort(sale.created_at)}
           </Text>
         </View>
+        {isFetchingInBackground && (
+          <Text variant="muted" className="text-xs mr-1">Обновляется…</Text>
+        )}
         <Pressable
           onPress={handleShareReceipt}
           hitSlop={8}
@@ -556,12 +526,17 @@ export default function SaleDetailScreen() {
           onClose={() => setReturnModalVisible(false)}
           onSuccess={() => {
             setReturnModalVisible(false);
-            triggerSync().catch(() => {});
-            router.back();
+            // Mutation invalidates the detail + list + products caches;
+            // detail screen will refetch and reflect new returned_total.
+            // No nav-back — the user wants to see the updated receipt.
           }}
           onMissing={() => {
             setReturnModalVisible(false);
-            evictGhostAndExit("Продажа была удалена. Локальная копия очищена.");
+            showToast({
+              message: "Продажа была удалена.",
+              variant: "error",
+            });
+            router.back();
           }}
         />
       )}
@@ -572,13 +547,18 @@ export default function SaleDetailScreen() {
           sale={sale}
           token={token}
           onClose={() => setEditModalVisible(false)}
-          onSuccess={(updated) => {
-            setSale(updated);
+          onSuccess={() => {
+            // Mutation already patched the detail cache via optimistic
+            // update + server confirmation. Nothing else to do.
             setEditModalVisible(false);
           }}
           onMissing={() => {
             setEditModalVisible(false);
-            evictGhostAndExit("Продажа была удалена. Локальная копия очищена.");
+            showToast({
+              message: "Продажа была удалена.",
+              variant: "error",
+            });
+            router.back();
           }}
         />
       )}

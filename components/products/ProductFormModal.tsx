@@ -32,6 +32,7 @@ import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissio
 import { parseDecimal } from "@/lib/formatters";
 import { useAuth } from "@/store/auth";
 import { useToast } from "@/store/toast";
+import { useCreateProduct, useUpdateProduct } from "@/lib/queries/products";
 
 interface FormModalProps {
   visible: boolean;
@@ -52,7 +53,10 @@ interface FormModalProps {
    */
   initialShopId?: number | null;
   onClose: () => void;
-  onSaved: (p: Product, wasEditing: boolean) => void;
+  /** Optional — list / detail caches are invalidated by the mutation
+   *  hooks. Provide only when the caller needs post-save side effects
+   *  (e.g. close + navigate). */
+  onSaved?: (p: Product, wasEditing: boolean) => void;
   /**
    * Server reported the product no longer exists during an edit (404). The
    * caller should evict the local row and refresh the list. Only fires for
@@ -158,7 +162,9 @@ export function ProductFormModal({
   const [lowAlert, setLowAlert] = React.useState("");
   const [photoUri, setPhotoUri] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const createMutation = useCreateProduct(token);
+  const updateMutation = useUpdateProduct(token);
+  const submitting = createMutation.isPending || updateMutation.isPending;
   const [codeScannerVisible, setCodeScannerVisible] = React.useState(false);
 
   const codeRef = React.useRef<RNTextInput>(null);
@@ -329,8 +335,6 @@ export function ProductFormModal({
       return;
     }
 
-    setSubmitting(true);
-
     try {
       // parseDecimal normalises Russian "3,5" → 3.5; plain parseFloat would
       // truncate at the comma and silently store 3.
@@ -385,10 +389,17 @@ export function ProductFormModal({
       }
 
       const saved = editing
-        ? await api.products.update(editing.id, payload, token, isNewPhoto ? photoUri : undefined)
-        : await api.products.create(payload, token, photoUri ?? undefined);
+        ? await updateMutation.mutateAsync({
+            id: editing.id,
+            payload,
+            photoUri: isNewPhoto ? (photoUri ?? undefined) : undefined,
+          })
+        : await createMutation.mutateAsync({
+            payload,
+            photoUri: photoUri ?? undefined,
+          });
 
-      onSaved(saved, !!editing);
+      onSaved?.(saved, !!editing);
       showToast({
         message: editing ? "Товар обновлён" : "Товар добавлен",
         variant: "success",
@@ -401,13 +412,9 @@ export function ProductFormModal({
           variant: "error",
         });
       } else if (e instanceof ApiError && e.status === 404 && editing && onMissing) {
-        // Product was deleted on the server while a stale local row hung
-        // around. Hand off to the caller to evict + close.
+        // Product was deleted on the server while we still had it cached.
+        // The mutation's onError rolled back the optimistic patch.
         onMissing(editing.id);
-        showToast({
-          message: "Товар был удалён. Локальная копия очищена.",
-          variant: "error",
-        });
         onClose();
       } else {
         setError(
@@ -416,8 +423,6 @@ export function ProductFormModal({
             : "Что-то пошло не так. Попробуйте снова."
         );
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 

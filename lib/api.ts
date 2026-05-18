@@ -32,6 +32,7 @@ export type {
   SaleItem,
   SaleType,
   CreateSalePayload,
+  UpdateSalePayload,
   ProductSaleItemPayload,
   ServiceSaleItemPayload,
 } from "./api/sales";
@@ -51,7 +52,13 @@ export type { Expense, CreateExpensePayload } from "./api/expenses";
 
 // Purchases
 export { purchasesApi } from "./api/purchases";
-export type { Purchase, PurchaseItem, CreatePurchasePayload } from "./api/purchases";
+export type {
+  Purchase,
+  PurchaseItem,
+  PurchaseItemPayload,
+  CreatePurchasePayload,
+  UpdatePurchasePayload,
+} from "./api/purchases";
 
 // Shops
 export { shopsApi, normalizeShop, normalizeShopsPage } from "./api/shops";

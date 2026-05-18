@@ -1,15 +1,19 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as React from "react";
-import { ScrollView, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, ScrollView, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Crypto from "expo-crypto";
 
 import { Button, Skeleton, Text } from "@/components/ui";
-import { api, ApiError, type Purchase } from "@/lib/api";
-import { deleteLocalPurchase } from "@/lib/db";
+import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
-import { reportError } from "@/lib/observability/reporter";
+import { useToast } from "@/store/toast";
+import { can } from "@/lib/permissions";
 import { fmt } from "@/lib/formatters";
+import { EditPurchaseModal } from "@/components/purchases/EditPurchaseModal";
+import { useDeletePurchase, usePurchaseDetail } from "@/lib/queries/purchases";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -24,31 +28,65 @@ function fmtDate(iso: string) {
 
 export default function PurchaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const { showToast } = useToast();
   const router = useRouter();
+  const isOnline = useIsOnline();
 
-  const [purchase, setPurchase] = React.useState<Purchase | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const detailQuery = usePurchaseDetail(id, token);
+  const deleteMutation = useDeletePurchase(token);
 
-  React.useEffect(() => {
-    if (!token || !id) return;
-    api.purchases
-      .get(id, token)
-      .then(setPurchase)
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 404) {
-          // Server confirms the purchase is gone (deleted directly in DB,
-          // not via the API). Drop the ghost so it doesn't reappear in
-          // the cached list view.
-          deleteLocalPurchase(id).catch(() => {});
-          setPurchase(null);
-        } else {
-          reportError(e, { tag: "purchase-detail-load", purchaseId: id });
-        }
-      })
-      .finally(() => setLoading(false));
-  }, [token, id]);
+  const purchase = detailQuery.data;
+  const loading = detailQuery.isPending;
+  const error = detailQuery.error;
+  const deleting = deleteMutation.isPending;
 
+  const [editVisible, setEditVisible] = React.useState(false);
+
+  const handleDelete = React.useCallback(() => {
+    if (!purchase) return;
+    Alert.alert(
+      "Удалить закупку?",
+      "Товары будут списаны со склада (откат прихода). Действие нельзя отменить.",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const bytes = await Crypto.getRandomBytesAsync(16);
+              const idempotencyKey = Array.from(bytes)
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("");
+              await deleteMutation.mutateAsync({ id: purchase.id, idempotencyKey });
+              showToast({ message: "Закупка удалена", variant: "success" });
+              router.back();
+            } catch (e: any) {
+              if (e instanceof ApiError && e.status === 404) {
+                // Already gone — list cache was already cleared by the
+                // mutation's onMutate; just navigate away.
+                showToast({
+                  message: "Закупка уже была удалена.",
+                  variant: "error",
+                });
+                router.back();
+              } else if (e instanceof ApiError && e.status === 0) {
+                Alert.alert(
+                  "Нет соединения",
+                  "Не удалось связаться с сервером. Попробуйте, когда восстановится интернет.",
+                );
+              } else {
+                Alert.alert("Ошибка", e?.message ?? "Не удалось удалить закупку.");
+              }
+            }
+          },
+        },
+      ],
+    );
+  }, [purchase, router, showToast, deleteMutation]);
+
+  // ── Loading ──
   if (loading) {
     return (
       <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -60,14 +98,46 @@ export default function PurchaseDetailScreen() {
     );
   }
 
+  // ── Hard error: no cached data + a real failure ──
+  // 404 means the row is gone — list cache was already pruned on the
+  // way in (the user tapped a stale row); show a soft "not found"
+  // rather than a panic state.
+  const is404 = error instanceof ApiError && error.status === 404;
   if (!purchase) {
     return (
-      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center">
-        <Text variant="muted">Закупка не найдена.</Text>
-        <Button onPress={() => router.back()} className="mt-4">Назад</Button>
+      <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950 items-center justify-center px-8">
+        <MaterialIcons
+          name={is404 ? "receipt-long" : isOnline ? "error-outline" : "cloud-off"}
+          size={48}
+          color="#94a3b8"
+        />
+        <Text variant="h5" className="mt-4 text-center">
+          {is404
+            ? "Закупка не найдена."
+            : isOnline
+              ? "Не удалось загрузить закупку."
+              : "Нет соединения"}
+        </Text>
+        {!is404 && (
+          <Text variant="muted" className="mt-2 text-center">
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Откройте экран, когда восстановится интернет."}
+          </Text>
+        )}
+        <View className="flex-row gap-3 mt-4">
+          <Button variant="outline" onPress={() => router.back()}>Назад</Button>
+          {!is404 && (
+            <Button onPress={() => detailQuery.refetch()}>Повторить</Button>
+          )}
+        </View>
       </SafeAreaView>
     );
   }
+
+  const canEdit = can(user?.role, "purchases:edit");
+  const canDelete = can(user?.role, "purchases:delete");
+  const isFetchingInBackground = detailQuery.isFetching && !loading;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -77,6 +147,19 @@ export default function PurchaseDetailScreen() {
           <MaterialIcons name="arrow-back" size={22} color="#0a7ea4" />
         </TouchableOpacity>
         <Text variant="h4" className="flex-1">Закупка №{purchase.id}</Text>
+        {isFetchingInBackground && (
+          <Text variant="muted" className="text-xs mr-2">Обновляется…</Text>
+        )}
+        {canDelete && (
+          <Pressable
+            onPress={handleDelete}
+            disabled={deleting}
+            hitSlop={8}
+            className="w-9 h-9 rounded-full bg-red-50 dark:bg-red-900/20 items-center justify-center active:opacity-70 ml-2"
+          >
+            <MaterialIcons name="delete-outline" size={18} color="#ef4444" />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView
@@ -141,7 +224,47 @@ export default function PurchaseDetailScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Edit CTA — owners only */}
+        {canEdit && (
+          <Button
+            variant="outline"
+            className="mt-4"
+            onPress={() => setEditVisible(true)}
+          >
+            <View className="flex-row items-center gap-1.5">
+              <MaterialIcons name="edit" size={16} color="#475569" />
+              <Text className="text-[14px] font-semibold text-slate-700 dark:text-zinc-200">
+                Изменить
+              </Text>
+            </View>
+          </Button>
+        )}
       </ScrollView>
+
+      {canEdit && token && (
+        <EditPurchaseModal
+          visible={editVisible}
+          purchase={purchase}
+          token={token}
+          onClose={() => setEditVisible(false)}
+          onSuccess={() => {
+            setEditVisible(false);
+            // The mutation's onSuccess has already updated the detail
+            // cache; no need to manually setPurchase. Background refetch
+            // (onSettled) will pick up anything the optimistic patch
+            // missed.
+          }}
+          onMissing={() => {
+            setEditVisible(false);
+            showToast({
+              message: "Закупка была удалена. Возвращаемся к списку.",
+              variant: "error",
+            });
+            router.back();
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

@@ -6,8 +6,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Badge, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import { api, type ProductMovement, type ProductMovementType } from "@/lib/api";
+import { ApiError, type ProductMovement, type ProductMovementType } from "@/lib/api";
 import { useAuth } from "@/store/auth";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
+import { useProductMovements } from "@/lib/queries/products";
 import { fmt } from "@/lib/formatters";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -137,45 +139,30 @@ export default function ProductMovementScreen() {
   const { id, name } = useLocalSearchParams<{ id: string; name?: string }>();
   const { token } = useAuth();
   const router = useRouter();
+  const isOnline = useIsOnline();
 
-  const [currentStock, setCurrentStock] = React.useState<number | null>(null);
-  const [movements, setMovements] = React.useState<ProductMovement[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [loadingMore, setLoadingMore] = React.useState(false);
-  const [error, setError] = React.useState("");
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
-  const [hasMore, setHasMore] = React.useState(false);
+  const query = useProductMovements(id, token);
+  const {
+    data,
+    error,
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
 
-  const fetchMovements = React.useCallback(async (cursor?: string) => {
-    if (!token || !id) return;
-    setError("");
-    try {
-      const data = await api.products.movements(id, token, { cursor });
-      setCurrentStock(data.current_stock);
-      setNextCursor(data.next_cursor ?? null);
-      setHasMore(!!data.next_cursor);
-      if (cursor) {
-        setMovements((prev) => [...prev, ...data.movements]);
-      } else {
-        setMovements(data.movements);
-      }
-    } catch (e: any) {
-      const isOfflineError = e?.status === 0 || !e?.message?.includes("status");
-      setError(isOfflineError
-        ? "Нет сети. История движения недоступна офлайн."
-        : "Не удалось загрузить историю движения.");
-    }
-  }, [id, token]);
+  // Flatten paged data. Current stock comes from the latest page header.
+  const movements = React.useMemo<ProductMovement[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.movements),
+    [data],
+  );
+  const currentStock = data?.pages[0]?.current_stock ?? null;
 
-  const loadMore = React.useCallback(() => {
-    if (!nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    fetchMovements(nextCursor).finally(() => setLoadingMore(false));
-  }, [nextCursor, loadingMore, fetchMovements]);
-
-  React.useEffect(() => {
-    fetchMovements().finally(() => setLoading(false));
-  }, [fetchMovements]);
+  const loading = isPending && movements.length === 0;
+  const hardError = !!error && movements.length === 0;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
@@ -188,6 +175,9 @@ export default function ProductMovementScreen() {
           <Text variant="h5" numberOfLines={1}>
             {name ?? "Движение товара"}
           </Text>
+          {isFetching && !isRefetching && movements.length > 0 && (
+            <Text variant="muted" className="text-xs mt-0.5">Обновляется…</Text>
+          )}
         </View>
         {currentStock !== null && (
           <Badge variant="secondary">{currentStock} шт.</Badge>
@@ -215,16 +205,25 @@ export default function ProductMovementScreen() {
       {/* Body */}
       {loading ? (
         <SkeletonRows />
-      ) : error ? (
+      ) : hardError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
-          <Text variant="h5" className="mt-4 text-center">Ошибка загрузки</Text>
-          <Text variant="muted" className="mt-1 text-center">{error}</Text>
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
+          <Text variant="h5" className="mt-4 text-center">
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
+          </Text>
+          <Text variant="muted" className="mt-1 text-center">
+            {isOnline
+              ? error instanceof ApiError
+                ? error.message
+                : "Попробуйте ещё раз."
+              : "История обновится автоматически, когда вернётся интернет."}
+          </Text>
           <TouchableOpacity
-            onPress={() => {
-              setLoading(true);
-              fetchMovements().finally(() => setLoading(false));
-            }}
+            onPress={() => refetch().catch(() => {})}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -256,10 +255,16 @@ export default function ProductMovementScreen() {
           contentContainerStyle={{ paddingBottom: 32 }}
           showsVerticalScrollIndicator={false}
           ItemSeparatorComponent={() => null}
-          onEndReached={hasMore ? loadMore : undefined}
+          refreshing={isRefetching}
+          onRefresh={() => refetch().catch(() => {})}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage().catch(() => {});
+            }
+          }}
           onEndReachedThreshold={0.3}
           ListFooterComponent={
-            loadingMore ? (
+            isFetchingNextPage ? (
               <View className="items-center py-4">
                 <Text variant="muted" className="text-sm">Загрузка...</Text>
               </View>

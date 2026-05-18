@@ -21,6 +21,7 @@ import { useAuth } from "@/store/auth";
 import { effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { reportError } from "@/lib/observability/reporter";
 import { STORAGE_KEYS } from "@/constants/config";
+import { useCreateExpense, useUpdateExpense } from "@/lib/queries/expenses";
 
 export function ExpenseFormModal({
   visible,
@@ -33,19 +34,25 @@ export function ExpenseFormModal({
   visible: boolean;
   editing: Expense | null;
   onClose: () => void;
-  onSaved: (e: Expense, wasEditing: boolean) => void;
+  /** Optional — list invalidation now happens via React Query, but
+   *  callers that need post-save side effects (navigate, focus next
+   *  field) can still hook in here. */
+  onSaved?: (e: Expense, wasEditing: boolean) => void;
   /** Server reported the expense no longer exists (404 on edit). */
   onMissing?: (id: string) => void;
   token: string;
 }) {
   const [name, setName] = React.useState("");
+  const [unit, setUnit] = React.useState("");
   const [quantity, setQuantity] = React.useState("1");
   const [price, setPrice] = React.useState("");
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
   const { showToast } = useToast();
   const { user } = useAuth();
+  const createMutation = useCreateExpense(token);
+  const updateMutation = useUpdateExpense(token);
+  const submitting = createMutation.isPending || updateMutation.isPending;
 
   const showShopPicker = needsShopPicker(user);
   const implicitShopId = effectiveShopId(user);
@@ -82,11 +89,12 @@ export function ExpenseFormModal({
   React.useEffect(() => {
     if (visible && editing) {
       setName(editing.name);
+      setUnit(editing.unit ?? "");
       setQuantity(String(editing.quantity));
       setPrice(String(editing.price));
       setNote(editing.note ?? "");
     } else if (visible && !editing) {
-      setName(""); setQuantity("1"); setPrice(""); setNote("");
+      setName(""); setUnit(""); setQuantity("1"); setPrice(""); setNote("");
       setShopId("");
     }
     setError("");
@@ -129,26 +137,26 @@ export function ExpenseFormModal({
       quantity: quantityNum,
       price: priceNum,
     };
+    if (unit.trim()) payload.unit = unit.trim();
     if (note.trim()) payload.note = note.trim();
     if (targetShopId !== null) payload.shop_id = targetShopId;
 
-    setSubmitting(true);
     // Idempotency-Key protects against double-tap retries on the same
-    // submission (the user retrying after a slow response). Generated per
-    // attempt; the server dedupes by key.
+    // submission. Only used on create — update doesn't accept one
+    // server-side and the optimistic patch already covers the user-side
+    // double-tap case.
     const idempotencyKey = await Crypto.randomUUID();
     try {
       const saved = editing
-        ? await api.expenses.update(editing.id, payload, token)
-        : await api.expenses.create(payload, token, idempotencyKey);
+        ? await updateMutation.mutateAsync({ id: editing.id, payload })
+        : await createMutation.mutateAsync({ payload, idempotencyKey });
       if (!editing && showShopPicker && shopId) {
         SecureStore.setItemAsync(STORAGE_KEYS.prefLastShopId, shopId).catch(() => {});
       }
-      // Persist the row locally with the scope it belongs to. Without this,
-      // the next loadFromLocal (after a sync transition or on remount) reads
-      // an empty result for owners / sellers because the server response
-      // omits shop_id and our default insert leaves the row with shop_id=NULL
-      // — outside the user's scoped read.
+      // Mirror to SQLite alongside the React Query cache. The query layer
+      // is the source of truth for in-session reads; the local mirror
+      // only kicks in when the device is offline and the cache hasn't
+      // been populated yet (cold launch with no network).
       const persistShopId = editing
         ? (editing as Expense & { shop_id?: number | null }).shop_id ?? undefined
         : targetShopId ?? undefined;
@@ -158,7 +166,7 @@ export function ExpenseFormModal({
         persistShopId ?? undefined,
         persistUserId,
       ).catch((err) => reportError(err, { tag: "expense-form-persist" }));
-      onSaved(saved, !!editing);
+      onSaved?.(saved, !!editing);
       showToast({
         message: editing ? "Расход обновлён" : "Расход добавлен",
         variant: "success",
@@ -166,26 +174,19 @@ export function ExpenseFormModal({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
-        // No network: keep the form open with all fields intact so the user
-        // can tap "Сохранить" again once connectivity returns.
         showToast({
           message: "Нет соединения. Проверьте интернет и попробуйте снова.",
           variant: "error",
         });
       } else if (e instanceof ApiError && e.status === 404 && editing && onMissing) {
-        // Expense was deleted on the server while the local cache still
-        // pointed at it. Hand off to the caller to evict + close.
+        // Expense was deleted on the server while we still had it in
+        // the cache. The mutation's onError rolled back the optimistic
+        // patch; tell the caller to surface a toast.
         onMissing(editing.id);
-        showToast({
-          message: "Расход был удалён. Локальная копия очищена.",
-          variant: "error",
-        });
         onClose();
       } else {
         setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -269,6 +270,15 @@ export function ExpenseFormModal({
                     keyboardType="numeric"
                     returnKeyType="next"
                     onSubmitEditing={() => priceRef.current?.focus()}
+                  />
+                </View>
+                <View className="w-24">
+                  <Input
+                    label="Ед. изм."
+                    placeholder="шт"
+                    value={unit}
+                    onChangeText={setUnit}
+                    returnKeyType="next"
                   />
                 </View>
                 <View className="flex-1">

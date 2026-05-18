@@ -26,7 +26,7 @@ import { BiometricGuard } from "@/components/auth/BiometricGuard";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { NetworkProvider } from "@/lib/network/NetworkProvider";
-import { CacheProvider } from "@/lib/cache/CacheProvider";
+import { QueryProvider } from "@/lib/queries/QueryProvider";
 import { AuthProvider, useAuth } from "@/store/auth";
 import { ToastProvider } from "@/store/toast";
 import { requestNotificationPermissions } from "@/lib/notifications";
@@ -158,7 +158,7 @@ export default function RootLayout() {
             <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
               <AuthGuard />
               <NetworkProvider>
-                <CacheProvider>
+                <QueryProvider>
                   <BiometricGuard>
                     <OfflineBanner />
                     <Stack>
@@ -179,7 +179,7 @@ export default function RootLayout() {
                       />
                     </Stack>
                   </BiometricGuard>
-                </CacheProvider>
+                </QueryProvider>
               </NetworkProvider>
               <StatusBar style="auto" />
             </ThemeProvider>

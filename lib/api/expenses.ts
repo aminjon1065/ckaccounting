@@ -6,6 +6,8 @@ import type { Paginated } from "./types";
 export interface Expense {
   id: string;
   name: string;
+  /** Free-form unit (шт / кг / литр / услуга …). Optional. */
+  unit?: string | null;
   quantity: number;
   price: number;
   total: number;
@@ -22,6 +24,7 @@ export interface Expense {
 
 export interface CreateExpensePayload {
   name: string;
+  unit?: string;
   quantity: number;
   price: number;
   note?: string;

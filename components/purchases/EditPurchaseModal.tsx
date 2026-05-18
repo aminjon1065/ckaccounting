@@ -12,56 +12,60 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button, Input, Text, Select } from "@/components/ui";
+import { Button, Input, Text } from "@/components/ui";
 import {
   api,
   ApiError,
-  type CreatePurchasePayload,
   type Product,
   type Purchase,
-  type Shop,
+  type UpdatePurchasePayload,
 } from "@/lib/api";
 import { useToast } from "@/store/toast";
-import { useAuth } from "@/store/auth";
 import { fmt } from "@/lib/formatters";
 import { reportError } from "@/lib/observability/reporter";
-import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
-import { ProductFormModal } from "@/components/products/ProductFormModal";
-import { useCreatePurchase } from "@/lib/queries/purchases";
+import { useUpdatePurchase } from "@/lib/queries/purchases";
 
-// ─── Product picker ───────────────────────────────────────────────────────────
+// ─── Cart shape ──────────────────────────────────────────────────────────────
+//
+// The edit cart can be seeded from either:
+//   • a Purchase.items entry (existing line — has `id`, no Product details
+//     beyond name), or
+//   • a Product selected from the picker (new line — full Product object).
+// We carry the Product when available so the picker / inline qty buttons
+// can show stock; for legacy lines we keep a synthetic Product-like stub.
+
+interface CartItem {
+  product: Product;
+  quantity: number;
+  price: number;
+  markupPercent: string;
+  /** Existing PurchaseItem id when this row was loaded from the server.
+   *  Undefined for lines added during the edit session. The id isn't
+   *  re-sent — the server replaces every item on `items` update — but
+   *  we keep it so the UI can show "existing" vs "new" affordances. */
+  existingItemId?: string;
+}
+
+// ─── Product picker ──────────────────────────────────────────────────────────
+//
+// Lean version of the picker from CreatePurchaseModal — no "create new
+// product" CTA here, edit flow assumes the catalog is already populated.
 
 function ProductPicker({
   visible,
   products,
-  canCreate,
   onSelect,
   onClose,
-  onRequestCreate,
 }: {
   visible: boolean;
   products: Product[];
-  /** If false, hide the "Create new product" CTA (e.g. read-only role). */
-  canCreate: boolean;
   onSelect: (p: Product) => void;
   onClose: () => void;
-  /** Caller opens its ProductFormModal pre-filled with this name. */
-  onRequestCreate: (initialName: string) => void;
 }) {
   const [search, setSearch] = React.useState("");
   const filtered = search
-    ? products.filter((p) =>
-        p.name.toLowerCase().includes(search.toLowerCase())
-      )
+    ? products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
     : products;
-
-  // CTA visibility: always render it when the user has a non-trivial search
-  // (so they can create a brand-new SKU even when partial matches exist),
-  // or when the list is empty and they have no search yet. Power users on
-  // a busy supplier delivery can type "Mol" and immediately tap "Create
-  // 'Mol'" rather than scrolling through the catalog.
-  const trimmedSearch = search.trim();
-  const showCreateCta = canCreate && (trimmedSearch.length > 0 || filtered.length === 0);
 
   return (
     <Modal
@@ -84,7 +88,7 @@ function ProductPicker({
             <RNTextInput
               value={search}
               onChangeText={setSearch}
-              placeholder="Поиск или название нового товара…"
+              placeholder="Поиск товара…"
               placeholderTextColor="#94a3b8"
               className="flex-1 py-2.5 text-sm text-slate-900 dark:text-slate-50"
             />
@@ -94,28 +98,6 @@ function ProductPicker({
           data={filtered}
           keyExtractor={(p) => String(p.id)}
           contentContainerStyle={{ padding: 16 }}
-          ListHeaderComponent={
-            showCreateCta ? (
-              <TouchableOpacity
-                onPress={() => onRequestCreate(trimmedSearch)}
-                className="flex-row items-center gap-3 py-3.5 mb-1 border-b border-slate-100 dark:border-zinc-800"
-              >
-                <View className="w-9 h-9 rounded-full bg-primary-50 dark:bg-blue-900/20 items-center justify-center">
-                  <MaterialIcons name="add" size={20} color="#0a7ea4" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-semibold text-primary-500">
-                    {trimmedSearch
-                      ? `Создать «${trimmedSearch}»`
-                      : "Создать новый товар"}
-                  </Text>
-                  <Text variant="small">
-                    Добавить в каталог прямо отсюда.
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ) : null
-          }
           renderItem={({ item }) => (
             <TouchableOpacity
               onPress={() => { onSelect(item); onClose(); setSearch(""); }}
@@ -133,9 +115,7 @@ function ProductPicker({
             </TouchableOpacity>
           )}
           ListEmptyComponent={
-            showCreateCta ? null : (
-              <Text variant="muted" className="text-center py-10">Товары не найдены.</Text>
-            )
+            <Text variant="muted" className="text-center py-10">Товары не найдены.</Text>
           }
         />
       </SafeAreaView>
@@ -143,195 +123,192 @@ function ProductPicker({
   );
 }
 
-// ─── Cart item type ───────────────────────────────────────────────────────────
+// ─── Edit modal ──────────────────────────────────────────────────────────────
 
-interface CartItem {
-  product: Product;
-  quantity: number;
-  price: number;
-  markupPercent: string;
+interface EditPurchaseModalProps {
+  visible: boolean;
+  purchase: Purchase;
+  token: string;
+  onClose: () => void;
+  onSuccess: (updated: Purchase) => void;
+  /** Server reported the purchase no longer exists — caller should evict it. */
+  onMissing?: () => void;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// ─── Create purchase modal ────────────────────────────────────────────────────
-
-export function CreatePurchaseModal({
+export function EditPurchaseModal({
   visible,
-  onClose,
-  onCreated,
+  purchase,
   token,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  /** Optional — list invalidation now happens via React Query, but
-   *  callers that want to do additional side-effects (e.g. navigate to
-   *  the detail screen) can still hook in here. */
-  onCreated?: (p: Purchase) => void;
-  token: string;
-}) {
-  const [products, setProducts] = React.useState<Product[]>([]);
-  const [cart, setCart] = React.useState<CartItem[]>([]);
-  const [pickerVisible, setPickerVisible] = React.useState(false);
-  const [supplierName, setSupplierName] = React.useState("");
-  const [error, setError] = React.useState("");
+  onClose,
+  onSuccess,
+  onMissing,
+}: EditPurchaseModalProps) {
   const { showToast } = useToast();
-  const { user } = useAuth();
-  const createMutation = useCreatePurchase(token);
-  const submitting = createMutation.isPending;
-  const showShopPicker = needsShopPicker(user);
-  const implicitShopId = effectiveShopId(user);
-  const allowedShopIds = React.useMemo(() => pickerShopIds(user), [user]);
-  const [shopId, setShopId] = React.useState<string>("");
-  const [shops, setShops] = React.useState<Shop[]>([]);
-  // Inline create flow from the product picker. We carry the seed name so
-  // the form opens pre-filled with whatever the user was searching for.
-  const [createProductVisible, setCreateProductVisible] = React.useState(false);
-  const [createProductSeed, setCreateProductSeed] = React.useState("");
-  const canCreateProduct = can(user?.role, "products:edit");
+  const updateMutation = useUpdatePurchase(token);
+  const submitting = updateMutation.isPending;
+  const [supplierName, setSupplierName] = React.useState(purchase.supplier_name ?? "");
+  const [cart, setCart] = React.useState<CartItem[]>([]);
+  const [products, setProducts] = React.useState<Product[]>([]);
+  const [pickerVisible, setPickerVisible] = React.useState(false);
+  const [error, setError] = React.useState("");
 
+  // Track whether the user touched the items collection. If not, we send
+  // a metadata-only patch (no `items` field) so the server doesn't run
+  // the full rollback / re-apply path for a supplier rename.
+  const itemsDirtyRef = React.useRef(false);
+
+  // Seed the cart from the purchase whenever the modal opens.
   React.useEffect(() => {
     if (!visible) return;
-    setCart([]); setSupplierName(""); setError("");
-    setShopId("");
-    if (showShopPicker) {
-      api.shops.list(token)
-        .then((res) => {
-          const list = res.data ?? [];
-          setShops(allowedShopIds == null ? list : list.filter((s) => allowedShopIds.includes(s.id)));
-        })
-        .catch((e) => reportError(e, { tag: "purchase-modal-shops-load" }));
-    }
-  }, [token, visible, showShopPicker, allowedShopIds]);
+    setSupplierName(purchase.supplier_name ?? "");
+    itemsDirtyRef.current = false;
+    setError("");
+    const seeded: CartItem[] = (purchase.items ?? []).map((item) => ({
+      // Synthetic stub: the detail endpoint returns product_name but not
+      // the full Product object. Enough for the row UI; picker-added
+      // lines carry the real Product so stock/markup hints show up.
+      product: {
+        id: item.product_id,
+        name: item.product_name,
+        stock_quantity: 0,
+        cost_price: item.price,
+      } as Product,
+      quantity: item.quantity,
+      price: item.price,
+      markupPercent: "",
+      existingItemId: item.id,
+    }));
+    setCart(seeded);
+  }, [visible, purchase]);
 
+  // Lazy-load the product catalog the first time the picker is opened.
+  // We scope by the purchase's own shop so super_admin / multi-shop owners
+  // can't accidentally pull in products from another shop.
   React.useEffect(() => {
-    if (!visible) return;
-    const targetShop = showShopPicker
-      ? (shopId ? Number(shopId) : null)
-      : implicitShopId;
-    if (showShopPicker && targetShop === null) {
-      // Picker visible but nothing picked — leave product list empty.
-      setProducts([]);
-      return;
-    }
-    api.products.list(token, { limit: 100, shop_id: targetShop ?? undefined })
+    if (!visible || !pickerVisible || products.length > 0) return;
+    const shopId = (purchase as { shop_id?: number | null }).shop_id ?? undefined;
+    api.products
+      .list(token, { limit: 200, shop_id: shopId })
       .then((res) => setProducts(res.data))
-      .catch(() => {});
-  }, [token, visible, showShopPicker, shopId, implicitShopId]);
+      .catch((e) => reportError(e, { tag: "edit-purchase-products-load" }));
+  }, [visible, pickerVisible, products.length, purchase, token]);
 
-  function addToCart(p: Product) {
+  // ── Cart mutations ──
+
+  const markItemsDirty = () => {
+    itemsDirtyRef.current = true;
+  };
+
+  const addToCart = (p: Product) => {
+    markItemsDirty();
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === p.id);
       if (existing) {
         return prev.map((c) =>
-          c.product.id === p.id ? { ...c, quantity: c.quantity + 1 } : c
+          c.product.id === p.id ? { ...c, quantity: c.quantity + 1 } : c,
         );
       }
       return [...prev, { product: p, quantity: 1, price: p.cost_price, markupPercent: "" }];
     });
-  }
+  };
 
-  function handleProductCreated(saved: Product) {
-    // Make sure the picker's product list includes the new SKU so a
-    // subsequent open of the picker still shows it.
-    setProducts((prev) => (prev.some((p) => p.id === saved.id) ? prev : [saved, ...prev]));
-    addToCart(saved);
-    setCreateProductVisible(false);
-    setCreateProductSeed("");
-    // Close the picker too — the user just got what they came for; staying
-    // in the picker would feel like an extra tap.
-    setPickerVisible(false);
-    showToast({ message: "Товар добавлен в каталог и в приход", variant: "success" });
-  }
+  const removeItem = (productId: string) => {
+    markItemsDirty();
+    setCart((prev) => prev.filter((c) => c.product.id !== productId));
+  };
 
-  function updateQty(productId: string, delta: number) {
+  const updateQty = (productId: string, delta: number) => {
+    markItemsDirty();
     setCart((prev) =>
       prev
         .map((c) =>
-          c.product.id === productId ? { ...c, quantity: c.quantity + delta } : c
+          c.product.id === productId ? { ...c, quantity: c.quantity + delta } : c,
         )
-        .filter((c) => c.quantity > 0)
+        .filter((c) => c.quantity > 0),
     );
-  }
+  };
 
-  function updateQtyValue(productId: string, value: string) {
+  const updateQtyValue = (productId: string, value: string) => {
+    markItemsDirty();
     const normalized = value.replace(",", ".");
     const quantity = Number(normalized);
-
     setCart((prev) =>
       prev.map((c) =>
         c.product.id === productId
           ? { ...c, quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : c.quantity }
-          : c
-      )
+          : c,
+      ),
     );
-  }
+  };
 
-  function updatePrice(productId: string, price: string) {
+  const updatePrice = (productId: string, price: string) => {
+    markItemsDirty();
+    const normalized = price.replace(",", ".");
     setCart((prev) =>
       prev.map((c) =>
         c.product.id === productId
-          ? { ...c, price: isNaN(Number(price)) ? c.price : Number(price) }
-          : c
-      )
+          ? { ...c, price: isNaN(Number(normalized)) ? c.price : Number(normalized) }
+          : c,
+      ),
     );
-  }
+  };
 
-  function updateMarkup(productId: string, markup: string) {
+  const updateMarkup = (productId: string, markup: string) => {
+    markItemsDirty();
     setCart((prev) =>
       prev.map((c) =>
-        c.product.id === productId ? { ...c, markupPercent: markup } : c
-      )
+        c.product.id === productId ? { ...c, markupPercent: markup } : c,
+      ),
     );
-  }
+  };
 
   const total = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
-  async function handleSubmit() {
-    setError("");
-    if (cart.length === 0) { setError("Добавьте хотя бы один товар."); return; }
+  // ── Submit ──
 
-    const payload: CreatePurchasePayload = {
-      items: cart.map((c) => ({
+  const handleSave = async () => {
+    setError("");
+    const itemsChanged = itemsDirtyRef.current;
+    if (itemsChanged && cart.length === 0) {
+      setError("Добавьте хотя бы один товар.");
+      return;
+    }
+
+    const payload: UpdatePurchasePayload = {
+      version: purchase.version,
+      supplier_name: supplierName.trim() || null,
+    };
+    if (itemsChanged) {
+      payload.items = cart.map((c) => ({
         product_id: c.product.id,
         quantity: c.quantity,
         price: c.price,
         ...(c.markupPercent && !isNaN(Number(c.markupPercent))
           ? { markup_percent: Number(c.markupPercent) }
           : {}),
-      })),
-    };
-    if (supplierName.trim()) payload.supplier_name = supplierName.trim();
-    if (showShopPicker) {
-      if (!shopId) { setError("Выберите магазин."); return; }
-      payload.shop_id = Number(shopId);
-    } else if (implicitShopId !== null) {
-      payload.shop_id = implicitShopId;
-    } else {
-      setError("Магазин не назначен."); return;
+      }));
     }
 
     const bytes = await Crypto.getRandomBytesAsync(16);
     const idempotencyKey = Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-
     try {
-      const created = await createMutation.mutateAsync({ payload, idempotencyKey });
-      showToast({ message: "Приход добавлен", variant: "success" });
-      onCreated?.(created);
-      onClose();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 0) {
-        showToast({
-          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
-          variant: "error",
-        });
+      const updated = await updateMutation.mutateAsync({ id: purchase.id, payload, idempotencyKey });
+      showToast({ message: "Закупка обновлена", variant: "success" });
+      onSuccess(updated);
+    } catch (e: any) {
+      if (e instanceof ApiError && e.status === 404 && onMissing) {
+        onMissing();
+      } else if (e instanceof ApiError && e.status === 409) {
+        setError("Закупка была изменена другим пользователем. Откройте экран заново.");
+      } else if (e instanceof ApiError) {
+        setError(e.describeErrors());
       } else {
-        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
+        setError("Не удалось сохранить изменения.");
       }
     }
-  }
+  };
 
   return (
     <Modal
@@ -351,7 +328,7 @@ export function CreatePurchaseModal({
           </TouchableOpacity>
           <View className="flex-1">
             <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
-              Новая закупка
+              Редактировать закупку
             </Text>
             <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
               Поставщик и список товаров
@@ -359,10 +336,7 @@ export function CreatePurchaseModal({
           </View>
         </View>
 
-        <KeyboardAvoidingView
-          behavior="padding"
-          className="flex-1"
-        >
+        <KeyboardAvoidingView behavior="padding" className="flex-1">
           <ScrollView
             className="flex-1 px-5"
             contentContainerStyle={{ paddingTop: 16, paddingBottom: 40 }}
@@ -376,20 +350,6 @@ export function CreatePurchaseModal({
               </View>
             )}
 
-            {/* ── Shop Selector ── */}
-            {showShopPicker && (
-              <View className="mb-4">
-                <Select
-                  label="Магазин"
-                  required
-                  value={shopId}
-                  onValueChange={setShopId}
-                  options={shops.map(s => ({ label: s.name, value: String(s.id) }))}
-                  placeholder="Выберите магазин"
-                />
-              </View>
-            )}
-
             <Input
               label="Поставщик"
               placeholder="Необязательно"
@@ -398,7 +358,6 @@ export function CreatePurchaseModal({
               className="mb-4"
             />
 
-            {/* Items */}
             <View className="mb-2 flex-row items-center justify-between">
               <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">
                 Товары ({cart.length})
@@ -428,14 +387,7 @@ export function CreatePurchaseModal({
                       <Text className="text-sm font-medium text-slate-900 dark:text-slate-50 flex-1 mr-2">
                         {c.product.name}
                       </Text>
-                      <TouchableOpacity
-                        onPress={() =>
-                          setCart((prev) =>
-                            prev.filter((x) => x.product.id !== c.product.id)
-                          )
-                        }
-                        hitSlop={8}
-                      >
+                      <TouchableOpacity onPress={() => removeItem(c.product.id)} hitSlop={8}>
                         <MaterialIcons name="close" size={16} color="#94a3b8" />
                       </TouchableOpacity>
                     </View>
@@ -475,7 +427,6 @@ export function CreatePurchaseModal({
                         {fmt(c.price * c.quantity)}
                       </Text>
                     </View>
-                    {/* Markup row */}
                     <View className="flex-row items-center gap-3 mt-2">
                       <View className="flex-1">
                         <Input
@@ -497,7 +448,6 @@ export function CreatePurchaseModal({
               </View>
             )}
 
-            {/* Total */}
             {total > 0 && (
               <View className="bg-slate-50 dark:bg-zinc-800 rounded-xl p-4 flex-row justify-between mb-6">
                 <Text className="text-sm font-semibold text-slate-900 dark:text-slate-50">Итого</Text>
@@ -507,11 +457,11 @@ export function CreatePurchaseModal({
 
             <Button
               size="lg"
-              onPress={handleSubmit}
+              onPress={handleSave}
               loading={submitting}
               disabled={submitting}
             >
-              Создать закупку
+              Сохранить изменения
             </Button>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -520,37 +470,9 @@ export function CreatePurchaseModal({
       <ProductPicker
         visible={pickerVisible}
         products={products}
-        canCreate={canCreateProduct}
         onSelect={addToCart}
         onClose={() => setPickerVisible(false)}
-        onRequestCreate={(seedName) => {
-          setCreateProductSeed(seedName);
-          setCreateProductVisible(true);
-        }}
       />
-
-      {canCreateProduct && (
-        <ProductFormModal
-          visible={createProductVisible}
-          editing={null}
-          initialName={createProductSeed}
-          // Lock the new product to the purchase's shop. Without this, a
-          // super-admin / multi-shop owner could pick another shop in the
-          // product form, and the purchase submit would fail with 404
-          // (product visible only inside its own shop scope).
-          initialShopId={
-            showShopPicker
-              ? (shopId ? Number(shopId) : null)
-              : implicitShopId
-          }
-          onClose={() => {
-            setCreateProductVisible(false);
-            setCreateProductSeed("");
-          }}
-          onSaved={handleProductCreated}
-          token={token}
-        />
-      )}
     </Modal>
   );
 }

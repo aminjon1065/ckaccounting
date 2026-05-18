@@ -19,8 +19,8 @@ import { useToast } from "@/store/toast";
 import { reportError } from "@/lib/observability/reporter";
 import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
 import { ProductFormModal } from "@/components/products/ProductFormModal";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
 import { STORAGE_KEYS } from "@/constants/config";
+import { useCreateSale } from "@/lib/queries/sales";
 
 type PaymentType = "cash" | "card" | "transfer";
 const PAYMENT_TYPES: PaymentType[] = ["cash", "card", "transfer"];
@@ -37,11 +37,14 @@ export function CreateSaleModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onCreated: (s: Sale) => void;
+  /** Optional — list invalidation now happens via React Query, but
+   *  callers that want post-create side-effects (navigate to detail,
+   *  print receipt) can still hook in here. */
+  onCreated?: (s: Sale) => void;
   token: string;
 }) {
   const { user } = useAuth();
-  const { reconcileRemoteProducts } = useCacheMethods();
+  const createMutation = useCreateSale(token);
   // Multi-shop UX: super_admin and multi-shop owners pick a shop in the
   // form; sellers and single-shop owners get an implicit shop and no
   // picker.
@@ -91,7 +94,7 @@ export function CreateSaleModal({
       .catch(() => {});
   }, [visible]);
   const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
+  const submitting = createMutation.isPending;
   const [scannerVisible, setScannerVisible] = React.useState(false);
   const [productsHasMore, setProductsHasMore] = React.useState(false);
   const [productsNextCursor, setProductsNextCursor] = React.useState<string | null>(null);
@@ -198,19 +201,14 @@ export function CreateSaleModal({
       setCart([]);
       return;
     }
-    // Reconcile FIRST so the picker doesn't show ghost products the admin
-    // soft- or hard-deleted on the server. Without this the cashier would
-    // happily add a stale row, hit submit, and only then see "Товар не
-    // найден" — by which point recovery costs them their cart and time.
-    // Both calls are non-blocking from the user's perspective: the picker
-    // shows whatever's in the local cache instantly, then refreshes.
-    reconcileRemoteProducts().catch((e) =>
-      reportError(e, { tag: "sale-modal-products-reconcile", shopId: activeShopId })
-    );
+    // Refresh from the server. The picker shows whatever's in the local
+    // cache instantly; this call refreshes it. Per-ghost cleanup (when a
+    // cart product was deleted server-side) is handled inline below from
+    // the 422 path — see deleteLocalProduct in handleSubmit.
     loadProductsForSale(activeShopId ?? undefined).catch((e) =>
       reportError(e, { tag: "sale-modal-products-effect", shopId: activeShopId })
     );
-  }, [visible, showShopPicker, activeShopId, loadProductsForSale, reconcileRemoteProducts]);
+  }, [visible, showShopPicker, activeShopId, loadProductsForSale]);
 
   // ── Product cart helpers ────────────────────────────────────────────────────
 
@@ -564,13 +562,12 @@ export function CreateSaleModal({
     if (paidVal > 0) payload.paid = paidVal;
     if (notes.trim()) payload.notes = notes.trim();
 
-    setSubmitting(true);
     const bytes = await Crypto.getRandomBytesAsync(16);
     const idempotencyKey = Array.from(bytes)
       .map(b => b.toString(16).padStart(2, "0"))
       .join("");
     try {
-      const created = await api.sales.create(payload, token, idempotencyKey);
+      const created = await createMutation.mutateAsync({ payload, idempotencyKey });
       // Persist payment-type + shop choice so the next "Create sale" opens
       // with the same selection — typical PoS use is the same shop / payment
       // type for dozens of sales in a row.
@@ -612,7 +609,7 @@ export function CreateSaleModal({
       await insertOrUpdateRemoteSales([created], persistShopId).catch((err) =>
         reportError(err, { tag: "sale-modal-persist" }),
       );
-      onCreated(created);
+      onCreated?.(created);
       showToast({ message: "Продажа записана", variant: "success" });
       onClose();
     } catch (e) {
@@ -668,9 +665,8 @@ export function CreateSaleModal({
           );
           setProducts((prev) => prev.filter((p) => !ghostIds.includes(p.id)));
           setCart((prev) => prev.filter((c) => !ghostIds.includes(c.product.id)));
-
-          // Trigger a fresh reconcile so the next picker open is clean.
-          reconcileRemoteProducts().catch(() => {});
+          // The next picker open re-runs loadProductsForSale which pulls
+          // a fresh page — no explicit reconcile needed.
         }
 
         // Refresh stale cart products from the server. Done after the
@@ -750,8 +746,6 @@ export function CreateSaleModal({
             : "Что-то пошло не так."
         );
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 

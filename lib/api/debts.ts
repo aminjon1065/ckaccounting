@@ -79,4 +79,30 @@ export const debtsApi = {
         ? { "Idempotency-Key": idempotencyKey }
         : undefined,
     }),
+
+  /**
+   * Rename the contact on an existing debt. Only `person_name` is
+   * editable — balance / direction / transaction history are derived
+   * from the storeTransaction endpoint and not touched here.
+   */
+  update: (
+    id: string,
+    payload: { person_name: string; version?: number },
+    token: string,
+    idempotencyKey?: string,
+  ) =>
+    request<Debt>(`/debts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+      token,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+    }),
+
+  /**
+   * Soft-delete a debt. Owner / super_admin only — see ApiPermissionMatrix.
+   * Transactions remain in the history; only the debt row gets a
+   * `deleted_at` so reports keep their books straight.
+   */
+  delete: (id: string, token: string) =>
+    request<void>(`/debts/${id}`, { method: "DELETE", token }),
 };

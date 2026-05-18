@@ -3,8 +3,9 @@ import { Modal, View, TextInput as RNTextInput, ScrollView, Alert, TouchableOpac
 import { SafeAreaView } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Text, Button } from "@/components/ui";
-import { api, ApiError, type SaleItem } from "@/lib/api";
+import { ApiError, type SaleItem } from "@/lib/api";
 import { useToast } from "@/store/toast";
+import { useReturnSale } from "@/lib/queries/sales";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 import { fmt } from "@/lib/formatters";
 
@@ -18,6 +19,32 @@ interface ReturnSaleModalProps {
   /** Server reported the sale no longer exists — caller should evict it locally. */
   onMissing?: () => void;
 }
+
+// Canonical reasons surfaced as pills. `other` falls back to a free-form
+// note. The keys here are stable identifiers we pass to the server in
+// the `reason` field — keep them in lowercase snake_case so they read
+// cleanly in audit logs.
+type ReasonKey = "defect" | "changed_mind" | "wrong_item" | "other";
+
+const REASON_OPTIONS: { value: ReasonKey; label: string }[] = [
+  { value: "defect", label: "Брак / дефект" },
+  { value: "changed_mind", label: "Передумал" },
+  { value: "wrong_item", label: "Не тот товар" },
+  { value: "other", label: "Другое" },
+];
+
+type RefundMethod = "cash" | "card" | "transfer" | "offset_debt";
+
+const REFUND_OPTIONS: {
+  value: RefundMethod;
+  label: string;
+  icon: React.ComponentProps<typeof MaterialIcons>["name"];
+}[] = [
+  { value: "cash", label: "Наличные", icon: "payments" },
+  { value: "card", label: "Карта", icon: "credit-card" },
+  { value: "transfer", label: "Перевод", icon: "swap-horiz" },
+  { value: "offset_debt", label: "В счёт долга", icon: "receipt-long" },
+];
 
 interface ReturnItem {
   item: SaleItem;
@@ -52,17 +79,24 @@ export function ReturnSaleModal({
   onMissing,
 }: ReturnSaleModalProps) {
   const { showToast } = useToast();
+  const returnMutation = useReturnSale(token);
+  const loading = returnMutation.isPending;
   // Default to 0 returned per row. Pre-filling with full quantity used to
   // make "wrong-button" returns very easy — user opens the modal, taps
   // "Оформить возврат" and accidentally rolls back the entire sale.
   const [returnItems, setReturnItems] = React.useState<ReturnItem[]>(
     items.map((item) => ({ item, returnQty: "" }))
   );
-  const [loading, setLoading] = React.useState(false);
+  const [reasonKey, setReasonKey] = React.useState<ReasonKey>("changed_mind");
+  const [reasonOther, setReasonOther] = React.useState("");
+  const [refundMethod, setRefundMethod] = React.useState<RefundMethod>("cash");
 
   // Reset when items change (e.g. switching sales without unmount).
   React.useEffect(() => {
     setReturnItems(items.map((item) => ({ item, returnQty: "" })));
+    setReasonKey("changed_mind");
+    setReasonOther("");
+    setRefundMethod("cash");
   }, [items]);
 
   // Refundable quantity per line = sold - already-refunded. If a sale was
@@ -132,19 +166,36 @@ export function ReturnSaleModal({
       return;
     }
 
-    setLoading(true);
+    // Build the human-readable reason. For pill choices we send the
+    // localised label so the server's audit trail reads naturally; for
+    // "other" we send the user's free-form note (or fall back to the
+    // generic label if empty).
+    const pickedLabel =
+      REASON_OPTIONS.find((r) => r.value === reasonKey)?.label ?? "";
+    const reason = reasonKey === "other"
+      ? (reasonOther.trim() || pickedLabel)
+      : pickedLabel;
+
     try {
-      await api.sales.return(saleId, token, { items: validItems });
+      await returnMutation.mutateAsync({
+        id: saleId,
+        items: validItems,
+        reason,
+        refundMethod,
+      });
       showToast({ message: "Возврат оформлен", variant: "success" });
       onSuccess();
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 404 && onMissing) {
         onMissing();
+      } else if (e instanceof ApiError && e.status === 0) {
+        Alert.alert(
+          "Нет соединения",
+          "Не удалось связаться с сервером. Попробуйте, когда восстановится интернет.",
+        );
       } else {
         Alert.alert("Ошибка", e?.message ?? "Не удалось оформить возврат.");
       }
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -246,6 +297,81 @@ export function ReturnSaleModal({
               </View>
             );
           })}
+
+          {/* Reason */}
+          <Text className="mt-5 mb-2 text-[12px] font-semibold uppercase tracking-[0.5px] text-slate-500 dark:text-zinc-400">
+            Причина
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            {REASON_OPTIONS.map((opt) => {
+              const active = reasonKey === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  onPress={() => setReasonKey(opt.value)}
+                  className={`px-3 py-2 rounded-full border ${
+                    active
+                      ? "bg-primary-500 border-primary-500"
+                      : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
+                  } active:opacity-80`}
+                >
+                  <Text
+                    className={`text-[13px] font-semibold ${
+                      active ? "text-white" : "text-slate-700 dark:text-zinc-300"
+                    }`}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {reasonKey === "other" && (
+            <View className="mt-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3">
+              <RNTextInput
+                value={reasonOther}
+                onChangeText={setReasonOther}
+                placeholder="Опишите причину…"
+                placeholderTextColor="#94a3b8"
+                style={{ paddingVertical: 12, fontSize: 14 }}
+                className="text-slate-900 dark:text-slate-50"
+              />
+            </View>
+          )}
+
+          {/* Refund method */}
+          <Text className="mt-5 mb-2 text-[12px] font-semibold uppercase tracking-[0.5px] text-slate-500 dark:text-zinc-400">
+            Способ возврата
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            {REFUND_OPTIONS.map((opt) => {
+              const active = refundMethod === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  onPress={() => setRefundMethod(opt.value)}
+                  className={`flex-row items-center gap-1.5 px-3 py-2 rounded-full border ${
+                    active
+                      ? "bg-primary-500 border-primary-500"
+                      : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700"
+                  } active:opacity-80`}
+                >
+                  <MaterialIcons
+                    name={opt.icon}
+                    size={14}
+                    color={active ? "#fff" : "#475569"}
+                  />
+                  <Text
+                    className={`text-[13px] font-semibold ${
+                      active ? "text-white" : "text-slate-700 dark:text-zinc-300"
+                    }`}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           {/* Total */}
           <View className="mt-4 p-4 bg-slate-100 dark:bg-zinc-800 rounded-xl">

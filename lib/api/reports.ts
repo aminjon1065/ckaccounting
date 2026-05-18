@@ -9,7 +9,13 @@ import { request, qs } from "./client";
 
 export interface SalesReport {
   total_sales: number;
+  /** Net amount: gross sales − returns. Renders as the headline figure. */
   total_amount: number;
+  /** Gross sales total before returns. Exposed so the UI can show the
+   *  "минус возвраты" breakdown line. Server includes this in 2026+. */
+  sales_gross?: number;
+  /** Refunds processed inside the report window. */
+  returns_total?: number;
   cash: number;
   card: number;
   transfer: number;
@@ -18,12 +24,26 @@ export interface SalesReport {
   data: { date: string; count: number; amount: number }[];
 }
 
+export interface ExpenseReportItem {
+  id: string;
+  name: string;
+  unit?: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+  note?: string | null;
+  created_at: string;
+}
+
 export interface ExpensesReport {
   total_amount: number;
   count: number;
   date_from: string;
   date_to: string;
   data: { date: string; count: number; amount: number }[];
+  /** Per-row breakdown for the PDF export. Added 2026-05; may be
+   *  missing on older servers, so callers should guard with `?? []`. */
+  items?: ExpenseReportItem[];
 }
 
 export interface ProfitReport {
@@ -31,11 +51,44 @@ export interface ProfitReport {
   total_expenses: number;
   total_cost: number;
   profit: number;
+  /** Gross sales before returns. */
+  sales_gross?: number;
+  /** Money refunded back to customers in the window. */
+  returns_total?: number;
+  /** Original cost of returned goods (reverses COGS). */
+  returns_cogs?: number;
   date_from: string;
   date_to: string;
 }
 
+export interface StockReportRow {
+  id: string;
+  name: string;
+  unit?: string | null;
+  /** Closing balance (period mode) or current stock (snapshot mode). */
+  stock_quantity: number;
+  sale_price: number;
+  cost_price: number;
+  /** stock × sale_price */
+  value: number;
+  /** stock × cost_price */
+  cost_value: number;
+  // ── Period-mode extras (omitted in snapshot mode) ──
+  opening_qty?: number;
+  incoming_qty?: number;
+  outgoing_qty?: number;
+  returned_qty?: number;
+  closing_qty?: number;
+  closing_value?: number;
+  closing_cost_value?: number;
+}
+
 export interface StockReport {
+  /** Distinguishes the two modes — UI / PDF render different columns. */
+  mode?: "snapshot" | "period";
+  /** Only present in period mode. */
+  date_from?: string;
+  date_to?: string;
   total_products: number;
   /** Σ(stock_quantity × sale_price) — what the inventory would bring in if sold. */
   total_value: number;
@@ -43,17 +96,13 @@ export interface StockReport {
   total_cost_value: number;
   low_stock: number;
   out_of_stock: number;
-  data: {
-    id: string;
-    name: string;
-    stock_quantity: number;
-    sale_price: number;
-    cost_price: number;
-    /** stock × sale_price */
-    value: number;
-    /** stock × cost_price */
-    cost_value: number;
-  }[];
+  // ── Period-mode aggregates ──
+  opening_qty?: number;
+  incoming_qty?: number;
+  outgoing_qty?: number;
+  returned_qty?: number;
+  closing_qty?: number;
+  data: StockReportRow[];
 }
 
 function normalizeStockReport(report: any): StockReport {
@@ -62,29 +111,46 @@ function normalizeStockReport(report: any): StockReport {
   const totalCostValue = Number(report?.total_cost_value ?? 0);
   const lowStock = Number(report?.low_stock ?? report?.low_stock_products_count ?? 0);
   const outOfStock = Number(report?.out_of_stock ?? report?.out_of_stock_products_count ?? 0);
-  const data = Array.isArray(report?.data)
+  const mode: "snapshot" | "period" = report?.mode === "period" ? "period" : "snapshot";
+  const data: StockReportRow[] = Array.isArray(report?.data)
     ? report.data.map((item: any) => {
-        const qty = Number(item?.stock_quantity ?? 0);
+        const qty = Number(item?.stock_quantity ?? item?.closing_qty ?? 0);
         const salePrice = Number(item?.sale_price ?? 0);
         const costPrice = Number(item?.cost_price ?? 0);
         return {
           id: String(item?.id ?? ""),
           name: String(item?.name ?? ""),
+          unit: item?.unit ?? null,
           stock_quantity: qty,
           sale_price: salePrice,
           cost_price: costPrice,
           value: Number(item?.value ?? qty * salePrice),
           cost_value: Number(item?.cost_value ?? qty * costPrice),
+          opening_qty: item?.opening_qty != null ? Number(item.opening_qty) : undefined,
+          incoming_qty: item?.incoming_qty != null ? Number(item.incoming_qty) : undefined,
+          outgoing_qty: item?.outgoing_qty != null ? Number(item.outgoing_qty) : undefined,
+          returned_qty: item?.returned_qty != null ? Number(item.returned_qty) : undefined,
+          closing_qty: item?.closing_qty != null ? Number(item.closing_qty) : undefined,
+          closing_value: item?.closing_value != null ? Number(item.closing_value) : undefined,
+          closing_cost_value: item?.closing_cost_value != null ? Number(item.closing_cost_value) : undefined,
         };
       })
     : [];
 
   return {
+    mode,
+    date_from: report?.date_from,
+    date_to: report?.date_to,
     total_products: totalProducts,
     total_value: totalValue,
     total_cost_value: totalCostValue,
     low_stock: lowStock,
     out_of_stock: outOfStock,
+    opening_qty: report?.opening_qty != null ? Number(report.opening_qty) : undefined,
+    incoming_qty: report?.incoming_qty != null ? Number(report.incoming_qty) : undefined,
+    outgoing_qty: report?.outgoing_qty != null ? Number(report.outgoing_qty) : undefined,
+    returned_qty: report?.returned_qty != null ? Number(report.returned_qty) : undefined,
+    closing_qty: report?.closing_qty != null ? Number(report.closing_qty) : undefined,
     data,
   };
 }

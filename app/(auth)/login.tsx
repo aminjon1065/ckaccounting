@@ -16,13 +16,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/store/auth";
-import { useCacheMethods } from "@/lib/cache/CacheProvider";
-import { reportError } from "@/lib/observability/reporter";
 import { PinKeypad } from "@/components/auth/PinKeypad";
 
 export default function LoginScreen() {
   const { signIn, signInOffline, hasCredentials, setPin, hasPin, verifyPin, setPinSetupPending, pinSetupPending, token } = useAuth();
-  const { triggerSync } = useCacheMethods();
   const searchParams = useLocalSearchParams();
   const tokenExpiredReason = searchParams?.reason === "expired";
 
@@ -39,15 +36,10 @@ export default function LoginScreen() {
     if (token && pinSetupPending) setShowPinSetup(true);
   }, [token, pinSetupPending]);
 
-  // After a successful login, refresh the local cache so every screen's
-  // first paint already has something to show.
-  const refreshStartedRef = React.useRef(false);
-  React.useEffect(() => {
-    if (!token || pinSetupPending) return;
-    if (refreshStartedRef.current) return;
-    refreshStartedRef.current = true;
-    triggerSync().catch((e) => reportError(e, { tag: "login-cache-refresh" }));
-  }, [token, pinSetupPending, triggerSync]);
+  // Post-login data fetching is handled by React Query — each screen's
+  // `useQuery` fires when its component mounts, so we no longer need to
+  // trigger a manual cache pull here.
+
   // Two-stage PIN setup: user enters a PIN, then confirms it. We don't show
   // both fields at once — typing into one numeric pad is faster, and the
   // confirm stage is the natural place to surface a "mismatch" error.

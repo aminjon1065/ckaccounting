@@ -1,8 +1,9 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   TouchableOpacity,
@@ -11,13 +12,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { EmptyState, FAB, Skeleton, Text } from "@/components/ui";
-import { type Expense } from "@/lib/api";
+import { ApiError, type Expense } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { useAuth } from "@/store/auth";
+import { useToast } from "@/store/toast";
 
 import { ExpenseCard } from "@/components/expenses/ExpenseCard";
 import { ExpenseFormModal } from "@/components/expenses/ExpenseFormModal";
-import { useExpenses } from "@/hooks/useExpenses";
+import { useDeleteExpense, useExpenseList } from "@/lib/queries/expenses";
+import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { fmt } from "@/lib/formatters";
 import { DEFAULT_CURRENCY } from "@/constants/config";
 
@@ -25,42 +28,68 @@ import { DEFAULT_CURRENCY } from "@/constants/config";
 
 export default function ExpensesScreen() {
   const { token, user } = useAuth();
+  const { showToast } = useToast();
   const router = useRouter();
+  const isOnline = useIsOnline();
 
+  const query = useExpenseList(token);
   const {
-    expenses,
-    loading,
-    refreshing,
-    loadingMore,
+    data,
     error,
-    handleDelete,
-    handleSaved,
-    handleRefresh,
-    handleLoadMore,
-    dropLocalExpense,
-    retryFetch,
-  } = useExpenses({ token, user });
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
+
+  const expenses = React.useMemo<Expense[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.data),
+    [data],
+  );
+
+  const deleteMutation = useDeleteExpense(token);
 
   const [formVisible, setFormVisible] = React.useState(false);
   const [editing, setEditing] = React.useState<Expense | null>(null);
 
-  // Refresh when returning to the screen so external mutations (other
-  // device, role with edit access on detail) reflect immediately.
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      handleRefresh();
-    }, [handleRefresh]),
+  const handleDelete = React.useCallback(
+    (id: string) => {
+      Alert.alert("Удалить расход", "Расход будет удалён безвозвратно.", [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteMutation.mutateAsync({ id });
+              showToast({ message: "Расход удалён", variant: "success" });
+            } catch (e: unknown) {
+              if (e instanceof ApiError && e.status === 0) {
+                showToast({
+                  message: "Нет соединения. Проверьте интернет и попробуйте снова.",
+                  variant: "error",
+                });
+              } else if (e instanceof ApiError && e.status === 404) {
+                showToast({ message: "Расход уже был удалён.", variant: "success" });
+              } else {
+                showToast({ message: "Не удалось удалить расход.", variant: "error" });
+              }
+            }
+          },
+        },
+      ]);
+    },
+    [deleteMutation, showToast],
   );
 
   const handleEditExpense = React.useCallback((expense: Expense) => {
     setEditing(expense);
     setFormVisible(true);
   }, []);
+
   const renderExpense = React.useCallback(
     ({ item }: { item: Expense }) => (
       <ExpenseCard item={item} onEdit={handleEditExpense} onDelete={handleDelete} />
@@ -68,7 +97,6 @@ export default function ExpensesScreen() {
     [handleEditExpense, handleDelete],
   );
 
-  // Current month name + total for the summary card.
   const monthLabel = React.useMemo(() => {
     const now = new Date();
     return now.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
@@ -92,6 +120,9 @@ export default function ExpensesScreen() {
     );
   }
 
+  const showSkeleton = isPending && expenses.length === 0;
+  const showHardError = !!error && expenses.length === 0;
+
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
       {/* Header */}
@@ -111,10 +142,13 @@ export default function ExpensesScreen() {
             {monthLabel}
           </Text>
         </View>
+        {isFetching && !isRefetching && expenses.length > 0 && (
+          <ActivityIndicator size="small" color="#94a3b8" />
+        )}
       </View>
 
       {/* List */}
-      {loading ? (
+      {showSkeleton ? (
         <View className="flex-1 px-4 pt-2">
           {[1, 2, 3, 4].map((i) => (
             <View key={i} className="mb-2.5">
@@ -122,17 +156,23 @@ export default function ExpensesScreen() {
             </View>
           ))}
         </View>
-      ) : error ? (
+      ) : showHardError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
           <Text variant="h5" className="mt-4 text-center">
-            Ошибка загрузки
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
           </Text>
           <Text variant="muted" className="mt-1 text-center">
-            {error}
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Список обновится автоматически, когда вернётся интернет."}
           </Text>
           <TouchableOpacity
-            onPress={retryFetch}
+            onPress={() => refetch().catch(() => {})}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -148,9 +188,13 @@ export default function ExpensesScreen() {
           maxToRenderPerBatch={10}
           windowSize={5}
           removeClippedSubviews
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          onEndReached={handleLoadMore}
+          refreshing={isRefetching}
+          onRefresh={() => refetch().catch(() => {})}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage().catch(() => {});
+            }
+          }}
           onEndReachedThreshold={0.3}
           ListHeaderComponent={
             expenses.length > 0 ? (
@@ -180,7 +224,7 @@ export default function ExpensesScreen() {
             />
           }
           ListFooterComponent={
-            loadingMore ? (
+            isFetchingNextPage ? (
               <View className="flex-row items-center justify-center gap-2 py-4">
                 <ActivityIndicator size="small" color="#0a7ea4" />
                 <Text variant="muted">Загружается история…</Text>
@@ -204,9 +248,13 @@ export default function ExpensesScreen() {
         visible={formVisible}
         editing={editing}
         onClose={() => setFormVisible(false)}
-        onSaved={(saved, wasEditing) => handleSaved(saved, wasEditing)}
-        onMissing={(id) => {
-          dropLocalExpense(id).catch(() => {});
+        onMissing={() => {
+          // Mutation's onMutate / onSettled already invalidates the list —
+          // any stale row will disappear on the next refetch.
+          showToast({
+            message: "Расход был удалён.",
+            variant: "error",
+          });
         }}
         token={token!}
       />

@@ -1,116 +1,66 @@
 // ─── DB facade ───────────────────────────────────────────────────────────────
 //
-// This module is a re-export-only barrel: every consumer in the app imports
-// from `@/lib/db`, and we forward each name to the per-domain repository
-// it lives in. Adding a new query? Put it in the matching repository file
-// (or create a new one) and add a single line below — never grow this file.
+// Re-export-only barrel for the residual SQLite layer. After the React
+// Query migration most domain reads moved to the network cache; what
+// remains here is:
+//   • Schema lifecycle (initDb, clearLocalData)
+//   • Multi-tenant scope helper (localScope) — used by reports + sale form
+//   • Money utilities (toKopecks / fromKopecks et al.)
+//   • Dashboard / reports offline cache (queries/dashboard reads this on
+//     network failure)
+//   • Notification dedupe table (low-stock alerts)
+//   • A handful of write-through helpers used by create-sale / create-expense
+//     to persist the freshly-saved row locally for the report aggregator.
 //
-// Repository files: products, debts, sales, expenses, purchases, shops,
-// notifications, cache, syncMetadata, money, scope, schema.
-//
-// Online-first: the outbox (`./outbox`) and offline mutation helpers
-// (decrement/cancel stock deltas, *Status setters, *DeletedLocally markers)
-// were removed in Phase 2. Writes go directly to the API; SQLite is a
-// read-only cache mirrored from remote fetchers in `lib/cache`.
+// Anything not exported here is dead code — don't add re-exports without
+// a real caller.
 
 export { getDb, initDb, clearLocalData } from "./schema";
 export { localScope } from "./scope";
 export type { LocalScope } from "./scope";
 
-// Money helpers — see lib/db/money.ts for kopecks/rubles conversion rules.
+// Money helpers — kopecks/rubles conversion rules used by every repo.
 export { toKopecks, fromKopecks, signedDebtAmount, localDebtTransactionType } from "./money";
 
-// Products repository — see lib/db/products.ts
+// Products — only the create-sale modal still touches this layer, for
+// ghost eviction + instant picker render. The list / detail screens are
+// on React Query.
 export {
   insertOrUpdateProducts,
   getLocalProducts,
-  getLocalProductById,
   deleteLocalProduct,
-  reconcileLocalProducts,
 } from "./products";
 export type { LocalProduct } from "./products";
 
-// Sync metadata — see lib/db/syncMetadata.ts (cache cursors, not outbox).
-export {
-  getSyncMetadata,
-  setSyncMetadata,
-  getProductsLastSyncedAt,
-  setProductsLastSyncedAt,
-  getDebtsLastSyncedAt,
-  setDebtsLastSyncedAt,
-  getSalesLastSyncedAt,
-  setSalesLastSyncedAt,
-  getExpensesLastSyncedAt,
-  setExpensesLastSyncedAt,
-  getPurchasesLastSyncedAt,
-  setPurchasesLastSyncedAt,
-  getShopsLastSyncedAt,
-  setShopsLastSyncedAt,
-  getEntityRowCounts,
-} from "./syncMetadata";
-export type { EntityRowCounts } from "./syncMetadata";
-
-// Debts repository — see lib/db/debts.ts
-export {
-  insertOrUpdateDebts,
-  insertOrUpdateDebtTransactions,
-  getLocalDebts,
-  getLocalDebtById,
-  getLocalDebtTransactions,
-  deleteLocalDebt,
-} from "./debts";
-
-// Sales repository — see lib/db/sales.ts
+// Sales — used by reports (export rows) and the create-sale form (writes
+// the new sale to the local mirror so reports include it before the next
+// sync cycle).
 export {
   insertOrUpdateRemoteSales,
-  getLocalSales,
-  getLocalSaleById,
-  deleteLocalSale,
   getSalesExportRows,
 } from "./sales";
-export type { LocalSale, SaleExportRow } from "./sales";
+export type { SaleExportRow } from "./sales";
 
-// Expenses repository — see lib/db/expenses.ts
-export {
-  insertOrUpdateExpenses,
-  getLocalExpenses,
-  deleteLocalExpense,
-} from "./expenses";
-export type { LocalExpense } from "./expenses";
+// Expenses — used by the create-expense form for the same reason as sales.
+export { insertOrUpdateExpenses } from "./expenses";
 
-// Purchases repository — see lib/db/purchases.ts
-export {
-  insertOrUpdatePurchases,
-  getLocalPurchases,
-  deleteLocalPurchase,
-} from "./purchases";
-export type { LocalPurchase } from "./purchases";
-
-// Shops repository — see lib/db/shops.ts
-export {
-  insertOrUpdateShops,
-  getLocalShops,
-  getLocalShopById,
-  deleteLocalShop,
-  reconcileLocalShops,
-} from "./shops";
+// Shops — multi-shop pickers (create-debt, edit-product, settings) read
+// this for the dropdown contents.
+export { getLocalShops } from "./shops";
 export type { LocalShop } from "./shops";
 
-// Cache helpers — see lib/db/cache.ts
+// Dashboard / reports offline cache. Read by queries/dashboard inside its
+// queryFn as the offline fallback; written on every successful pull.
 export {
-  invalidateAggregatedCaches,
   setDashboardCache,
   getDashboardCache,
-  setReportsCache,
-  getReportsCache,
 } from "./cache";
 
-// Notifications & low-stock — see lib/db/notifications.ts
+// Notification dedupe + low-stock alerts.
 export {
   insertNotification,
   getUnreadNotifications,
   markNotificationsRead,
-  checkAndNotifyLowStock,
   hasLowStockAlertBeenSent,
   markLowStockAlertSent,
 } from "./notifications";

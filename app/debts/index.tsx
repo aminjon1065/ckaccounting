@@ -1,32 +1,38 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import * as React from "react";
 import {
   ActivityIndicator,
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
   Pressable,
-  ScrollView,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Avatar, Button, EmptyState, FAB, Input, Select, Skeleton, Text } from "@/components/ui";
+import { Avatar, EmptyState, FAB, Skeleton, Text } from "@/components/ui";
 import { DEFAULT_CURRENCY } from "@/constants/config";
-import * as Crypto from "expo-crypto";
-import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
+import { type Debt } from "@/lib/api";
 import { useAuth } from "@/store/auth";
-import { useToast } from "@/store/toast";
-import { getLocalDebts, getLocalShops, localScope } from "@/lib/db";
 import { useIsOnline } from "@/lib/network/NetworkProvider";
 import { can, effectiveShopId, needsShopPicker, pickerShopIds } from "@/lib/permissions";
-import { reportError } from "@/lib/observability/reporter";
 import { fmt as fmtNumber } from "@/lib/formatters";
+import { useDebtList } from "@/lib/queries/debts";
+import { CreateDebtModal } from "@/components/debts/CreateDebtModal";
 
-// Debt amounts are signed in storage; the UI always shows the magnitude and
-// adds the +/- glyph at the call-site (different colour treatment per side).
+// ─── Helpers ────────────────────────────────────────────────────────────────
+//
+// SCHEMA INVARIANT: `Debt.balance >= 0` always. The `direction` column
+// (`receivable` | `payable`) carries the sign. When a transaction would
+// push the balance negative, DebtService flips `direction` and stores
+// the absolute value (see addTransaction in the backend).
+//
+// So every UI bucket / colour decision must be driven by `direction`,
+// NEVER by Math.sign(balance) — they look equivalent on test data but
+// silently agree on the wrong answer for real debts (`balance > 0,
+// direction = payable` is the common case, and balance-based logic
+// would mis-categorize every payable as a receivable).
+
 function fmt(n: number) {
   return fmtNumber(Math.abs(n));
 }
@@ -36,11 +42,26 @@ function fmtSince(iso: string): string {
   return `с ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`;
 }
 
-const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; onPress: () => void }) {
-  const isPositive = item.balance >= 0;
-  const amountClass = isPositive
+function isReceivable(debt: Debt): boolean {
+  return debt.direction !== "payable";
+}
+
+// ─── Card ───────────────────────────────────────────────────────────────────
+
+const DebtCard = React.memo(function DebtCard({
+  item,
+  onPress,
+}: {
+  item: Debt;
+  onPress: () => void;
+}) {
+  const receivable = isReceivable(item);
+  const amountClass = receivable
     ? "text-emerald-600 dark:text-emerald-400"
     : "text-red-500";
+  // Settled debts (balance = 0) get a muted look so the user can spot
+  // them in the list without bringing them to the foreground.
+  const isSettled = item.balance === 0;
 
   return (
     <Pressable
@@ -48,7 +69,18 @@ const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; o
       className="bg-white dark:bg-zinc-900 rounded-2xl p-3.5 mb-2.5 border border-slate-200 dark:border-zinc-800 active:opacity-80"
     >
       <View className="flex-row items-center gap-3">
-        <Avatar name={item.person_name} size="default" />
+        <View
+          className="w-10 h-10 rounded-full items-center justify-center"
+          style={{
+            backgroundColor: receivable ? "#dcfce7" : "#fee2e2",
+          }}
+        >
+          <MaterialIcons
+            name={receivable ? "call-made" : "call-received"}
+            size={18}
+            color={receivable ? "#16a34a" : "#ef4444"}
+          />
+        </View>
         <View className="flex-1 min-w-0">
           <Text
             className="text-[15px] font-semibold text-slate-900 dark:text-white"
@@ -57,439 +89,187 @@ const DebtCard = React.memo(function DebtCard({ item, onPress }: { item: Debt; o
             {item.person_name}
           </Text>
           <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5" numberOfLines={1}>
-            {item.created_by_name ? `${item.created_by_name} · ` : ""}
+            {receivable ? "Должен нам" : "Мы должны"}
+            {" · "}
             {fmtSince(item.created_at)}
           </Text>
         </View>
         <View className="items-end">
-          <Text
-            className={`font-heading text-[16px] tracking-tight ${amountClass}`}
-            style={{ fontVariantLigatures: "none" }}
-          >
-            {isPositive ? "+" : "−"}{fmt(item.balance)}
-          </Text>
-          <Text className="text-[10.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
-            {DEFAULT_CURRENCY}
-          </Text>
+          {isSettled ? (
+            <Text className="text-[14px] font-medium text-slate-400 dark:text-zinc-500">
+              Закрыт
+            </Text>
+          ) : (
+            <>
+              <Text
+                className={`font-heading text-[16px] tracking-tight ${amountClass}`}
+                style={{ fontVariantLigatures: "none" }}
+              >
+                {receivable ? "+" : "−"}{fmt(item.balance)}
+              </Text>
+              <Text className="text-[10.5px] text-slate-500 dark:text-zinc-400 mt-0.5">
+                {DEFAULT_CURRENCY}
+              </Text>
+            </>
+          )}
         </View>
       </View>
     </Pressable>
   );
 });
 
-type DebtTab = "receivable" | "payable";
+// ─── Top summary card ───────────────────────────────────────────────────────
 
-function DebtTabs({
-  active,
-  onChange,
-  receivableTotal,
-  payableTotal,
+function DebtsSummary({
+  receivable,
+  payable,
+  receivableCount,
+  payableCount,
 }: {
-  active: DebtTab;
-  onChange: (t: DebtTab) => void;
-  receivableTotal: number;
-  payableTotal: number;
+  receivable: number;
+  payable: number;
+  receivableCount: number;
+  payableCount: number;
 }) {
-  return (
-    <View className="flex-row gap-6 px-5 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
-      {(
-        [
-          { k: "receivable", l: "Нам должны", amt: receivableTotal, color: "text-emerald-600 dark:text-emerald-400" },
-          { k: "payable", l: "Мы должны", amt: payableTotal, color: "text-red-500" },
-        ] as { k: DebtTab; l: string; amt: number; color: string }[]
-      ).map((t) => {
-        const isActive = t.k === active;
-        return (
-          <Pressable
-            key={t.k}
-            onPress={() => onChange(t.k)}
-            className="py-3 flex-col items-start"
-            style={{
-              borderBottomWidth: 2,
-              borderBottomColor: isActive ? "#0a7ea4" : "transparent",
-            }}
-          >
-            <Text
-              className={`text-[13.5px] font-semibold ${
-                isActive ? "text-slate-900 dark:text-white" : "text-slate-500 dark:text-zinc-400"
-              }`}
-            >
-              {t.l}
-            </Text>
-            <Text
-              className={`font-heading text-[12px] tracking-tight mt-0.5 ${t.color}`}
-              style={{ fontVariantLigatures: "none" }}
-            >
-              {fmt(t.amt)} {DEFAULT_CURRENCY}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
+  const net = receivable - payable;
+  const netClass =
+    net > 0
+      ? "text-emerald-600 dark:text-emerald-400"
+      : net < 0
+        ? "text-red-500"
+        : "text-slate-500 dark:text-zinc-400";
 
-function DebtTabSummary({
-  tab,
-  total,
-  count,
-}: {
-  tab: DebtTab;
-  total: number;
-  count: number;
-}) {
-  const isReceivable = tab === "receivable";
   return (
     <View className="bg-white dark:bg-zinc-900 rounded-2xl p-4 mb-3 border border-slate-200 dark:border-zinc-800">
-      <Text className="text-[12px] text-slate-500 dark:text-zinc-400 font-medium">
-        Всего {isReceivable ? "нам должны" : "мы должны"}
-      </Text>
-      <Text
-        className={`font-heading text-[26px] leading-[30px] tracking-tight mt-1 ${
-          isReceivable ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"
-        }`}
-        style={{ fontVariantLigatures: "none" }}
-      >
-        {fmt(total)}{" "}
-        <Text className="text-[14px] font-medium text-slate-500 dark:text-zinc-400">
-          {DEFAULT_CURRENCY}
-        </Text>
-      </Text>
-      <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1">
-        {count} {isReceivable ? "клиентов" : "позиций"}
-      </Text>
+      <View className="flex-row gap-4">
+        {/* Receivable */}
+        <View className="flex-1">
+          <View className="flex-row items-center gap-1.5">
+            <MaterialIcons name="call-made" size={12} color="#16a34a" />
+            <Text className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 uppercase tracking-wide">
+              Нам должны
+            </Text>
+          </View>
+          <Text
+            className="font-heading text-[20px] leading-[24px] tracking-tight text-emerald-600 dark:text-emerald-400 mt-1"
+            style={{ fontVariantLigatures: "none" }}
+          >
+            {fmt(receivable)}
+          </Text>
+          <Text className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {receivableCount} {receivableCount === 1 ? "клиент" : "клиентов"}
+          </Text>
+        </View>
+
+        {/* Divider */}
+        <View className="w-px bg-slate-200 dark:bg-zinc-700" />
+
+        {/* Payable */}
+        <View className="flex-1">
+          <View className="flex-row items-center gap-1.5">
+            <MaterialIcons name="call-received" size={12} color="#ef4444" />
+            <Text className="text-[11px] font-semibold text-red-700 dark:text-red-300 uppercase tracking-wide">
+              Мы должны
+            </Text>
+          </View>
+          <Text
+            className="font-heading text-[20px] leading-[24px] tracking-tight text-red-500 mt-1"
+            style={{ fontVariantLigatures: "none" }}
+          >
+            {fmt(payable)}
+          </Text>
+          <Text className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+            {payableCount} {payableCount === 1 ? "позиция" : "позиций"}
+          </Text>
+        </View>
+      </View>
+
+      {/* Net (only when both sides have rows) */}
+      {(receivable > 0 || payable > 0) && (
+        <View className="mt-3 pt-3 border-t border-dashed border-slate-200 dark:border-zinc-700 flex-row justify-between items-baseline">
+          <Text className="text-[12px] text-slate-500 dark:text-zinc-400">
+            Баланс
+          </Text>
+          <Text
+            className={`font-heading text-[14px] tracking-tight ${netClass}`}
+            style={{ fontVariantLigatures: "none" }}
+          >
+            {net > 0 ? "+" : net < 0 ? "−" : ""}
+            {fmt(net)} {DEFAULT_CURRENCY}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
 
-function CreateDebtModal({
-  visible,
-  onClose,
-  onCreated,
-  showShopPicker,
-  implicitShopId,
-  allowedShopIds,
-  userId: _userId,
-  token,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onCreated: (d: Debt) => void;
-  /** Render shop picker when true. super_admin and multi-shop owner. */
-  showShopPicker: boolean;
-  /** Implicit shop for sellers / single-shop owners. */
-  implicitShopId?: number | null;
-  /** Shop ids the user may pick. `null` means "no restriction" (super_admin). */
-  allowedShopIds?: number[] | null;
-  userId?: number | null;
-  token: string;
-}) {
-  const [shopId, setShopId] = React.useState("");
-  const [shops, setShops] = React.useState<{ id: number; name: string }[]>([]);
-  const [personName, setPersonName] = React.useState("");
-  const [direction, setDirection] = React.useState<"receivable" | "payable">("receivable");
-  const [openingBalance, setOpeningBalance] = React.useState("");
-  const [error, setError] = React.useState("");
-  const [submitting, setSubmitting] = React.useState(false);
-  const { showToast } = useToast();
-
-  React.useEffect(() => {
-    if (visible) {
-      setShopId("");
-      setPersonName("");
-      setDirection("receivable");
-      setOpeningBalance("");
-      setError("");
-
-      if (showShopPicker) {
-        // Filter to the ids the current user is actually allowed to operate in
-        // — the local cache may hold shops the user can't post to (server
-        // returns them for context), and the API would reject the create.
-        getLocalShops()
-          .then((local) => {
-            const filtered = allowedShopIds == null
-              ? local
-              : local.filter((s) => allowedShopIds.includes(s.id));
-            setShops(filtered.map((shop) => ({ id: shop.id, name: shop.name })));
-          })
-          .catch(() => {});
-      }
-    }
-  }, [showShopPicker, visible, allowedShopIds]);
-
-  async function handleSubmit() {
-    setError("");
-    if (!personName.trim()) {
-      setError("Введите имя.");
-      return;
-    }
-    const selectedShopId = showShopPicker
-      ? (shopId ? Number(shopId) : undefined)
-      : (implicitShopId ?? undefined);
-    if (showShopPicker && !selectedShopId) {
-      setError("Выберите магазин.");
-      return;
-    }
-    if (!showShopPicker && !selectedShopId) {
-      setError("Магазин не назначен.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const amount = openingBalance ? Number(openingBalance.replace(",", ".")) : 0;
-      if (openingBalance && (isNaN(amount) || amount < 0)) {
-        setError("Введите сумму без минуса.");
-        return;
-      }
-      const payload: CreateDebtPayload = {
-        person_name: personName.trim(),
-        direction,
-      };
-      if (selectedShopId) {
-        payload.shop_id = selectedShopId;
-      }
-      if (amount > 0) {
-        payload.opening_balance = amount;
-      }
-
-      const idempotencyKey = await Crypto.randomUUID();
-      const created = await api.debts.create(payload, token, idempotencyKey);
-      onCreated(created);
-      onClose();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 0) {
-        showToast({
-          message: "Нет соединения. Проверьте интернет и попробуйте снова.",
-          variant: "error",
-        });
-      } else {
-        setError(e instanceof ApiError ? e.describeErrors() : "Что-то пошло не так.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onClose}
-    >
-      <SafeAreaView className="flex-1 bg-white dark:bg-zinc-950">
-        <View className="flex-row items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-          <TouchableOpacity
-            onPress={onClose}
-            hitSlop={10}
-            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-zinc-800 items-center justify-center active:opacity-70"
-          >
-            <MaterialIcons name="close" size={20} color="#475569" />
-          </TouchableOpacity>
-          <View className="flex-1">
-            <Text className="font-heading text-[17px] tracking-tight text-slate-900 dark:text-white">
-              Новый долг
-            </Text>
-            <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
-              Контрагент и стартовый баланс
-            </Text>
-          </View>
-        </View>
-
-        <KeyboardAvoidingView
-          behavior="padding"
-          className="flex-1"
-        >
-          <ScrollView
-            className="flex-1 px-5"
-            contentContainerStyle={{ paddingTop: 20, paddingBottom: 40 }}
-            keyboardShouldPersistTaps="handled"
-          >
-            {!!error && (
-              <View className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 mb-4 flex-row items-center gap-2">
-                <MaterialIcons name="error-outline" size={16} color="#ef4444" />
-                <Text className="text-sm text-red-600 flex-1">{error}</Text>
-              </View>
-            )}
-
-            <View className="gap-4">
-              {showShopPicker && (
-                <Select
-                  label="Магазин"
-                  required
-                  value={shopId}
-                  onValueChange={setShopId}
-                  options={shops.map((shop) => ({ label: shop.name, value: String(shop.id) }))}
-                  placeholder="Выберите магазин"
-                />
-              )}
-              <Input
-                label="Контрагент"
-                required
-                placeholder="Напр. Иван Иванов"
-                value={personName}
-                onChangeText={setPersonName}
-                returnKeyType="next"
-              />
-              <View>
-                <Text className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
-                  Направление
-                </Text>
-                <View className="flex-row gap-2">
-                  {([
-                    ["receivable", "Нам должны", "call-made", "#16a34a"],
-                    ["payable", "Мы должны", "call-received", "#ef4444"],
-                  ] as const).map(([value, label, icon, color]) => {
-                    const active = direction === value;
-                    return (
-                      <TouchableOpacity
-                        key={value}
-                        onPress={() => setDirection(value)}
-                        className={`flex-1 flex-row items-center justify-center gap-2 h-12 rounded-xl border ${
-                          active ? "border-transparent" : "border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-                        }`}
-                        style={active ? { backgroundColor: color } : undefined}
-                      >
-                        <MaterialIcons name={icon} size={17} color={active ? "#fff" : color} />
-                        <Text className={`text-sm font-semibold ${active ? "text-white" : "text-slate-700 dark:text-slate-200"}`}>
-                          {label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-              <Input
-                label="Начальная сумма"
-                placeholder="0 (необязательно)"
-                hint="Введите сумму без минуса, направление выберите выше"
-                value={openingBalance}
-                onChangeText={setOpeningBalance}
-                keyboardType="numeric"
-                returnKeyType="done"
-                onSubmitEditing={handleSubmit}
-              />
-            </View>
-
-            <Button
-              className="mt-6"
-              size="lg"
-              onPress={handleSubmit}
-              loading={submitting}
-              disabled={submitting}
-            >
-              Создать
-            </Button>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </Modal>
-  );
-}
+// ─── Screen ─────────────────────────────────────────────────────────────────
 
 export default function DebtsScreen() {
   const { user, token } = useAuth();
-  const { showToast } = useToast();
   const isOnline = useIsOnline();
   const router = useRouter();
 
-  const [debts, setDebts] = React.useState<Debt[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [hasMore, setHasMore] = React.useState(false);
-  const [loadingMore, setLoadingMore] = React.useState(false);
+  const query = useDebtList(token);
+  const {
+    data,
+    error,
+    isPending,
+    isFetching,
+    isRefetching,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    refetch,
+  } = query;
+
+  const debts = React.useMemo<Debt[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.data),
+    [data],
+  );
+
   const [createVisible, setCreateVisible] = React.useState(false);
-  const [error, setError] = React.useState("");
-  const [isOfflineView, setIsOfflineView] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<DebtTab>("receivable");
   const canCreateDebt = can(user?.role, "debts:create");
 
-  // Per-tab totals + filtered list. `balance >= 0` means they owe us
-  // (receivable), `< 0` means we owe them (payable). The card always shows
-  // the absolute value; the sign drives colour + tab placement.
-  const { receivableTotal, payableTotal, filtered } = React.useMemo(() => {
+  // Compute totals. All math driven by `direction` (not by Math.sign(balance)
+  // — see invariant note at top of file). Settled rows (balance = 0) stay
+  // in the list as notes, like Saldo — they just don't contribute to the
+  // totals because there's nothing outstanding.
+  const stats = React.useMemo(() => {
     let receivable = 0;
     let payable = 0;
-    const inTab: Debt[] = [];
+    let receivableCount = 0;
+    let payableCount = 0;
+
     for (const d of debts) {
-      if (d.balance >= 0) {
+      if (d.balance === 0) continue;
+      if (isReceivable(d)) {
         receivable += d.balance;
-        if (activeTab === "receivable") inTab.push(d);
+        receivableCount += 1;
       } else {
-        payable += Math.abs(d.balance);
-        if (activeTab === "payable") inTab.push(d);
+        payable += d.balance;
+        payableCount += 1;
       }
     }
-    return { receivableTotal: receivable, payableTotal: payable, filtered: inTab };
-  }, [debts, activeTab]);
+
+    return { receivable, payable, receivableCount, payableCount };
+  }, [debts]);
 
   const renderDebt = React.useCallback(
     ({ item }: { item: Debt }) => (
       <DebtCard item={item} onPress={() => router.push(`/debts/${item.id}`)} />
     ),
-    [router]
+    [router],
   );
   const debtKey = React.useCallback((item: Debt) => String(item.id), []);
 
-  // Server-first: try `/debts` and fall back to the local mirror only when
-  // the network is down. Pagination is server-side cursor based; on offline
-  // fallback we just dump what's in SQLite as a one-shot snapshot.
-  const fetchDebts = React.useCallback(async () => {
-    if (!token) return;
-    setError("");
-    try {
-      const res = await api.debts.list(token, { limit: 50 });
-      setDebts(res.data ?? []);
-      setHasMore(!!(res as { next_cursor?: string | null }).next_cursor);
-      setIsOfflineView(false);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 0) {
-        try {
-          const localDebts = await getLocalDebts(localScope(user));
-          setDebts(localDebts);
-          setIsOfflineView(true);
-          setHasMore(false);
-        } catch (le) {
-          reportError(le, { tag: "debts-offline-fallback" });
-          setError("Нет сети и нет локальных данных.");
-        }
-      } else {
-        reportError(e, { tag: "debts-fetch" });
-        setError(e instanceof Error ? e.message : "Не удалось загрузить долги.");
-      }
-    }
-  }, [token, user]);
-
-  React.useEffect(() => {
-    fetchDebts().finally(() => setLoading(false));
-  }, [fetchDebts]);
-
-  // When connectivity returns after an offline fallback, refresh.
-  const wasOfflineRef = React.useRef(false);
-  React.useEffect(() => {
-    if (isOnline && wasOfflineRef.current) {
-      fetchDebts().catch(() => {});
-    }
-    wasOfflineRef.current = !isOnline;
-  }, [isOnline, fetchDebts]);
-
-  // Refresh on screen focus so balances reflect detail-page mutations.
-  const isFirstFocusRef = React.useRef(true);
-  useFocusEffect(
-    React.useCallback(() => {
-      if (isFirstFocusRef.current) {
-        isFirstFocusRef.current = false;
-        return;
-      }
-      fetchDebts().catch(() => {});
-    }, [fetchDebts]),
-  );
-
-  const isReceivable = activeTab === "receivable";
+  const showSkeleton = isPending && debts.length === 0;
+  const showHardError = !!error && debts.length === 0;
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50 dark:bg-zinc-950">
-      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3 bg-white dark:bg-zinc-900">
+      {/* Header */}
+      <View className="flex-row items-center gap-2 px-4 pt-4 pb-3 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
         <Pressable
           onPress={() => router.back()}
           hitSlop={10}
@@ -502,40 +282,40 @@ export default function DebtsScreen() {
             Долги
           </Text>
           <Text className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5">
-            Дебиторская и кредиторская
+            Дебиторская и кредиторская задолженность
           </Text>
         </View>
+        {isFetching && !isRefetching && debts.length > 0 && (
+          <ActivityIndicator size="small" color="#94a3b8" />
+        )}
       </View>
 
-      <DebtTabs
-        active={activeTab}
-        onChange={setActiveTab}
-        receivableTotal={receivableTotal}
-        payableTotal={payableTotal}
-      />
-
-      {loading ? (
+      {showSkeleton ? (
         <View className="flex-1 px-4 pt-4">
+          <Skeleton className="h-[104px] rounded-2xl mb-3" />
           {[1, 2, 3].map((i) => (
             <View key={i} className="mb-2.5">
               <Skeleton className="h-[72px] rounded-2xl" />
             </View>
           ))}
         </View>
-      ) : error ? (
+      ) : showHardError ? (
         <View className="flex-1 items-center justify-center px-8">
-          <MaterialIcons name="cloud-off" size={48} color="#94a3b8" />
+          <MaterialIcons
+            name={isOnline ? "error-outline" : "cloud-off"}
+            size={48}
+            color="#94a3b8"
+          />
           <Text variant="h5" className="mt-4 text-center">
-            Ошибка загрузки
+            {isOnline ? "Ошибка загрузки" : "Нет соединения"}
           </Text>
           <Text variant="muted" className="mt-1 text-center">
-            {error}
+            {isOnline
+              ? (error as Error)?.message ?? "Попробуйте ещё раз."
+              : "Список обновится автоматически, когда вернётся интернет."}
           </Text>
           <TouchableOpacity
-            onPress={() => {
-              setLoading(true);
-              fetchDebts().finally(() => setLoading(false));
-            }}
+            onPress={() => refetch().catch(() => {})}
             className="mt-4 flex-row items-center gap-2 bg-primary-500 px-5 py-2.5 rounded-xl"
           >
             <MaterialIcons name="refresh" size={18} color="#fff" />
@@ -544,43 +324,40 @@ export default function DebtsScreen() {
         </View>
       ) : (
         <FlatList
-          data={filtered}
+          data={debts}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
           ListHeaderComponent={
             debts.length ? (
-              <DebtTabSummary
-                tab={activeTab}
-                total={isReceivable ? receivableTotal : payableTotal}
-                count={filtered.length}
+              <DebtsSummary
+                receivable={stats.receivable}
+                payable={stats.payable}
+                receivableCount={stats.receivableCount}
+                payableCount={stats.payableCount}
               />
             ) : null
           }
-          refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            fetchDebts().finally(() => setRefreshing(false));
-          }}
+          refreshing={isRefetching}
+          onRefresh={() => refetch().catch(() => {})}
           onEndReached={() => {
-            // Future enhancement: paginate via `cursor`. For now the first
-            // page (limit 50) is enough for the typical use case; the user
-            // can search/filter when we add it.
-            if (!hasMore || loadingMore) return;
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage().catch(() => {});
+            }
           }}
           onEndReachedThreshold={0.3}
           ListEmptyComponent={
             <EmptyState
               icon="people"
-              title={isReceivable ? "Нам никто не должен" : "Мы никому не должны"}
-              description={
-                debts.length === 0
-                  ? "Добавьте человека или поставщика, чтобы видеть баланс и историю операций."
-                  : "В этой вкладке пусто. Переключитесь на другую."
-              }
+              title="Долгов пока нет"
+              description="Добавьте контрагента — кнопка «+» в правом нижнем углу."
             />
           }
           ListFooterComponent={
-            loadingMore ? (
-              <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 16 }} />
+            isFetchingNextPage ? (
+              <ActivityIndicator
+                size="small"
+                color="#0a7ea4"
+                style={{ marginVertical: 16 }}
+              />
             ) : null
           }
           renderItem={renderDebt}
@@ -588,26 +365,15 @@ export default function DebtsScreen() {
         />
       )}
 
-      {canCreateDebt && (
-        <FAB onPress={() => setCreateVisible(true)} />
-      )}
+      {canCreateDebt && <FAB onPress={() => setCreateVisible(true)} />}
 
       {token && (
         <CreateDebtModal
           visible={createVisible}
           onClose={() => setCreateVisible(false)}
-          onCreated={(d) => {
-            // Optimistic prepend so the user sees the row immediately;
-            // server-first refetch below makes sure the list matches what
-            // the server thinks (real server id, computed balance, etc).
-            setDebts((prev) => [d, ...prev]);
-            showToast({ message: "Запись добавлена", variant: "success" });
-            fetchDebts().catch(() => {});
-          }}
           showShopPicker={needsShopPicker(user)}
           implicitShopId={effectiveShopId(user)}
           allowedShopIds={pickerShopIds(user)}
-          userId={user?.id}
           token={token}
         />
       )}
