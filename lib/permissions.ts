@@ -63,7 +63,11 @@ const PERMISSIONS: Record<Action, Role[]> = {
   "debts:edit":           ["super_admin", "owner", "seller"],
   "debts:addTransaction": ["super_admin", "owner", "seller"],
   "debts:delete":         ["super_admin", "owner"],
-  "reports:view":         ["super_admin", "owner"],
+  // Sellers can pull reports — server-side scope narrows each query
+  // to rows they own (own sales / sale items / sale returns / expenses).
+  // Stock report stays shop-wide for sellers since per-seller stock has
+  // no meaningful definition.
+  "reports:view":         ["super_admin", "owner", "seller"],
   "settings:viewShop":    ["super_admin", "owner"],
   "settings:editShop":    ["super_admin", "owner"],
   "users:view":           ["super_admin", "owner"],
