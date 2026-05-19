@@ -11,8 +11,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Input, Select, Text } from "@/components/ui";
-import { ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
-import { getLocalShops } from "@/lib/db";
+import { api, ApiError, type CreateDebtPayload, type Debt } from "@/lib/api";
 import { useToast } from "@/store/toast";
 import { useCreateDebt } from "@/lib/queries/debts";
 
@@ -56,19 +55,21 @@ export function CreateDebtModal({
     setError("");
 
     if (showShopPicker) {
-      // Filter to the ids the current user is actually allowed to operate
-      // in — the local cache may hold shops the user can't post to.
-      getLocalShops()
-        .then((local) => {
+      // Server-side scoping returns only shops the user owns; super_admin
+      // gets the full set. `allowedShopIds` narrows further when present.
+      api.shops
+        .list(token)
+        .then((res) => {
+          const raw = res.data ?? [];
           const filtered =
             allowedShopIds == null
-              ? local
-              : local.filter((s) => allowedShopIds.includes(s.id));
+              ? raw
+              : raw.filter((s) => allowedShopIds.includes(s.id));
           setShops(filtered.map((shop) => ({ id: shop.id, name: shop.name })));
         })
         .catch(() => {});
     }
-  }, [showShopPicker, visible, allowedShopIds]);
+  }, [showShopPicker, visible, allowedShopIds, token]);
 
   async function handleSubmit() {
     setError("");

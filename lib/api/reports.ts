@@ -7,6 +7,20 @@
 
 import { request, qs } from "./client";
 
+export interface SalesReportReturnRow {
+  sale_return_id: string;
+  sale_id: string;
+  created_at: string | null;
+  reason: string | null;
+  refund_method: string | null;
+  seller_name: string | null;
+  product_name: string | null;
+  unit: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
 export interface SalesReport {
   total_sales: number;
   /** Net amount: gross sales − returns. Renders as the headline figure. */
@@ -16,6 +30,11 @@ export interface SalesReport {
   sales_gross?: number;
   /** Refunds processed inside the report window. */
   returns_total?: number;
+  /** Per-line breakdown of returns inside the report window. Populated
+   *  only when `returns_total > 0` (server skips the query otherwise to
+   *  keep the payload light). Rendered as the "Возвраты" table in the
+   *  PDF export. Older servers omit this field. */
+  returns?: SalesReportReturnRow[];
   cash: number;
   card: number;
   transfer: number;

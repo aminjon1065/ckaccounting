@@ -768,9 +768,18 @@ export default function ReportsScreen() {
         // the local mirror because no server endpoint returns sale_items
         // with cost_price.
         const d = currentData as SalesReport;
+        const hasReturns = (d.returns_total ?? 0) > 0;
         html += `
           <div class="stat-row"><span class="stat-label">Кол-во продаж</span><span class="stat-value">${fmt(d.total_sales)}</span></div>
-          <div class="stat-row"><span class="stat-label">Выручка</span><span class="stat-value" style="color:#0a7ea4;">${fmt(d.total_amount)}</span></div>
+          ${
+            hasReturns
+              ? `
+          <div class="stat-row"><span class="stat-label">Брутто продаж</span><span class="stat-value">${fmt(d.sales_gross ?? d.total_amount)}</span></div>
+          <div class="stat-row"><span class="stat-label">Возвраты</span><span class="stat-value" style="color:#f59e0b">− ${fmt(d.returns_total ?? 0)}</span></div>
+          <div class="stat-row"><span class="stat-label">Чистая выручка</span><span class="stat-value" style="color:#0a7ea4;">${fmt(d.total_amount)}</span></div>`
+              : `
+          <div class="stat-row"><span class="stat-label">Выручка</span><span class="stat-value" style="color:#0a7ea4;">${fmt(d.total_amount)}</span></div>`
+          }
           <div class="stat-row"><span class="stat-label">Наличные</span><span class="stat-value">${fmt(d.cash)}</span></div>
           <div class="stat-row"><span class="stat-label">Карта</span><span class="stat-value">${fmt(d.card)}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Перевод</span><span class="stat-value">${fmt(d.transfer)}</span></div>
@@ -805,6 +814,56 @@ export default function ReportsScreen() {
               <td class="text-right">${fmt(it.cost_price)}</td>
               <td class="text-right">${fmt(it.unit_price)}</td>
               <td class="text-right"><b>${fmt(it.line_total)}</b></td>
+            </tr>`;
+          });
+          html += `</tbody></table>`;
+        }
+        // Returns table — one row per `sale_return_items` line, served
+        // by the same `/reports/sales` payload. Skipped when there were
+        // no refunds in the window (server omits the array → length 0).
+        const returnRows = d.returns ?? [];
+        if (returnRows.length > 0) {
+          const escapeHtml = (s: string) =>
+            s
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+          const REFUND_LABELS: Record<string, string> = {
+            cash: "Наличные",
+            card: "Карта",
+            transfer: "Перевод",
+            offset_debt: "В счёт долга",
+          };
+          html += `<div class="table-title">Возвраты</div><table><thead><tr>
+            <th>Дата</th>
+            <th>Продавец</th>
+            <th>Товар</th>
+            <th class="text-right">Кол-во</th>
+            <th class="text-right">Цена</th>
+            <th class="text-right">Сумма</th>
+            <th>Способ</th>
+            <th>Причина</th>
+          </tr></thead><tbody>`;
+          returnRows.forEach((r) => {
+            const dateLabel = r.created_at
+              ? new Date(r.created_at).toLocaleDateString("ru-RU", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "numeric",
+                })
+              : "—";
+            const method = r.refund_method
+              ? REFUND_LABELS[r.refund_method] ?? r.refund_method
+              : "—";
+            html += `<tr>
+              <td>${dateLabel}</td>
+              <td>${escapeHtml(r.seller_name ?? "—")}</td>
+              <td>${escapeHtml(r.product_name ?? "—")}</td>
+              <td class="text-right">${fmt(r.quantity)}</td>
+              <td class="text-right">${fmt(r.price)}</td>
+              <td class="text-right" style="color:#f59e0b"><b>− ${fmt(r.total)}</b></td>
+              <td>${escapeHtml(method)}</td>
+              <td>${escapeHtml(r.reason ?? "")}</td>
             </tr>`;
           });
           html += `</tbody></table>`;
@@ -846,9 +905,24 @@ export default function ReportsScreen() {
       } else if (activeTab === "profit") {
         const d = currentData as ProfitReport;
         const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#0f172a";
+        const hasReturns = (d.returns_total ?? 0) > 0;
+        const hasReturnsCogs = (d.returns_cogs ?? 0) > 0;
         html += `
-          <div class="stat-row"><span class="stat-label">Выручка</span><span class="stat-value">${fmt(d.total_sales)}</span></div>
+          ${
+            hasReturns
+              ? `
+          <div class="stat-row"><span class="stat-label">Брутто продаж</span><span class="stat-value">${fmt(d.sales_gross ?? d.total_sales)}</span></div>
+          <div class="stat-row"><span class="stat-label">Возвраты</span><span class="stat-value" style="color:#f59e0b">− ${fmt(d.returns_total ?? 0)}</span></div>
+          <div class="stat-row"><span class="stat-label">Чистая выручка</span><span class="stat-value" style="color:#16a34a">${fmt(d.total_sales)}</span></div>`
+              : `
+          <div class="stat-row"><span class="stat-label">Выручка</span><span class="stat-value">${fmt(d.total_sales)}</span></div>`
+          }
           <div class="stat-row"><span class="stat-label">Себестоимость</span><span class="stat-value">${fmt(d.total_cost)}</span></div>
+          ${
+            hasReturnsCogs
+              ? `<div class="stat-row"><span class="stat-label">Возврат себестоимости</span><span class="stat-value" style="color:#16a34a">+ ${fmt(d.returns_cogs ?? 0)}</span></div>`
+              : ""
+          }
           <div class="stat-row"><span class="stat-label">Расходы</span><span class="stat-value">${fmt(d.total_expenses)}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Чистая прибыль</span><span class="stat-value" style="color:${profitColor};font-size:16px">${(d.profit >= 0 ? "+" : "−") + fmt(d.profit)}</span></div>
         </div>`;
