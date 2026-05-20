@@ -21,6 +21,31 @@ export interface SalesReportReturnRow {
   total: number;
 }
 
+export interface SalesReportReceiptItem {
+  product_id: string | null;
+  product_name: string | null;
+  unit: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+  /** Null when the requester is a seller — backend strips cost. */
+  cost_price: number | null;
+}
+
+export interface SalesReportReceipt {
+  sale_id: string;
+  created_at: string | null;
+  customer_name: string | null;
+  seller_name: string | null;
+  payment_type: "cash" | "card" | "transfer" | null;
+  type?: "product" | "service" | null;
+  total: number;
+  discount: number;
+  paid: number;
+  debt: number;
+  items: SalesReportReceiptItem[];
+}
+
 export interface SalesReport {
   total_sales: number;
   /** Net amount: gross sales − returns. Renders as the headline figure. */
@@ -35,6 +60,9 @@ export interface SalesReport {
    *  keep the payload light). Rendered as the "Возвраты" table in the
    *  PDF export. Older servers omit this field. */
   returns?: SalesReportReturnRow[];
+  /** Per-sale receipts with eager-loaded items. Powers the receipt-block
+   *  layout in the PDF export. Older servers omit this. */
+  receipts?: SalesReportReceipt[];
   cash: number;
   card: number;
   transfer: number;
@@ -83,9 +111,13 @@ export interface ProfitReport {
 export interface StockReportRow {
   id: string;
   name: string;
+  /** SKU / barcode if set. Helps identify the product in long lists. */
+  code?: string | null;
   unit?: string | null;
   /** Closing balance (period mode) or current stock (snapshot mode). */
   stock_quantity: number;
+  /** Server-side low-stock threshold; PDF tags rows below this as "Мало". */
+  low_stock_alert?: number | null;
   sale_price: number;
   cost_price: number;
   /** stock × sale_price */
@@ -139,8 +171,10 @@ function normalizeStockReport(report: any): StockReport {
         return {
           id: String(item?.id ?? ""),
           name: String(item?.name ?? ""),
+          code: item?.code ?? null,
           unit: item?.unit ?? null,
           stock_quantity: qty,
+          low_stock_alert: item?.low_stock_alert != null ? Number(item.low_stock_alert) : null,
           sale_price: salePrice,
           cost_price: costPrice,
           value: Number(item?.value ?? qty * salePrice),

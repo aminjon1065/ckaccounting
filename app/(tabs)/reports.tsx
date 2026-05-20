@@ -528,11 +528,20 @@ function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCo
 
 function StockReportView({ data, canViewCost }: { data: StockReport; canViewCost: boolean }) {
   const isPeriod = data.mode === "period";
+  // Owners care about how much the inventory cost them (working capital
+  // locked in stock); sellers don't have cost visibility so they see the
+  // sale-priced valuation instead.
+  const heroValue = canViewCost ? data.total_cost_value : data.total_value;
+  const heroLabel = isPeriod
+    ? "Остаток на конец периода"
+    : canViewCost
+      ? "Себестоимость склада"
+      : "Стоимость склада";
   return (
     <View>
       <HeroSummary
-        label={isPeriod ? "Остаток на конец периода" : "Стоимость склада"}
-        value={fmt(data.total_value)}
+        label={heroLabel}
+        value={fmt(heroValue)}
         sub={
           isPeriod
             ? `${data.total_products} наименований · ${data.date_from} → ${data.date_to}`
@@ -582,19 +591,32 @@ function StockReportView({ data, canViewCost }: { data: StockReport; canViewCost
         <Card className="mb-3.5">
           <CardContent className="py-3">
             <StatRow label="Всего товаров" value={String(data.total_products)} />
-            {canViewCost && (
+            {canViewCost ? (
+              <>
+                {/* Owner / admin: cost-side valuation is the headline
+                    figure — it answers "how much capital is locked up in
+                    stock right now?". Sale-side stays as a secondary row. */}
+                <StatRow
+                  label="Сумма себестоимости"
+                  value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
+                  color="text-primary-500"
+                  large
+                />
+                <StatRow
+                  label="Сумма продажи"
+                  value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
+                  color="text-slate-500"
+                />
+              </>
+            ) : (
+              // Seller: no cost visibility — only sale-priced total.
               <StatRow
-                label="Сумма себестоимости"
-                value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
-                color="text-slate-500"
+                label="Сумма продажи"
+                value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
+                color="text-primary-500"
+                large
               />
             )}
-            <StatRow
-              label="Сумма продажи"
-              value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
-              color="text-primary-500"
-              large
-            />
             <StatRow
               label="Мало на складе"
               value={String(data.low_stock)}
@@ -753,11 +775,16 @@ export default function ReportsScreen() {
     if (!currentData) return;
     setGeneratingPDF(true);
     try {
+      // Stock report tables can grow to 10–11 columns — landscape gives
+      // them room. Sales uses a receipt-block layout that reads naturally
+      // in portrait.
+      const isWideTable = activeTab === "stock";
       let html = `
         <html><head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
           <style>
-            body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; padding: 24px; color: #0f172a; }
+            ${isWideTable ? "@page { size: A4 landscape; margin: 16mm 14mm; }" : "@page { size: A4 portrait; margin: 18mm 14mm; }"}
+            body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; padding: 0; color: #0f172a; }
             h1 { font-size: 22px; color: #0a7ea4; margin: 0 0 4px; }
             h3 { font-size: 13px; color: #64748b; margin: 0 0 18px; font-weight: 500; }
             .stat-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e2e8f0; }
@@ -765,10 +792,33 @@ export default function ReportsScreen() {
             .stat-value { font-weight: 600; font-size: 14px; }
             .table-title { font-weight: 700; margin: 18px 0 8px; font-size: 14px; color: #334155; }
             table { width: 100%; border-collapse: collapse; }
-            th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
-            th { background: #f8fafc; color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
+            th, td { text-align: left; padding: ${isWideTable ? "6px 7px" : "8px"}; border-bottom: 1px solid #e2e8f0; font-size: ${isWideTable ? "11.5px" : "13px"}; }
+            th { background: #f8fafc; color: #64748b; font-size: ${isWideTable ? "10px" : "11px"}; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
             .text-right { text-align: right; }
             .card { background: #fff; padding: 14px 16px; border-radius: 12px; border: 1px solid #e2e8f0; }
+            /* Sales receipt blocks: each sale becomes a self-contained
+               card with header / items / footer totals. */
+            .receipt { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; page-break-inside: avoid; }
+            .receipt-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e2e8f0; }
+            .receipt-head-right { text-align: right; }
+            .receipt-title { font-weight: 700; font-size: 13px; color: #0f172a; }
+            .receipt-meta { font-size: 10.5px; color: #64748b; margin-top: 2px; }
+            .receipt-net { font-weight: 700; font-size: 14px; color: #0a7ea4; }
+            table.receipt-items { width: 100%; border-collapse: collapse; margin: 6px 0; }
+            table.receipt-items th, table.receipt-items td { border-bottom: 1px solid #f1f5f9; padding: 4px 6px; font-size: 11px; }
+            table.receipt-items th { background: #f8fafc; }
+            .receipt-totals { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #e2e8f0; font-size: 11px; }
+            .receipt-totals > div { display: flex; justify-content: space-between; padding: 2px 0; }
+            .receipt-totals > div span { color: #64748b; }
+            .receipt-totals > div b { color: #0f172a; }
+            .receipt-totals .receipt-total { border-top: 1px solid #e2e8f0; margin-top: 4px; padding-top: 4px; font-size: 12.5px; }
+            .receipt-totals .receipt-total b { color: #0a7ea4; }
+            .period-totals { margin-top: 18px; padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 12px; }
+            .period-totals-title { font-weight: 700; font-size: 13px; color: #334155; margin-bottom: 6px; }
+            .period-totals > div { display: flex; justify-content: space-between; padding: 3px 0; }
+            .period-totals > div span { color: #64748b; }
+            .period-totals .period-totals-net { border-top: 1px solid #e2e8f0; margin-top: 6px; padding-top: 6px; font-size: 13px; }
+            .period-totals .period-totals-net b { color: #0a7ea4; }
           </style>
         </head><body>
           <h1>${TABS.find((t) => t.key === activeTab)?.label ?? "Отчёт"}</h1>
@@ -803,56 +853,203 @@ export default function ReportsScreen() {
           <div class="stat-row"><span class="stat-label">Карта</span><span class="stat-value">${fmt(d.card)}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Перевод</span><span class="stat-value">${fmt(d.transfer)}</span></div>
         </div>`;
-        const exportRows = await getSalesExportRows(localScope(user, activeShopId), {
-          dateFrom,
-          dateTo,
+        // Per-sale receipts come from the server now — the local SQLite
+        // mirror isn't reliably populated after the server-first refactor.
+        // Fall back to the local query (best-effort) only when the server
+        // didn't ship the `receipts` field.
+        type Receipt = {
+          sale_id: string;
+          created_at: string | null;
+          customer_name: string | null;
+          seller_name: string | null;
+          payment_type: string | null;
+          total: number;
+          discount: number;
+          paid: number;
+          debt: number;
+          items: {
+            product_name: string | null;
+            quantity: number;
+            price: number;
+            total: number;
+            cost_price: number | null;
+          }[];
+        };
+        let receipts: Receipt[];
+        if (d.receipts && d.receipts.length > 0) {
+          receipts = d.receipts as Receipt[];
+        } else {
+          const rows = await getSalesExportRows(localScope(user, activeShopId), {
+            dateFrom,
+            dateTo,
+          });
+          const map = new Map<string, Receipt>();
+          rows.forEach((row) => {
+            const item = {
+              product_name: row.product_name,
+              quantity: row.quantity,
+              price: row.unit_price,
+              total: row.line_total,
+              cost_price: row.cost_price,
+            };
+            const existing = map.get(row.sale_id);
+            if (existing) {
+              existing.items.push(item);
+            } else {
+              map.set(row.sale_id, {
+                sale_id: row.sale_id,
+                created_at: row.created_at,
+                customer_name: row.customer_name,
+                seller_name: row.seller_name,
+                payment_type: row.payment_type,
+                total: row.sale_total,
+                discount: row.sale_discount,
+                paid: row.sale_paid,
+                debt: row.sale_debt,
+                items: [item],
+              });
+            }
+          });
+          receipts = Array.from(map.values());
+        }
+        const escapeHtml = (s: string) =>
+          s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        const PAYMENT_LABELS: Record<string, string> = {
+          cash: "Наличные",
+          card: "Карта",
+          transfer: "Перевод",
+        };
+        const REFUND_LABELS: Record<string, string> = {
+          cash: "Наличные",
+          card: "Карта",
+          transfer: "Перевод",
+          offset_debt: "В счёт долга",
+        };
+        const formatDate = (iso: string | null) =>
+          iso
+            ? new Date(iso).toLocaleDateString("ru-RU", {
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+              })
+            : "—";
+        // Aggregate returns by sale (header table) and by (sale, product)
+        // (line-item table). Server payload `d.returns` is a flat list of
+        // `sale_return_items` — pre-grouping here keeps the per-row PDF
+        // rendering O(1).
+        const returnsRows = d.returns ?? [];
+        const returnsBySale: Record<string, { qty: number; total: number }> = {};
+        const returnsByLine: Record<string, { qty: number; total: number }> = {};
+        returnsRows.forEach((r) => {
+          if (!r.sale_id) return;
+          const saleAgg = returnsBySale[r.sale_id] ?? { qty: 0, total: 0 };
+          saleAgg.qty += r.quantity;
+          saleAgg.total += r.total;
+          returnsBySale[r.sale_id] = saleAgg;
+          const lineKey = `${r.sale_id}::${r.product_name ?? ""}`;
+          const lineAgg = returnsByLine[lineKey] ?? { qty: 0, total: 0 };
+          lineAgg.qty += r.quantity;
+          lineAgg.total += r.total;
+          returnsByLine[lineKey] = lineAgg;
         });
-        if (exportRows.length > 0) {
-          html += `<div class="table-title">По товарам</div><table><thead><tr>
-            <th>Дата</th>
-            <th>Продавец</th>
-            <th>Товар</th>
-            <th class="text-right">Кол-во</th>
-            ${canViewCost ? `<th class="text-right">Себест.</th>` : ""}
-            <th class="text-right">Цена</th>
-            <th class="text-right">Сумма</th>
-          </tr></thead><tbody>`;
-          exportRows.forEach((it) => {
-            const d2 = it.created_at
-              ? new Date(it.created_at).toLocaleDateString("ru-RU", {
+
+        if (receipts.length > 0) {
+          // Each receipt becomes a self-contained block: header → items
+          // → totals. Reads top-to-bottom like an actual stack of
+          // receipts in chronological order (newest first — receipts
+          // arrive pre-sorted by the server).
+          html += `<div class="table-title">Чеки</div>`;
+          receipts.forEach((s) => {
+            const grossItems = s.items.reduce((acc, it) => acc + it.total, 0);
+            const refund = returnsBySale[s.sale_id]?.total ?? 0;
+            const refundQty = returnsBySale[s.sale_id]?.qty ?? 0;
+            const net = s.total - refund;
+            const payment = s.payment_type
+              ? PAYMENT_LABELS[s.payment_type] ?? s.payment_type
+              : "—";
+            const dateLabel = s.created_at
+              ? new Date(s.created_at).toLocaleString("ru-RU", {
                   day: "2-digit",
                   month: "2-digit",
                   year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
                 })
               : "—";
-            html += `<tr>
-              <td>${d2}</td>
-              <td>${it.seller_name ?? "—"}</td>
-              <td>${it.product_name ?? "—"}</td>
-              <td class="text-right">${fmt(it.quantity)}</td>
-              ${canViewCost ? `<td class="text-right">${fmt(it.cost_price)}</td>` : ""}
-              <td class="text-right">${fmt(it.unit_price)}</td>
-              <td class="text-right"><b>${fmt(it.line_total)}</b></td>
-            </tr>`;
+
+            html += `<div class="receipt">
+              <div class="receipt-head">
+                <div class="receipt-head-left">
+                  <div class="receipt-title">${escapeHtml(s.customer_name ?? "Без покупателя")}</div>
+                  <div class="receipt-meta">${dateLabel} · продавец: ${escapeHtml(s.seller_name ?? "—")} · оплата: ${escapeHtml(payment)}</div>
+                </div>
+                <div class="receipt-head-right">
+                  <div class="receipt-net">${fmt(net)} ${DEFAULT_CURRENCY}</div>
+                  <div class="receipt-meta">${s.items.length} поз.${refundQty > 0 ? ` · возврат ${fmt(refundQty)} ед.` : ""}</div>
+                </div>
+              </div>
+              <table class="receipt-items"><thead><tr>
+                <th>Товар</th>
+                <th class="text-right">Кол-во</th>
+                <th class="text-right">Возвр.</th>
+                ${canViewCost ? `<th class="text-right">Себест.</th>` : ""}
+                <th class="text-right">Цена</th>
+                <th class="text-right">Сумма</th>
+                <th class="text-right">Возврат суммы</th>
+                <th class="text-right">Чистая сумма</th>
+              </tr></thead><tbody>`;
+            s.items.forEach((it) => {
+              const lineKey = `${s.sale_id}::${it.product_name ?? ""}`;
+              const lineRefund = returnsByLine[lineKey];
+              const lineRefQty = lineRefund?.qty ?? 0;
+              const lineRefSum = lineRefund?.total ?? 0;
+              const netSum = it.total - lineRefSum;
+              html += `<tr>
+                <td>${escapeHtml(it.product_name ?? "—")}</td>
+                <td class="text-right">${fmt(it.quantity)}</td>
+                <td class="text-right" style="color:${lineRefQty > 0 ? "#f59e0b" : "#94a3b8"}">${lineRefQty > 0 ? `− ${fmt(lineRefQty)}` : "—"}</td>
+                ${canViewCost ? `<td class="text-right">${fmt(it.cost_price ?? 0)}</td>` : ""}
+                <td class="text-right">${fmt(it.price)}</td>
+                <td class="text-right">${fmt(it.total)}</td>
+                <td class="text-right" style="color:${lineRefSum > 0 ? "#f59e0b" : "#94a3b8"}">${lineRefSum > 0 ? `− ${fmt(lineRefSum)}` : "—"}</td>
+                <td class="text-right"><b>${fmt(netSum)}</b></td>
+              </tr>`;
+            });
+            html += `</tbody></table>
+              <div class="receipt-totals">
+                <div><span>Сумма позиций (брутто)</span><b>${fmt(grossItems)}</b></div>
+                ${s.discount > 0 ? `<div><span>− Скидка</span><b style="color:#f59e0b">${fmt(s.discount)}</b></div>` : ""}
+                ${refund > 0 ? `<div><span>− Возврат</span><b style="color:#f59e0b">${fmt(refund)}</b></div>` : ""}
+                <div class="receipt-total"><span>К оплате</span><b>${fmt(net)}</b></div>
+                <div><span>Оплачено</span><b style="color:#16a34a">${fmt(s.paid)}</b></div>
+                ${s.debt > 0 ? `<div><span>Долг</span><b style="color:#ef4444">${fmt(s.debt)}</b></div>` : ""}
+              </div>
+            </div>`;
           });
-          html += `</tbody></table>`;
+
+          // Period grand totals — sum of net amounts across all receipts.
+          const periodGross = receipts.reduce((acc, s) => acc + s.items.reduce((a, it) => a + it.total, 0), 0);
+          const periodDiscount = receipts.reduce((acc, s) => acc + s.discount, 0);
+          const periodRefund = Object.values(returnsBySale).reduce((acc, r) => acc + r.total, 0);
+          const periodNet = receipts.reduce((acc, s) => acc + s.total, 0) - periodRefund;
+          const periodPaid = receipts.reduce((acc, s) => acc + s.paid, 0);
+          const periodDebt = receipts.reduce((acc, s) => acc + s.debt, 0);
+          html += `<div class="period-totals">
+            <div class="period-totals-title">Итоги за период (${receipts.length} ${receipts.length === 1 ? "чек" : "чеков"})</div>
+            <div><span>Сумма позиций (брутто)</span><b>${fmt(periodGross)}</b></div>
+            <div><span>− Скидки</span><b style="color:#f59e0b">${fmt(periodDiscount)}</b></div>
+            <div><span>− Возвраты</span><b style="color:#f59e0b">${fmt(periodRefund)}</b></div>
+            <div class="period-totals-net"><span>К оплате (net)</span><b>${fmt(periodNet)}</b></div>
+            <div><span>Оплачено</span><b style="color:#16a34a">${fmt(periodPaid)}</b></div>
+            ${periodDebt > 0 ? `<div><span>Долг</span><b style="color:#ef4444">${fmt(periodDebt)}</b></div>` : ""}
+          </div>`;
         }
-        // Returns table — one row per `sale_return_items` line, served
-        // by the same `/reports/sales` payload. Skipped when there were
-        // no refunds in the window (server omits the array → length 0).
-        const returnRows = d.returns ?? [];
-        if (returnRows.length > 0) {
-          const escapeHtml = (s: string) =>
-            s
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-          const REFUND_LABELS: Record<string, string> = {
-            cash: "Наличные",
-            card: "Карта",
-            transfer: "Перевод",
-            offset_debt: "В счёт долга",
-          };
+
+        // ── Optional: refund detail (date, method, reason) ──
+        if (returnsRows.length > 0) {
           html += `<div class="table-title">Возвраты</div><table><thead><tr>
             <th>Дата</th>
             <th>Продавец</th>
@@ -863,19 +1060,12 @@ export default function ReportsScreen() {
             <th>Способ</th>
             <th>Причина</th>
           </tr></thead><tbody>`;
-          returnRows.forEach((r) => {
-            const dateLabel = r.created_at
-              ? new Date(r.created_at).toLocaleDateString("ru-RU", {
-                  day: "2-digit",
-                  month: "2-digit",
-                  year: "numeric",
-                })
-              : "—";
+          returnsRows.forEach((r) => {
             const method = r.refund_method
               ? REFUND_LABELS[r.refund_method] ?? r.refund_method
               : "—";
             html += `<tr>
-              <td>${dateLabel}</td>
+              <td>${formatDate(r.created_at)}</td>
               <td>${escapeHtml(r.seller_name ?? "—")}</td>
               <td>${escapeHtml(r.product_name ?? "—")}</td>
               <td class="text-right">${fmt(r.quantity)}</td>
@@ -978,56 +1168,90 @@ export default function ReportsScreen() {
         }
         if (d.data?.length) {
           if (periodMode) {
-            // Period balance table — opening / in / out / returned / closing per row.
-            // Sale-side columns follow `Остаток` so the seller can see the
-            // valuation of what's left at sale price without exposing
-            // cost — matches the policy used elsewhere.
+            // Period balance: opening / in / out / returned / closing per
+            // row, enriched with identification (code, unit) and pricing.
+            // Cost columns (Цена себестоимости / Сумма себестоимости) sit
+            // right after Остаток and are gated on `canViewCost`.
+            const esc = (s: string) => s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             html += `<div class="table-title">Движение за период</div><table><thead><tr>
               <th>Товар</th>
+              <th>Код</th>
               <th>Ед.</th>
               <th class="text-right">Было</th>
               <th class="text-right">Пришло</th>
               <th class="text-right">Ушло</th>
               <th class="text-right">Возврат</th>
               <th class="text-right">Остаток</th>
+              ${canViewCost ? `<th class="text-right">Цена себестоимости</th>` : ""}
+              ${canViewCost ? `<th class="text-right">Сумма себестоимости</th>` : ""}
+              <th class="text-right">Мин. остаток</th>
               <th class="text-right">Цена продажи</th>
               <th class="text-right">Сумма продажи</th>
             </tr></thead><tbody>`;
             d.data.forEach((it) => {
-              const esc = (s: string) => s.replace(/</g, "&lt;");
               const closing = it.closing_qty ?? it.stock_quantity;
               const saleSum = closing * (it.sale_price ?? 0);
+              const costSum = closing * (it.cost_price ?? 0);
+              const threshold = it.low_stock_alert ?? 0;
               html += `<tr>
                 <td>${esc(it.name)}</td>
+                <td>${esc(it.code ?? "—")}</td>
                 <td>${esc(it.unit ?? "—")}</td>
                 <td class="text-right">${fmt(it.opening_qty ?? 0)}</td>
                 <td class="text-right" style="color:#16a34a">${fmt(it.incoming_qty ?? 0)}</td>
                 <td class="text-right" style="color:#ef4444">${fmt(it.outgoing_qty ?? 0)}</td>
                 <td class="text-right" style="color:#f59e0b">${fmt(it.returned_qty ?? 0)}</td>
                 <td class="text-right"><b>${fmt(closing)}</b></td>
+                ${canViewCost ? `<td class="text-right">${fmt(it.cost_price ?? 0)}</td>` : ""}
+                ${canViewCost ? `<td class="text-right">${fmt(costSum)}</td>` : ""}
+                <td class="text-right">${threshold > 0 ? fmt(threshold) : "—"}</td>
                 <td class="text-right">${fmt(it.sale_price ?? 0)}</td>
                 <td class="text-right">${fmt(saleSum)}</td>
               </tr>`;
             });
             html += `</tbody></table>`;
           } else {
-            // Cost columns are hidden for sellers; same policy as the
-            // profit tab. Sellers still see stock + sale-side numbers.
+            // Detailed snapshot table.
+            // • Identification: Товар, Код, Ед.
+            // • Inventory: Остаток
+            // • Pricing (cost): Цена себестоимости, Сумма себестоимости — owners/admin only.
+            // • Inventory cont.: Мин. остаток, Статус
+            // • Pricing (sale): Цена продажи, Сумма продажи
+            const esc = (s: string) => s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             html += `<div class="table-title">Товары</div><table><thead><tr>
               <th>Товар</th>
+              <th>Код</th>
+              <th>Ед.</th>
               <th class="text-right">Остаток</th>
-              ${canViewCost ? `<th class="text-right">Себест.</th>` : ""}
-              <th class="text-right">Цена</th>
-              ${canViewCost ? `<th class="text-right">Сумма себест.</th>` : ""}
+              ${canViewCost ? `<th class="text-right">Цена себестоимости</th>` : ""}
+              ${canViewCost ? `<th class="text-right">Сумма себестоимости</th>` : ""}
+              <th class="text-right">Мин. остаток</th>
+              <th>Статус</th>
+              <th class="text-right">Цена продажи</th>
               <th class="text-right">Сумма продажи</th>
             </tr></thead><tbody>`;
             d.data.forEach((it) => {
+              const qty = it.stock_quantity ?? 0;
+              const threshold = it.low_stock_alert ?? 0;
+              let status = "В наличии";
+              let statusColor = "#16a34a";
+              if (qty <= 0) {
+                status = "Нет в наличии";
+                statusColor = "#ef4444";
+              } else if (threshold > 0 && qty <= threshold) {
+                status = "Мало";
+                statusColor = "#f59e0b";
+              }
               html += `<tr>
-                <td>${it.name}</td>
-                <td class="text-right">${fmt(it.stock_quantity)}</td>
+                <td>${esc(it.name)}</td>
+                <td>${esc(it.code ?? "—")}</td>
+                <td>${esc(it.unit ?? "—")}</td>
+                <td class="text-right">${fmt(qty)}</td>
                 ${canViewCost ? `<td class="text-right">${fmt(it.cost_price)}</td>` : ""}
-                <td class="text-right">${fmt(it.sale_price)}</td>
                 ${canViewCost ? `<td class="text-right">${fmt(it.cost_value)}</td>` : ""}
+                <td class="text-right">${threshold > 0 ? fmt(threshold) : "—"}</td>
+                <td style="color:${statusColor};font-weight:600">${status}</td>
+                <td class="text-right">${fmt(it.sale_price)}</td>
                 <td class="text-right"><b>${fmt(it.value)}</b></td>
               </tr>`;
             });
@@ -1113,7 +1337,7 @@ export default function ReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, dateFrom, dateTo, token, isOnline]);
+  }, [activeTab, dateFrom, dateTo, token, isOnline, activeShopId]);
 
   // Reset cached reports when any of the inputs that affect the result
   // changes — period or active shop. Without `activeShopId` here, the

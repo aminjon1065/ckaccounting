@@ -71,14 +71,16 @@ export function CreateSaleModal({
   const [customerName, setCustomerName] = React.useState("");
   const [discount, setDiscount] = React.useState("");
   const [paid, setPaid] = React.useState("");
-  // Tracks whether the cashier has hand-typed into "Оплачено". While false
-  // (default state), the field auto-mirrors the cart total — fits the
-  // typical bazaar happy-path where the customer pays in full and the
-  // cashier just hits submit. Once they touch the field we stop touching
-  // it; partial payments and overpayments stay sticky.
+  // Tracks whether the cashier has hand-typed into "Оплачено". While
+  // false, the field auto-mirrors the cart total — the bazaar happy-path
+  // where the customer pays in full and the cashier just submits. Once
+  // they touch the field the auto-sync pauses so partial payments and
+  // overpayments stay sticky. Clearing the input (empty string) resets
+  // the flag so the auto-fill kicks back in — gives the cashier an easy
+  // "back to default" gesture.
   const paidEditedRef = React.useRef(false);
   const handlePaidChange = React.useCallback((value: string) => {
-    paidEditedRef.current = true;
+    paidEditedRef.current = value.trim().length > 0;
     setPaid(value);
   }, []);
   const [notes, setNotes] = React.useState("");
@@ -972,11 +974,11 @@ export function CreateSaleModal({
             {/* ── Paid ─────────────────────────────────────────────────────── */}
             <Input
               label="Оплачено"
-              placeholder="0"
+              placeholder={total > 0 ? String(total) : "0"}
               value={paid}
               onChangeText={handlePaidChange}
               keyboardType="numeric"
-              hint="По умолчанию равно сумме счёта. Измените, если клиент оплатил частично или с переплатой."
+              hint="Подставляется автоматически после скидки. Измените, если клиент оплатил частично или с переплатой — очистите поле, чтобы вернуться к сумме счёта."
               className="mb-3"
             />
 

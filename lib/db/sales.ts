@@ -233,7 +233,18 @@ export async function getLocalSaleById(id: string): Promise<LocalSale | null> {
 export interface SaleExportRow {
   sale_id: string;
   created_at: string;
+  /** From the parent sale (denormalised onto every line to keep the
+   *  consumer trivial — one flat array drives both per-sale and per-item
+   *  tables in the PDF). */
   seller_name: string | null;
+  customer_name: string | null;
+  payment_type: string | null;
+  /** Per-sale rollups, repeated on every line of the same sale. */
+  sale_total: number;
+  sale_discount: number;
+  sale_paid: number;
+  sale_debt: number;
+  /** Per-line fields. */
   product_name: string | null;
   quantity: number;
   unit_price: number;
@@ -247,7 +258,13 @@ export async function getSalesExportRows(
 ): Promise<SaleExportRow[]> {
   const db = getDb();
   let query = `
-    SELECT s.id AS sale_id, s.created_at AS created_at, s.seller_name AS seller_name,
+    SELECT s.id AS sale_id, s.created_at AS created_at,
+           s.seller_name AS seller_name, s.customer_name AS customer_name,
+           s.payment_type AS payment_type,
+           s.total_kopecks AS sale_total_kopecks,
+           s.discount_kopecks AS sale_discount_kopecks,
+           s.paid_kopecks AS sale_paid_kopecks,
+           s.debt_kopecks AS sale_debt_kopecks,
            si.product_name AS product_name, si.quantity AS quantity,
            si.unit_price_kopecks AS unit_price_kopecks,
            p.cost_price_kopecks AS cost_price_kopecks,
@@ -279,6 +296,12 @@ export async function getSalesExportRows(
     sale_id: string;
     created_at: string;
     seller_name: string | null;
+    customer_name: string | null;
+    payment_type: string | null;
+    sale_total_kopecks: number | null;
+    sale_discount_kopecks: number | null;
+    sale_paid_kopecks: number | null;
+    sale_debt_kopecks: number | null;
     product_name: string | null;
     quantity: number;
     unit_price_kopecks: number | null;
@@ -290,6 +313,12 @@ export async function getSalesExportRows(
     sale_id: r.sale_id,
     created_at: r.created_at,
     seller_name: r.seller_name,
+    customer_name: r.customer_name,
+    payment_type: r.payment_type,
+    sale_total: fromKopecks(r.sale_total_kopecks),
+    sale_discount: fromKopecks(r.sale_discount_kopecks),
+    sale_paid: fromKopecks(r.sale_paid_kopecks),
+    sale_debt: fromKopecks(r.sale_debt_kopecks),
     product_name: r.product_name,
     quantity: r.quantity,
     unit_price: fromKopecks(r.unit_price_kopecks),
