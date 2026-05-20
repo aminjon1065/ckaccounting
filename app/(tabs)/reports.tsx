@@ -425,7 +425,7 @@ function ExpensesReportView({ data }: { data: ExpensesReport }) {
   );
 }
 
-function ProfitReportView({ data }: { data: ProfitReport }) {
+function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCost: boolean }) {
   const isPositive = data.profit > 0;
   const isNegative = data.profit < 0;
   const cogsPct = data.total_sales > 0 ? Math.round((data.total_cost / data.total_sales) * 100) : 0;
@@ -439,7 +439,9 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
         value={(data.profit >= 0 ? "+" : "−") + fmt(data.profit)}
         sub={
           data.total_sales > 0
-            ? `Выручка ${fmt(data.total_sales)} · себестоимость ${cogsPct}% · расходы ${expensesPct}%`
+            ? canViewCost
+              ? `Выручка ${fmt(data.total_sales)} · себестоимость ${cogsPct}% · расходы ${expensesPct}%`
+              : `Выручка ${fmt(data.total_sales)} · расходы ${expensesPct}%`
             : "Нет данных за период"
         }
         tone={isNegative ? "destructive" : "success"}
@@ -470,11 +472,13 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
           ) : (
             <StatRow label="Выручка" value={`${fmt(data.total_sales)} ${DEFAULT_CURRENCY}`} />
           )}
-          <StatRow
-            label="Себестоимость"
-            value={`− ${fmt(data.total_cost)} ${DEFAULT_CURRENCY}`}
-            color="text-amber-500"
-          />
+          {canViewCost && (
+            <StatRow
+              label="Себестоимость"
+              value={`− ${fmt(data.total_cost)} ${DEFAULT_CURRENCY}`}
+              color="text-amber-500"
+            />
+          )}
           <StatRow
             label="Расходы"
             value={`− ${fmt(data.total_expenses)} ${DEFAULT_CURRENCY}`}
@@ -499,7 +503,11 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
           tone="success"
           icon="trending-up"
           title="Прибыльный период"
-          body={`Чистая прибыль составляет ${Math.round((data.profit / data.total_sales) * 100)}% от выручки. Себестоимость занимает ${cogsPct}%, расходы — ${expensesPct}%.`}
+          body={
+            canViewCost
+              ? `Чистая прибыль составляет ${Math.round((data.profit / data.total_sales) * 100)}% от выручки. Себестоимость занимает ${cogsPct}%, расходы — ${expensesPct}%.`
+              : `Чистая прибыль составляет ${Math.round((data.profit / data.total_sales) * 100)}% от выручки. Расходы — ${expensesPct}%.`
+          }
         />
       )}
       {isNegative && (
@@ -507,14 +515,18 @@ function ProfitReportView({ data }: { data: ProfitReport }) {
           tone="destructive"
           icon="trending-down"
           title="Период в минусе"
-          body={`Расходы и себестоимость превышают выручку на ${fmt(Math.abs(data.profit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`}
+          body={
+            canViewCost
+              ? `Расходы и себестоимость превышают выручку на ${fmt(Math.abs(data.profit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
+              : `Расходы превышают выручку на ${fmt(Math.abs(data.profit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
+          }
         />
       )}
     </View>
   );
 }
 
-function StockReportView({ data }: { data: StockReport }) {
+function StockReportView({ data, canViewCost }: { data: StockReport; canViewCost: boolean }) {
   const isPeriod = data.mode === "period";
   return (
     <View>
@@ -570,11 +582,13 @@ function StockReportView({ data }: { data: StockReport }) {
         <Card className="mb-3.5">
           <CardContent className="py-3">
             <StatRow label="Всего товаров" value={String(data.total_products)} />
-            <StatRow
-              label="Сумма себестоимости"
-              value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
-              color="text-slate-500"
-            />
+            {canViewCost && (
+              <StatRow
+                label="Сумма себестоимости"
+                value={`${fmt(data.total_cost_value)} ${DEFAULT_CURRENCY}`}
+                color="text-slate-500"
+              />
+            )}
             <StatRow
               label="Сумма продажи"
               value={`${fmt(data.total_value)} ${DEFAULT_CURRENCY}`}
@@ -669,6 +683,11 @@ function StockReportView({ data }: { data: StockReport }) {
 export default function ReportsScreen() {
   const { token, user } = useAuth();
   const isOnline = useIsOnline();
+  // Cost-side numbers (себестоимость, сумма себестоимости, COGS) are owner-
+  // and admin-only. Backend already strips `cost_price` from product
+  // responses for sellers; we mirror that policy in the reports UI so a
+  // seller can't read it back from aggregated screens or the printed PDF.
+  const canViewCost = user?.role !== "seller";
 
   const [activeTab, setActiveTab] = React.useState<ReportTab>("sales");
   const [dateFrom, setDateFrom] = React.useState(daysAgo(30));
@@ -794,7 +813,7 @@ export default function ReportsScreen() {
             <th>Продавец</th>
             <th>Товар</th>
             <th class="text-right">Кол-во</th>
-            <th class="text-right">Себест.</th>
+            ${canViewCost ? `<th class="text-right">Себест.</th>` : ""}
             <th class="text-right">Цена</th>
             <th class="text-right">Сумма</th>
           </tr></thead><tbody>`;
@@ -811,7 +830,7 @@ export default function ReportsScreen() {
               <td>${it.seller_name ?? "—"}</td>
               <td>${it.product_name ?? "—"}</td>
               <td class="text-right">${fmt(it.quantity)}</td>
-              <td class="text-right">${fmt(it.cost_price)}</td>
+              ${canViewCost ? `<td class="text-right">${fmt(it.cost_price)}</td>` : ""}
               <td class="text-right">${fmt(it.unit_price)}</td>
               <td class="text-right"><b>${fmt(it.line_total)}</b></td>
             </tr>`;
@@ -907,6 +926,8 @@ export default function ReportsScreen() {
         const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#0f172a";
         const hasReturns = (d.returns_total ?? 0) > 0;
         const hasReturnsCogs = (d.returns_cogs ?? 0) > 0;
+        // Cost-side rows are gated on `canViewCost` so a seller exporting
+        // the profit tab doesn't get себестоимость in the PDF.
         html += `
           ${
             hasReturns
@@ -917,9 +938,13 @@ export default function ReportsScreen() {
               : `
           <div class="stat-row"><span class="stat-label">Выручка</span><span class="stat-value">${fmt(d.total_sales)}</span></div>`
           }
-          <div class="stat-row"><span class="stat-label">Себестоимость</span><span class="stat-value">${fmt(d.total_cost)}</span></div>
           ${
-            hasReturnsCogs
+            canViewCost
+              ? `<div class="stat-row"><span class="stat-label">Себестоимость</span><span class="stat-value">${fmt(d.total_cost)}</span></div>`
+              : ""
+          }
+          ${
+            canViewCost && hasReturnsCogs
               ? `<div class="stat-row"><span class="stat-label">Возврат себестоимости</span><span class="stat-value" style="color:#16a34a">+ ${fmt(d.returns_cogs ?? 0)}</span></div>`
               : ""
           }
@@ -941,7 +966,11 @@ export default function ReportsScreen() {
         } else {
           html += `
           <div class="stat-row"><span class="stat-label">Всего товаров</span><span class="stat-value">${d.total_products}</span></div>
-          <div class="stat-row"><span class="stat-label">Сумма себестоимости</span><span class="stat-value" style="color:#64748b">${fmt(d.total_cost_value)}</span></div>
+          ${
+            canViewCost
+              ? `<div class="stat-row"><span class="stat-label">Сумма себестоимости</span><span class="stat-value" style="color:#64748b">${fmt(d.total_cost_value)}</span></div>`
+              : ""
+          }
           <div class="stat-row"><span class="stat-label">Сумма продажи</span><span class="stat-value" style="color:#0a7ea4">${fmt(d.total_value)}</span></div>
           <div class="stat-row"><span class="stat-label">Мало на складе</span><span class="stat-value" style="color:#f59e0b">${d.low_stock}</span></div>
           <div class="stat-row" style="border:0"><span class="stat-label">Нет в наличии</span><span class="stat-value" style="color:#ef4444">${d.out_of_stock}</span></div>
@@ -950,6 +979,9 @@ export default function ReportsScreen() {
         if (d.data?.length) {
           if (periodMode) {
             // Period balance table — opening / in / out / returned / closing per row.
+            // Sale-side columns follow `Остаток` so the seller can see the
+            // valuation of what's left at sale price without exposing
+            // cost — matches the policy used elsewhere.
             html += `<div class="table-title">Движение за период</div><table><thead><tr>
               <th>Товар</th>
               <th>Ед.</th>
@@ -958,9 +990,13 @@ export default function ReportsScreen() {
               <th class="text-right">Ушло</th>
               <th class="text-right">Возврат</th>
               <th class="text-right">Остаток</th>
+              <th class="text-right">Цена продажи</th>
+              <th class="text-right">Сумма продажи</th>
             </tr></thead><tbody>`;
             d.data.forEach((it) => {
               const esc = (s: string) => s.replace(/</g, "&lt;");
+              const closing = it.closing_qty ?? it.stock_quantity;
+              const saleSum = closing * (it.sale_price ?? 0);
               html += `<tr>
                 <td>${esc(it.name)}</td>
                 <td>${esc(it.unit ?? "—")}</td>
@@ -968,26 +1004,30 @@ export default function ReportsScreen() {
                 <td class="text-right" style="color:#16a34a">${fmt(it.incoming_qty ?? 0)}</td>
                 <td class="text-right" style="color:#ef4444">${fmt(it.outgoing_qty ?? 0)}</td>
                 <td class="text-right" style="color:#f59e0b">${fmt(it.returned_qty ?? 0)}</td>
-                <td class="text-right"><b>${fmt(it.closing_qty ?? it.stock_quantity)}</b></td>
+                <td class="text-right"><b>${fmt(closing)}</b></td>
+                <td class="text-right">${fmt(it.sale_price ?? 0)}</td>
+                <td class="text-right">${fmt(saleSum)}</td>
               </tr>`;
             });
             html += `</tbody></table>`;
           } else {
+            // Cost columns are hidden for sellers; same policy as the
+            // profit tab. Sellers still see stock + sale-side numbers.
             html += `<div class="table-title">Товары</div><table><thead><tr>
               <th>Товар</th>
               <th class="text-right">Остаток</th>
-              <th class="text-right">Себест.</th>
+              ${canViewCost ? `<th class="text-right">Себест.</th>` : ""}
               <th class="text-right">Цена</th>
-              <th class="text-right">Сумма себест.</th>
+              ${canViewCost ? `<th class="text-right">Сумма себест.</th>` : ""}
               <th class="text-right">Сумма продажи</th>
             </tr></thead><tbody>`;
             d.data.forEach((it) => {
               html += `<tr>
                 <td>${it.name}</td>
                 <td class="text-right">${fmt(it.stock_quantity)}</td>
-                <td class="text-right">${fmt(it.cost_price)}</td>
+                ${canViewCost ? `<td class="text-right">${fmt(it.cost_price)}</td>` : ""}
                 <td class="text-right">${fmt(it.sale_price)}</td>
-                <td class="text-right">${fmt(it.cost_value)}</td>
+                ${canViewCost ? `<td class="text-right">${fmt(it.cost_value)}</td>` : ""}
                 <td class="text-right"><b>${fmt(it.value)}</b></td>
               </tr>`;
             });
@@ -1306,9 +1346,9 @@ export default function ReportsScreen() {
         ) : activeTab === "expenses" ? (
           <ExpensesReportView data={expensesReport!} />
         ) : activeTab === "profit" ? (
-          <ProfitReportView data={profitReport!} />
+          <ProfitReportView data={profitReport!} canViewCost={canViewCost} />
         ) : (
-          <StockReportView data={stockReport!} />
+          <StockReportView data={stockReport!} canViewCost={canViewCost} />
         )}
 
         {/* Export buttons row at the bottom of every tab */}
