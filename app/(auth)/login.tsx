@@ -306,7 +306,7 @@ export default function LoginScreen() {
           {/* ── Brand icon ── */}
           <View className="items-center mb-10">
             <Image
-              source={require("@/assets/images/ckicon.png")}
+              source={require("@/assets/images/main-icon.png")}
               style={{ width: 96, height: 96 }}
               contentFit="contain"
             />

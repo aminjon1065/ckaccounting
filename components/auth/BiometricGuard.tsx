@@ -338,7 +338,7 @@ function LockScreen({
               <ActivityIndicator size="large" color="#0a7ea4" />
             ) : (
               <Image
-                source={require("@/assets/images/ckicon.png")}
+                source={require("@/assets/images/main-icon.png")}
                 style={{ width: 120, height: 120 }}
                 contentFit="contain"
               />
