@@ -10,7 +10,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Разрешите использовать биометрию для безопасного входа в приложение."
+        "NSFaceIDUsageDescription": "Разрешите использовать биометрию для безопасного входа в приложение.",
+        "ITSAppUsesNonExemptEncryption": false
       },
       "bundleIdentifier": "com.aminjon1065.ckaccounting"
     },
