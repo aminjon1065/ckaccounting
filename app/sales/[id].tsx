@@ -227,7 +227,7 @@ export default function SaleDetailScreen() {
   const handleShareReceipt = React.useCallback(async () => {
     if (!sale) return;
     try {
-      const { uri } = await Print.printToFileAsync({ html: generateReceiptHtml(sale, user?.shop_name) });
+      const { uri } = await Print.printToFileAsync({ html: generateReceiptHtml(sale, sale.shop_name ?? user?.shop_name) });
       const isAvailable = await Sharing.isAvailableAsync();
       if (isAvailable) {
         await Sharing.shareAsync(uri, {
@@ -246,7 +246,7 @@ export default function SaleDetailScreen() {
   const handlePrintReceipt = React.useCallback(async () => {
     if (!sale) return;
     try {
-      await Print.printAsync({ html: generateReceiptHtml(sale, user?.shop_name) });
+      await Print.printAsync({ html: generateReceiptHtml(sale, sale.shop_name ?? user?.shop_name) });
     } catch {
       Alert.alert("Ошибка", "Не удалось открыть печать.");
     }

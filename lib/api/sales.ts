@@ -37,6 +37,11 @@ export interface Sale {
   /** Backend returns this on every sale; local mirror needs it so scoped
    *  reads (owner / seller) don't filter out rows with shop_id=NULL. */
   shop_id?: number | null;
+  /** Display name of the shop this sale belongs to. Printed/shared receipts
+   *  prefer this over `user.shop_name` so super_admin / multi-shop owners
+   *  see the actual branch the sale came from. Server eager-loads
+   *  `shop:id,name` on `show`/`update`; list endpoints may omit it (null). */
+  shop_name?: string | null;
   user_id?: number | null;
   /** Display name of the seller who rang up the receipt. Populated by the
    *  server when `user` is eager-loaded; null for sales whose seller has
