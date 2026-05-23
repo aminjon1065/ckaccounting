@@ -19,13 +19,18 @@ const PAYMENT_LABELS: Record<string, string> = {
 };
 
 /** Plain-text receipt for native Share sheet */
-export function buildReceiptText(sale: Sale): string {
+export function buildReceiptText(sale: Sale, shopName?: string | null): string {
   const returnedTotal = sale.returned_total ?? 0;
   const isFullyReturned = !!sale.is_fully_returned;
   const hasReturn = returnedTotal > 0;
 
+  const header = [APP_NAME];
+  if (shopName && shopName.trim() !== "") {
+    header.push(shopName.trim());
+  }
+
   const lines = [
-    APP_NAME,
+    ...header,
     "------------------------------",
     `Чек: #${sale.id}`,
     `Дата: ${fmtDate(sale.created_at)}`,
@@ -77,7 +82,7 @@ export function buildReceiptText(sale: Sale): string {
 }
 
 /** HTML receipt for expo-print (PDF/print) */
-export function generateReceiptHtml(sale: Sale): string {
+export function generateReceiptHtml(sale: Sale, shopName?: string | null): string {
   const returnedTotal = sale.returned_total ?? 0;
   const isFullyReturned = !!sale.is_fully_returned;
   const hasReturn = returnedTotal > 0;
@@ -142,6 +147,7 @@ export function generateReceiptHtml(sale: Sale): string {
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Courier New', monospace; font-size: 13px; color: #111; padding: 20px; max-width: 320px; margin: 0 auto; }
   h1 { font-size: 18px; text-align: center; margin-bottom: 4px; }
+  .shop { text-align: center; color: #111; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
   .sub { text-align: center; color: #555; font-size: 11px; margin-bottom: 16px; }
   hr { border: none; border-top: 1px dashed #999; margin: 12px 0; }
   .meta { margin-bottom: 12px; font-size: 12px; }
@@ -163,6 +169,7 @@ export function generateReceiptHtml(sale: Sale): string {
 </head>
 <body>
   <h1>${APP_NAME}</h1>
+  ${shopName && shopName.trim() !== "" ? `<p class="shop">${escape(shopName.trim())}</p>` : ""}
   <p class="sub">Чек #${sale.id} · ${fmtDate(sale.created_at)}</p>
   ${isFullyReturned ? `<p class="return-banner">Полный возврат: −${fmt(returnedTotal)} ${DEFAULT_CURRENCY}</p>` : ""}
   <hr />

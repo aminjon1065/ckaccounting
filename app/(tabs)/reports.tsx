@@ -426,8 +426,15 @@ function ExpensesReportView({ data }: { data: ExpensesReport }) {
 }
 
 function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCost: boolean }) {
-  const isPositive = data.profit > 0;
-  const isNegative = data.profit < 0;
+  // For sellers, profit is defined as revenue − expenses (no cost-of-goods).
+  // The server now strips cost fields for the seller role, but we recompute
+  // here as a belt-and-braces guarantee that a stale cached payload from an
+  // older server can't leak cost-derived figures into a seller's UI.
+  const displayProfit = canViewCost
+    ? data.profit
+    : data.total_sales - data.total_expenses;
+  const isPositive = displayProfit > 0;
+  const isNegative = displayProfit < 0;
   const cogsPct = data.total_sales > 0 ? Math.round((data.total_cost / data.total_sales) * 100) : 0;
   const expensesPct =
     data.total_sales > 0 ? Math.round((data.total_expenses / data.total_sales) * 100) : 0;
@@ -436,7 +443,7 @@ function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCo
     <View>
       <HeroSummary
         label="Чистая прибыль"
-        value={(data.profit >= 0 ? "+" : "−") + fmt(data.profit)}
+        value={(displayProfit >= 0 ? "+" : "−") + fmt(displayProfit)}
         sub={
           data.total_sales > 0
             ? canViewCost
@@ -490,7 +497,7 @@ function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCo
           />
           <StatRow
             label="Чистая прибыль"
-            value={`${data.profit >= 0 ? "+" : "−"} ${fmt(data.profit)} ${DEFAULT_CURRENCY}`}
+            value={`${displayProfit >= 0 ? "+" : "−"} ${fmt(displayProfit)} ${DEFAULT_CURRENCY}`}
             color={isPositive ? "text-emerald-600 dark:text-emerald-400" : isNegative ? "text-red-500" : undefined}
             large
             last
@@ -505,8 +512,8 @@ function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCo
           title="Прибыльный период"
           body={
             canViewCost
-              ? `Чистая прибыль составляет ${Math.round((data.profit / data.total_sales) * 100)}% от выручки. Себестоимость занимает ${cogsPct}%, расходы — ${expensesPct}%.`
-              : `Чистая прибыль составляет ${Math.round((data.profit / data.total_sales) * 100)}% от выручки. Расходы — ${expensesPct}%.`
+              ? `Чистая прибыль составляет ${Math.round((displayProfit / data.total_sales) * 100)}% от выручки. Себестоимость занимает ${cogsPct}%, расходы — ${expensesPct}%.`
+              : `Чистая прибыль составляет ${Math.round((displayProfit / data.total_sales) * 100)}% от выручки. Расходы — ${expensesPct}%.`
           }
         />
       )}
@@ -517,8 +524,8 @@ function ProfitReportView({ data, canViewCost }: { data: ProfitReport; canViewCo
           title="Период в минусе"
           body={
             canViewCost
-              ? `Расходы и себестоимость превышают выручку на ${fmt(Math.abs(data.profit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
-              : `Расходы превышают выручку на ${fmt(Math.abs(data.profit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
+              ? `Расходы и себестоимость превышают выручку на ${fmt(Math.abs(displayProfit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
+              : `Расходы превышают выручку на ${fmt(Math.abs(displayProfit))} ${DEFAULT_CURRENCY}. Проверьте крупные расходы.`
           }
         />
       )}
@@ -1113,7 +1120,9 @@ export default function ReportsScreen() {
         }
       } else if (activeTab === "profit") {
         const d = currentData as ProfitReport;
-        const profitColor = d.profit > 0 ? "#16a34a" : d.profit < 0 ? "#ef4444" : "#0f172a";
+        // Seller PDFs must match the seller-facing UI: profit = revenue − expenses.
+        const displayProfit = canViewCost ? d.profit : d.total_sales - d.total_expenses;
+        const profitColor = displayProfit > 0 ? "#16a34a" : displayProfit < 0 ? "#ef4444" : "#0f172a";
         const hasReturns = (d.returns_total ?? 0) > 0;
         const hasReturnsCogs = (d.returns_cogs ?? 0) > 0;
         // Cost-side rows are gated on `canViewCost` so a seller exporting
@@ -1139,7 +1148,7 @@ export default function ReportsScreen() {
               : ""
           }
           <div class="stat-row"><span class="stat-label">Расходы</span><span class="stat-value">${fmt(d.total_expenses)}</span></div>
-          <div class="stat-row" style="border:0"><span class="stat-label">Чистая прибыль</span><span class="stat-value" style="color:${profitColor};font-size:16px">${(d.profit >= 0 ? "+" : "−") + fmt(d.profit)}</span></div>
+          <div class="stat-row" style="border:0"><span class="stat-label">Чистая прибыль</span><span class="stat-value" style="color:${profitColor};font-size:16px">${(displayProfit >= 0 ? "+" : "−") + fmt(displayProfit)}</span></div>
         </div>`;
       } else {
         const d = currentData as StockReport;
