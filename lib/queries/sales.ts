@@ -251,7 +251,10 @@ export function useUpdateSale(token: string | null) {
         const nextPaid = payload.paid !== undefined ? payload.paid : previousDetail.paid;
         const subtotal = previousDetail.total + previousDetail.discount;
         const nextTotal = Math.max(0, subtotal - nextDiscount);
-        const nextDebt = Math.max(0, nextTotal - nextPaid);
+        // Debt = total − returns − paid (mirrors SaleService::updateSale).
+        // Recomputing from total − paid alone would resurrect the returned
+        // amount; for a sale with no returns the returns sum is 0.
+        const nextDebt = Math.max(0, nextTotal - (previousDetail.returned_total ?? 0) - nextPaid);
 
         const optimistic: Sale = {
           ...previousDetail,

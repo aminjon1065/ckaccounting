@@ -23,6 +23,7 @@ import {
   type ProductMovement,
   type ProductMovementsResponse,
 } from "@/lib/api";
+import { deleteLocalProduct } from "@/lib/db";
 
 const PAGE_SIZE = 30;
 
@@ -305,6 +306,11 @@ export function useDeleteProduct(token: string | null) {
     onSuccess: (_data, { id }) => {
       queryClient.removeQueries({ queryKey: productKeys.detail(id) });
       queryClient.removeQueries({ queryKey: productKeys.movements(id) });
+      // Purge the local SQLite mirror too. The sale ProductPicker reads
+      // products from SQLite (getLocalProducts), so without this the deleted
+      // product lingers in the picker until an app restart even though the
+      // React Query lists already dropped it.
+      deleteLocalProduct(id).catch(() => {});
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: productKeys.lists() });
